@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production builds
+client/dist/
+server/dist/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+server/.env
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# WorkBuddy local data
+.workbuddy/
+.playwright-cli/
+
+# Test artifacts
+coverage/
+*.test.pdf
+*.test.docx
+
+# TypeScript incremental
+*.tsbuildinfo

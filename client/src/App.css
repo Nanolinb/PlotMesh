@@ -1,0 +1,831 @@
+/* ===== 全局样式 ===== */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ===== 主题变量 ===== */
+:root {
+  /* Light 主题 */
+  --bg-page: #f1f5f9;
+  --bg-sidebar: #ffffff;
+  --bg-canvas: #f8fafc;
+  --bg-canvas-dots: #e2e8f0;
+  --bg-card: #ffffff;
+  --bg-card-body: #f9fafb;
+  --bg-input: #ffffff;
+  --bg-overlay: rgba(15, 23, 42, 0.45);
+  --bg-toolbar: #ffffff;
+  --bg-tip: rgba(0, 0, 0, 0.7);
+  --bg-tip-text: #ffffff;
+  --text-primary: #1f2937;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --text-placeholder: #9ca3af;
+  --border-color: #e2e8f0;
+  --border-input: #d1d5db;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-bg: rgba(99, 102, 241, 0.08);
+  --success: #10b981;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --shadow-selected: 0 0 0 2px var(--accent), 0 4px 16px rgba(99, 102, 241, 0.25);
+  --shadow-sidebar: 2px 0 8px rgba(0, 0, 0, 0.04);
+}
+
+/* Dark 主题 */
+[data-theme='dark'] {
+  --bg-page: #0f172a;
+  --bg-sidebar: #1e293b;
+  --bg-canvas: #0b1220;
+  --bg-canvas-dots: #334155;
+  --bg-card: #1e293b;
+  --bg-card-body: #273549;
+  --bg-input: #0f172a;
+  --bg-overlay: rgba(0, 0, 0, 0.7);
+  --bg-toolbar: #1e293b;
+  --bg-tip: rgba(99, 102, 241, 0.9);
+  --bg-tip-text: #ffffff;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-placeholder: #64748b;
+  --border-color: #334155;
+  --border-input: #475569;
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-bg: rgba(129, 140, 248, 0.15);
+  --success: #34d399;
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.6);
+  --shadow-selected: 0 0 0 2px var(--accent), 0 4px 16px rgba(129, 140, 248, 0.4);
+  --shadow-sidebar: 2px 0 8px rgba(0, 0, 0, 0.5);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.app {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ===== 侧边栏 ===== */
+.sidebar {
+  width: 260px;
+  min-width: 260px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-sidebar);
+  z-index: 10;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-header h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.sidebar-section {
+  padding: 12px 16px;
+}
+
+.sidebar-section h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 0 16px;
+}
+
+/* 节点拖拽项 */
+.node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--bg-card-body);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: grab;
+  transition: all 0.15s;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.node-item:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.1);
+}
+
+.node-item:active {
+  cursor: grabbing;
+  transform: scale(0.97);
+}
+
+.node-item-drag {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+/* 常用功能 */
+.packages-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.packages-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.save-pkg-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card-body);
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.save-pkg-btn:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.package-search {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 8px;
+  outline: none;
+}
+
+.package-search:focus {
+  border-color: var(--accent);
+}
+
+.package-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.package-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-card-body);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+
+.package-item:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.package-item-content {
+  flex: 1;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.package-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.package-meta {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.package-delete-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.package-delete-btn:hover {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 16px 0;
+}
+
+/* ===== 画布区域 ===== */
+.canvas-container {
+  position: relative;
+  flex: 1;
+  height: 100vh;
+}
+
+.canvas-flow {
+  background: var(--bg-canvas);
+}
+
+.react-flow__background {
+  background: var(--bg-canvas) !important;
+}
+
+/* 夜间模式下的 Controls 按钮 */
+[data-theme='dark'] .react-flow__controls {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-color) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+}
+[data-theme='dark'] .react-flow__controls-button {
+  background: var(--bg-card) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+  color: var(--text-primary) !important;
+  fill: var(--text-primary) !important;
+}
+[data-theme='dark'] .react-flow__controls-button:hover {
+  background: var(--bg-card-body) !important;
+}
+[data-theme='dark'] .react-flow__controls-button svg {
+  fill: var(--text-primary) !important;
+}
+[data-theme='dark'] .react-flow__minimap {
+  background: var(--bg-card) !important;
+}
+[data-theme='dark'] .react-flow__attribution {
+  background: var(--bg-card) !important;
+  color: var(--text-muted) !important;
+}
+[data-theme='dark'] .react-flow__attribution a {
+  color: var(--accent) !important;
+}
+
+/* ===== 移除 React Flow 默认的节点选中轮廓（避免与自定义蓝框冲突） ===== */
+/* 注意：group 节点需要 React Flow 设置的明确 width/height，不能被 width:auto 覆盖 */
+.react-flow__node:not(.react-flow__node-group) {
+  outline: none !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  /* 让节点容器宽度等于内部 .node-card 的宽度，避免 Handle 位置漂移 */
+  width: auto !important;
+}
+
+/* group 节点：保持 React Flow 设置的 width/height，只清除视觉干扰 */
+.react-flow__node-group {
+  outline: none !important;
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  z-index: -1 !important;
+}
+
+.react-flow__node > .node-card {
+  /* 确保节点卡片撑满节点容器，Handle 才能正确对齐右/左边缘 */
+  display: block;
+}
+
+.react-flow__node.selected,
+.react-flow__node:focus,
+.react-flow__node:focus-visible {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* 移除 React Flow 的 selection 黑色边框 */
+.react-flow__node-default.selected,
+.react-flow__node-input.selected,
+.react-flow__node-output.selected,
+.react-flow__node-group.selected {
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* 框选区域样式 */
+.react-flow__selection {
+  background: rgba(99, 102, 241, 0.1) !important;
+  border: 1px dashed #6366f1 !important;
+}
+
+/* Handle 点样式 - 确保贴在节点卡片边缘 */
+.react-flow__handle {
+  width: 8px !important;
+  height: 8px !important;
+  background: var(--accent) !important;
+  border: 1.5px solid white !important;
+}
+.react-flow__handle-left {
+  left: -4px !important;
+}
+.react-flow__handle-right {
+  right: -4px !important;
+}
+
+/* ===== 分组框节点（打包后的容器） ===== */
+.group-node {
+  width: 100%;
+  height: 100%;
+  border: 2px dashed #6366f1;
+  border-radius: 14px;
+  background: rgba(99, 102, 241, 0.04);
+  position: relative;
+  /* 不吞掉子节点的点击：只响应边框和标签 */
+  pointer-events: none;
+}
+
+.group-node::before {
+  /* 用伪元素作为点击边框热区（只有边框 20px 内可选中分组） */
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 20px solid transparent;
+  border-radius: 14px;
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+
+.group-node.selected {
+  border-color: #4338ca;
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 0 2px #4338ca;
+}
+
+.group-node-label {
+  position: absolute;
+  top: -14px;
+  left: 14px;
+  background: #6366f1;
+  color: white;
+  padding: 3px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: text;
+  user-select: none;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.group-node-label-input {
+  position: absolute;
+  top: -14px;
+  left: 14px;
+  background: white;
+  color: #1f2937;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #6366f1;
+  outline: none;
+  z-index: 3;
+  pointer-events: auto;
+}
+
+/* ===== 节点卡片样式（极简紧凑版，相当于原尺寸缩放 2 次） ===== */
+.node-card {
+  min-width: 120px;
+  max-width: 170px;
+  width: 100%;
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-card);
+  /* 不能用 overflow:hidden，否则会裁剪伸出节点外的 Handle 点 */
+  overflow: visible;
+  transition: box-shadow 0.15s ease, background 0.2s ease;
+  position: relative;
+  font-size: 11px;
+}
+
+/* Header 的圆角用内部 clip 实现 */
+.node-card .node-header {
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+}
+
+.node-card:hover {
+  box-shadow: var(--shadow-hover);
+}
+
+/* 选中样式需要比 :hover 更高的特异性，放在 :hover 之后 */
+.node-card.selected,
+.node-card.selected:hover {
+  box-shadow: var(--shadow-selected) !important;
+}
+
+.node-header {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.node-icon {
+  font-size: 12px;
+}
+
+.node-title {
+  flex: 1;
+}
+
+.prompt-badge {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.node-body {
+  padding: 4px 6px;
+  background: var(--bg-card);
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+/* 节点内 field/label/控件紧凑化 */
+.node-body .field {
+  margin-bottom: 4px !important;
+}
+
+.node-body label {
+  font-size: 10px !important;
+  margin-bottom: 2px !important;
+}
+
+.node-body select,
+.node-body input:not([type="range"]),
+.node-body textarea {
+  padding: 3px 5px !important;
+  font-size: 11px !important;
+  border-radius: 4px !important;
+}
+
+.node-body textarea {
+  min-height: 40px !important;
+}
+
+/* 状态提示文字 */
+.node-body > div {
+  font-size: 11px;
+}
+
+/* 节点 body 内的"可编辑文本/占位框"（双击进入编辑前的状态） */
+.node-body-placeholder {
+  background: var(--bg-card-body);
+  color: var(--text-primary);
+}
+.node-body-placeholder[data-empty="true"] {
+  color: var(--text-placeholder);
+}
+
+/* 文件上传节点的虚线 dropzone（比默认浅灰再降低 25% 亮度） */
+.file-upload-dropzone {
+  /* light: #e5e7eb(rgb 229,231,235 亮度 ~0.90) 降 25% ≈ rgb(172,174,176) #acaeb0 */
+  border: 2px dashed #acaeb0;
+  color: var(--text-muted);
+}
+[data-theme='dark'] .file-upload-dropzone {
+  /* dark 模式下使用中度灰色 */
+  border-color: #475569;
+  color: var(--text-muted);
+}
+
+/* 文件上传节点：已上传的文件条目 */
+.file-upload-item {
+  background: var(--bg-card-body);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+.file-upload-item:hover {
+  border-color: var(--accent);
+}
+
+/* ===== 节点运行中/成功/失败脉冲动画 ===== */
+@keyframes node-pulse-running {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5), var(--shadow-card);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0), var(--shadow-card);
+  }
+}
+@keyframes node-flash-success {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7), var(--shadow-card); }
+  100% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0), var(--shadow-card); }
+}
+@keyframes node-pulse-error {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.5), var(--shadow-card); }
+  50% { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.9), 0 0 0 6px rgba(239, 68, 68, 0.25), var(--shadow-card); }
+}
+
+/* 选中状态优先级高于状态动画 */
+.node-card[data-status="running"]:not(.selected) {
+  animation: node-pulse-running 1.5s ease-in-out infinite;
+}
+.node-card[data-status="success"]:not(.selected) {
+  animation: node-flash-success 0.9s ease-out;
+}
+.node-card[data-status="error"]:not(.selected) {
+  animation: node-pulse-error 1.2s ease-in-out infinite;
+}
+
+/* 节点 body 内的"可编辑文本/占位框"背景 */
+.node-body > div[style*="background: #f9fafb"],
+.node-body > div[style*="background: rgb(249, 250, 251)"],
+.node-body div[style*="background: #f9fafb"],
+.node-body div[style*="background: #f0fdf4"],
+.node-body div[style*="background: #faf5ff"],
+.node-body textarea,
+.node-body input,
+.node-body select {
+  background: var(--bg-card-body) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-input) !important;
+}
+.node-body textarea:focus,
+.node-body input:focus,
+.node-body select:focus {
+  border-color: var(--accent) !important;
+}
+
+/* Dark 模式下 LLM 节点输出预览（原 #166534 绿色）调亮 */
+[data-theme='dark'] .node-body div[style*="background: #f0fdf4"] {
+  color: #86efac !important;
+}
+[data-theme='dark'] .node-body div[style*="background: #faf5ff"] {
+  color: #c4b5fd !important;
+}
+
+.node-body .field {
+  margin-bottom: 8px;
+}
+
+/* Handle 样式 */
+.react-flow__handle {
+  width: 10px !important;
+  height: 10px !important;
+  border: 2px solid white !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.react-flow__handle-connecting {
+  background: #6366f1 !important;
+}
+
+.react-flow__handle-valid {
+  background: #10b981 !important;
+}
+
+/* ===== 画布工具栏 ===== */
+.canvas-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
+
+.toolbar-btn {
+  padding: 6px 14px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: all 0.15s;
+}
+
+.toolbar-btn:hover {
+  background: var(--bg-card-body);
+  border-color: var(--accent);
+}
+
+.toolbar-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.toolbar-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* ===== 模态框 ===== */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.modal-content {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-radius: 16px;
+  padding: 24px;
+  width: 400px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-color);
+}
+
+.modal-content h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+
+.form-group {
+  margin-bottom: 12px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.form-group input,
+.form-group textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border-radius: 8px;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.modal-actions button {
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card-body);
+  color: var(--text-primary);
+}
+
+.modal-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.modal-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.modal-actions button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== React Flow 覆盖 ===== */
+.react-flow__minimap {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.react-flow__controls {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #ef4444 !important;
+  stroke-width: 3 !important;
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 3;
+  cursor: pointer;
+}
+
+/* 增大 edge 点击热区 */
+.react-flow__edge-interaction {
+  stroke-width: 20 !important;
+}
+
+/* 选中框样式 */
+.react-flow__selection {
+  background: rgba(99, 102, 241, 0.08);
+  border: 2px dashed #6366f1;
+  border-radius: 4px;
+}
