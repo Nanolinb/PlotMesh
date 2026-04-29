@@ -1,4 +1,4 @@
-# CoMind · 共思
+# PlotMesh · 谋图
 
 > **一个基于思维导图的人与 AI 协同工作台**
 > 用可视化节点把「人的直觉」与「AI 的推理」织在同一张画布上。
@@ -57,8 +57,8 @@
 
 ```bash
 # 克隆代码
-git clone https://github.com/<your-name>/comind.git
-cd comind
+git clone https://github.com/Nanolinb/PlotMesh.git
+cd PlotMesh
 
 # 前端
 cd client && npm install && npm run dev   # http://localhost:5173
@@ -93,7 +93,7 @@ cd server && npm install && npm start     # http://localhost:3001
 ## 📁 目录结构
 
 ```
-comind/
+PlotMesh/
 ├── client/            # 前端 React 应用
 │   └── src/
 │       ├── components/
