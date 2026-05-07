@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import type { NodePackage } from '../types/nodes';
+import type { NodePackage, PackageGroup } from '../types/nodes';
+import { useNodeStore } from '../store/nodes';
 
 interface SidebarProps {
   packages: NodePackage[];
+  packageGroups: PackageGroup[];
   onLoadPackage: (id: string) => void;
   onDeletePackage: (id: string) => void;
   onSavePackage: () => void;
@@ -17,20 +19,176 @@ const NODE_TYPES = [
   { type: 'output', label: '📤 输出', description: '预览/下载/复制' },
 ];
 
-export default function Sidebar({ packages, onLoadPackage, onDeletePackage, onSavePackage }: SidebarProps) {
+export default function Sidebar({ packages, packageGroups, onLoadPackage, onDeletePackage, onSavePackage }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [showGroupMenu, setShowGroupMenu] = useState<string | null>(null); // 哪个 pkgId 正在弹"移动到分组"
+  const createGroup = useNodeStore((s) => s.createPackageGroup);
+  const renameGroup = useNodeStore((s) => s.renamePackageGroup);
+  const deleteGroup = useNodeStore((s) => s.deletePackageGroup);
+  const toggleCollapsed = useNodeStore((s) => s.togglePackageGroupCollapsed);
+  const movePackageToGroup = useNodeStore((s) => s.movePackageToGroup);
+  const renamePackage = useNodeStore((s) => s.renamePackage);
 
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
     event.dataTransfer.effectAllowed = 'move';
   };
 
+  // 拖拽包到分组
+  const onPackageDragStart = (event: React.DragEvent, pkgId: string) => {
+    event.dataTransfer.setData('application/pkg-id', pkgId);
+    event.dataTransfer.effectAllowed = 'move';
+  };
+  const onGroupDragOver = (event: React.DragEvent) => {
+    if (event.dataTransfer.types.includes('application/pkg-id')) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+    }
+  };
+  const onGroupDrop = (event: React.DragEvent, groupName: string) => {
+    const pkgId = event.dataTransfer.getData('application/pkg-id');
+    if (pkgId) {
+      event.preventDefault();
+      event.stopPropagation();
+      movePackageToGroup(pkgId, groupName);
+    }
+  };
+
   const filteredPackages = packages.filter((pkg) =>
     pkg.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  // 按分组归类
+  const groupedPackages: Record<string, NodePackage[]> = { '': [] };
+  packageGroups.forEach((g) => {
+    groupedPackages[g.name] = [];
+  });
+  filteredPackages.forEach((pkg) => {
+    const g = pkg.group || '';
+    if (!groupedPackages[g]) groupedPackages[g] = [];
+    groupedPackages[g].push(pkg);
+  });
+
+  const handleNewGroup = () => {
+    const name = prompt('请输入新分组名称：');
+    if (name && name.trim()) {
+      const ok = createGroup(name);
+      if (!ok) alert('分组名称已存在');
+    }
+  };
+
+  const handleDeleteGroup = (groupName: string, count: number) => {
+    if (count === 0) {
+      deleteGroup(groupName, 'unassign');
+      return;
+    }
+    const choice = confirm(
+      `分组「${groupName}」内有 ${count} 个常用功能。\n\n点击「确定」一并删除分组和功能；点击「取消」仅删除分组（功能保留为未分组）。`
+    );
+    deleteGroup(groupName, choice ? 'delete-all' : 'unassign');
+  };
+
+  const handleRenameGroup = (oldName: string) => {
+    const next = prompt('修改分组名称：', oldName);
+    if (next && next.trim() && next.trim() !== oldName) {
+      const ok = renameGroup(oldName, next);
+      if (!ok) alert('该名称已被占用');
+    }
+  };
+
+  const handleRenamePackage = (pkgId: string, oldName: string) => {
+    const next = prompt('修改名称：', oldName);
+    if (next && next.trim() && next.trim() !== oldName) {
+      const ok = renamePackage(pkgId, next);
+      if (!ok) alert('该名称已被占用');
+    }
+  };
+
+  const renderPkgItem = (pkg: NodePackage) => (
+    <div
+      key={pkg.id}
+      className="package-item"
+      draggable
+      onDragStart={(e) => onPackageDragStart(e, pkg.id)}
+    >
+      <div
+        className="package-item-content"
+        onClick={() => onLoadPackage(pkg.id)}
+        title={`点击加载「${pkg.name}」${pkg.description ? `\n${pkg.description}` : ''}`}
+      >
+        <span className="package-name">{pkg.name}</span>
+        <span className="package-meta">
+          {pkg.nodes.length} 个节点 · {new Date(pkg.updatedAt).toLocaleDateString('zh-CN')}
+        </span>
+      </div>
+      <div style={{ position: 'relative' }}>
+        <button
+          className="package-delete-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowGroupMenu(showGroupMenu === pkg.id ? null : pkg.id);
+          }}
+          title="更多操作"
+        >
+          ⋯
+        </button>
+        {showGroupMenu === pkg.id && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: 22,
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 6,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
+              zIndex: 100,
+              minWidth: 140,
+              fontSize: 12,
+              overflow: 'hidden',
+            }}
+          >
+            <button
+              className="package-menu-item"
+              onClick={() => { handleRenamePackage(pkg.id, pkg.name); setShowGroupMenu(null); }}
+            >✎ 重命名</button>
+            <div style={{ borderTop: '1px solid var(--border-color)' }} />
+            <div style={{ padding: '4px 10px', color: 'var(--text-muted)', fontSize: 10 }}>移动到分组</div>
+            <button
+              className="package-menu-item"
+              onClick={() => { movePackageToGroup(pkg.id, ''); setShowGroupMenu(null); }}
+            >📂 无分组</button>
+            {packageGroups.map((g) => (
+              <button
+                key={g.id}
+                className="package-menu-item"
+                onClick={() => { movePackageToGroup(pkg.id, g.name); setShowGroupMenu(null); }}
+              >📁 {g.name}</button>
+            ))}
+            <div style={{ borderTop: '1px solid var(--border-color)' }} />
+            <button
+              className="package-menu-item danger"
+              onClick={() => {
+                if (confirm(`确定删除「${pkg.name}」？`)) {
+                  onDeletePackage(pkg.id);
+                }
+                setShowGroupMenu(null);
+              }}
+            >🗑 删除</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // 关掉菜单（点空白）
+  const onSidebarClick = () => {
+    if (showGroupMenu) setShowGroupMenu(null);
+  };
+
   return (
-    <div className="sidebar">
+    <div className="sidebar" onClick={onSidebarClick}>
       <div className="sidebar-header">
         <h2>🧩 节点面板</h2>
       </div>
@@ -54,56 +212,93 @@ export default function Sidebar({ packages, onLoadPackage, onDeletePackage, onSa
         </div>
       </div>
 
-      {/* 分隔线 */}
       <div className="sidebar-divider" />
 
       {/* 常用功能（打包） */}
       <div className="sidebar-section packages-section">
         <div className="packages-header">
           <h3>📦 常用功能</h3>
-          <button className="save-pkg-btn" onClick={onSavePackage} title="保存选中节点为常用功能">
-            ＋
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className="save-pkg-btn" onClick={handleNewGroup} title="新建分组">
+              📁
+            </button>
+            <button className="save-pkg-btn" onClick={onSavePackage} title="保存选中节点为常用功能">
+              ＋
+            </button>
+          </div>
         </div>
 
-        {packages.length === 0 && (
-          <p className="empty-hint">框选节点后按 Ctrl+S 保存</p>
+        {packages.length === 0 && packageGroups.length === 0 && (
+          <p className="empty-hint">框选节点后点 ＋ 保存为常用功能</p>
         )}
 
         <input
           className="package-search"
-          placeholder="搜索常用功能..."
+          placeholder="搜索..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
         />
 
         <div className="package-list">
-          {filteredPackages.map((pkg) => (
-            <div key={pkg.id} className="package-item">
+          {/* 分组列表 */}
+          {packageGroups.map((g) => {
+            const items = groupedPackages[g.name] || [];
+            return (
               <div
-                className="package-item-content"
-                onClick={() => onLoadPackage(pkg.id)}
-                title={`点击加载「${pkg.name}」`}
+                key={g.id}
+                className="package-group"
+                onDragOver={onGroupDragOver}
+                onDrop={(e) => onGroupDrop(e, g.name)}
               >
-                <span className="package-name">{pkg.name}</span>
-                <span className="package-meta">
-                  {pkg.nodes.length} 个节点 · {new Date(pkg.updatedAt).toLocaleDateString('zh-CN')}
-                </span>
+                <div className="package-group-header">
+                  <span
+                    onClick={() => toggleCollapsed(g.name)}
+                    style={{ cursor: 'pointer', flex: 1, fontSize: 12, fontWeight: 600 }}
+                    title="点击折叠/展开"
+                  >
+                    {g.collapsed ? '▶' : '▼'} 📁 {g.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({items.length})</span>
+                  </span>
+                  <button
+                    className="package-delete-btn"
+                    onClick={(e) => { e.stopPropagation(); handleRenameGroup(g.name); }}
+                    title="重命名分组"
+                    style={{ fontSize: 11 }}
+                  >✎</button>
+                  <button
+                    className="package-delete-btn"
+                    onClick={(e) => { e.stopPropagation(); handleDeleteGroup(g.name, items.length); }}
+                    title="删除分组"
+                  >✕</button>
+                </div>
+                {!g.collapsed && items.length > 0 && (
+                  <div className="package-group-body">
+                    {items.map(renderPkgItem)}
+                  </div>
+                )}
+                {!g.collapsed && items.length === 0 && (
+                  <div className="package-group-empty">把功能拖到这里</div>
+                )}
               </div>
-              <button
-                className="package-delete-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (confirm(`确定删除「${pkg.name}」？`)) {
-                    onDeletePackage(pkg.id);
-                  }
-                }}
-                title="删除"
-              >
-                ✕
-              </button>
+            );
+          })}
+
+          {/* 未分组 */}
+          {(groupedPackages[''] || []).length > 0 && (
+            <div
+              className="package-group"
+              onDragOver={onGroupDragOver}
+              onDrop={(e) => onGroupDrop(e, '')}
+            >
+              {packageGroups.length > 0 && (
+                <div className="package-group-header" style={{ color: 'var(--text-muted)' }}>
+                  📂 未分组 <span style={{ color: 'var(--text-muted)' }}>({(groupedPackages[''] || []).length})</span>
+                </div>
+              )}
+              <div className="package-group-body">
+                {(groupedPackages[''] || []).map(renderPkgItem)}
+              </div>
             </div>
-          ))}
+          )}
         </div>
       </div>
     </div>

@@ -54,6 +54,7 @@ export default function Canvas() {
   const nodes = useNodeStore((s) => s.nodes);
   const edges = useNodeStore((s) => s.edges);
   const storePackages = useNodeStore((s) => s.getPackages());
+  const storePackageGroups = useNodeStore((s) => s.packageGroups);
 
   const storeAddNode = useNodeStore((s) => s.addNode);
   const storeOnNodesChange = useNodeStore((s) => s.onNodesChange);
@@ -75,6 +76,8 @@ export default function Canvas() {
   const [showApiConfig, setShowApiConfig] = useState(false);
   const [pkgName, setPkgName] = useState('');
   const [pkgDesc, setPkgDesc] = useState('');
+  const [pkgGroup, setPkgGroup] = useState<string>('');
+  const [savedToast, setSavedToast] = useState<string>('');
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [rfInstance, setRfInstance] = useState<any>(null);
@@ -147,10 +150,43 @@ export default function Canvas() {
     const allNodes = useNodeStore.getState().nodes as any[];
     const selectedIds = allNodes.filter((n: any) => n.selected).map((n: any) => n.id);
     if (!selectedIds.length) { alert('请先选择节点（单击选中，Cmd+点击多选，或空白处拖动框选）'); return; }
-    storePushHistory();
-    storeSavePackage(pkgName, pkgDesc, selectedIds);
+
+    const trimmedName = pkgName.trim();
+    if (!trimmedName) return;
+
+    const exists = useNodeStore.getState().hasPackageName(trimmedName);
+    if (exists) {
+      // 弹出冲突处理：覆盖 / 改名 / 取消
+      const choice = window.confirm(
+        `已有同名常用功能「${trimmedName}」。\n\n点击「确定」覆盖原有，点击「取消」自动追加编号保存为新版本。`
+      );
+      storePushHistory();
+      const result = useNodeStore.getState().savePackage(trimmedName, pkgDesc, selectedIds, {
+        group: pkgGroup,
+        mode: choice ? 'overwrite' : 'create',
+      });
+      if (result.ok) {
+        if (result.action === 'overwritten') {
+          setSavedToast(`✅ 已覆盖更新「${trimmedName}」（已存在的画布实例不会自动更新）`);
+        } else if (result.action === 'renamed') {
+          setSavedToast(`✅ 已另存为新版本，避免覆盖`);
+        }
+        setTimeout(() => setSavedToast(''), 3500);
+      }
+    } else {
+      storePushHistory();
+      const result = useNodeStore.getState().savePackage(trimmedName, pkgDesc, selectedIds, {
+        group: pkgGroup,
+        mode: 'create',
+      });
+      if (result.ok) {
+        setSavedToast(`✅ 已保存「${trimmedName}」${pkgGroup ? `到分组「${pkgGroup}」` : ''}`);
+        setTimeout(() => setSavedToast(''), 2500);
+      }
+    }
     setPkgName('');
     setPkgDesc('');
+    setPkgGroup('');
     setShowSave(false);
   };
 
@@ -431,6 +467,7 @@ export default function Canvas() {
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
       <Sidebar
         packages={storePackages}
+        packageGroups={storePackageGroups}
         onLoadPackage={storeLoadPackage}
         onDeletePackage={storeDeletePackage}
         onSavePackage={() => setShowSave(true)}
@@ -537,11 +574,58 @@ export default function Canvas() {
               <label>描述（可选）</label>
               <textarea value={pkgDesc} onChange={e => setPkgDesc(e.target.value)} placeholder="输入描述..." rows={3} />
             </div>
+            <div className="form-group">
+              <label>分组（可选）</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select
+                  value={pkgGroup}
+                  onChange={(e) => {
+                    if (e.target.value === '__new__') {
+                      const name = prompt('请输入新分组名称：');
+                      if (name && name.trim()) {
+                        const ok = useNodeStore.getState().createPackageGroup(name);
+                        setPkgGroup(ok ? name.trim() : '');
+                      }
+                    } else {
+                      setPkgGroup(e.target.value);
+                    }
+                  }}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">无分组（默认）</option>
+                  {useNodeStore.getState().packageGroups.map((g) => (
+                    <option key={g.id} value={g.name}>📁 {g.name}</option>
+                  ))}
+                  <option value="__new__">+ 新建分组...</option>
+                </select>
+              </div>
+            </div>
             <div className="modal-actions">
-              <button onClick={() => setShowSave(false)}>取消</button>
+              <button onClick={() => { setShowSave(false); setPkgName(''); setPkgDesc(''); setPkgGroup(''); }}>取消</button>
               <button className="primary" onClick={handleSave} disabled={!pkgName.trim()}>保存</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 保存成功提示 toast */}
+      {savedToast && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'var(--bg-tip)',
+            color: 'var(--bg-tip-text)',
+            padding: '10px 18px',
+            borderRadius: 8,
+            fontSize: 13,
+            zIndex: 2000,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+          }}
+        >
+          {savedToast}
         </div>
       )}
     </div>

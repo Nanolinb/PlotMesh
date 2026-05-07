@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
-import type { CustomNodeData, NodePackage } from '../types/nodes';
+import type { CustomNodeData, NodePackage, PackageGroup } from '../types/nodes';
 
 export type CustomNode = Node<CustomNodeData>;
 export type CustomEdge = Edge;
@@ -15,6 +15,7 @@ interface NodeStore {
   nodes: CustomNode[];
   edges: CustomEdge[];
   packages: NodePackage[];
+  packageGroups: PackageGroup[];
 
   // 历史记录（用于撤销/重做）
   history: HistorySnapshot[];
@@ -33,10 +34,30 @@ interface NodeStore {
   deleteEdges: (edgeIds: string[]) => void;
 
   // 打包操作
-  savePackage: (name: string, description: string, nodeIds: string[]) => void;
+  /**
+   * 保存常用功能。
+   * mode='create'   ：永远新增（如果重名会自动追加 (2)/(3) 编号）
+   * mode='overwrite'：覆盖同名包（保留旧 id 和 group），找不到则新增
+   * 返回操作结果：{ ok, action: 'created' | 'overwritten' | 'renamed', pkgId, message? }
+   */
+  savePackage: (
+    name: string,
+    description: string,
+    nodeIds: string[],
+    options?: { group?: string; mode?: 'create' | 'overwrite' }
+  ) => { ok: boolean; action: 'created' | 'overwritten' | 'renamed'; pkgId?: string; message?: string };
   loadPackage: (pkgId: string) => void;
   deletePackage: (pkgId: string) => void;
+  renamePackage: (pkgId: string, newName: string) => boolean;
+  movePackageToGroup: (pkgId: string, group: string) => void;
+  hasPackageName: (name: string) => boolean;
   getPackages: () => NodePackage[];
+
+  // 分组操作
+  createPackageGroup: (name: string) => boolean;
+  renamePackageGroup: (oldName: string, newName: string) => boolean;
+  deletePackageGroup: (name: string, mode: 'unassign' | 'delete-all') => void;
+  togglePackageGroupCollapsed: (name: string) => void;
 
   // 提示词编号更新
   updatePromptNumbers: () => void;
@@ -57,6 +78,7 @@ interface NodeStore {
 }
 
 const STORAGE_KEY = 'node-editor-packages';
+const GROUPS_KEY = 'node-editor-package-groups';
 const MAX_HISTORY = 50;
 
 function loadPackages(): NodePackage[] {
@@ -72,10 +94,24 @@ function savePackages(packages: NodePackage[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(packages));
 }
 
+function loadPackageGroups(): PackageGroup[] {
+  try {
+    const data = localStorage.getItem(GROUPS_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePackageGroups(groups: PackageGroup[]) {
+  localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
+}
+
 export const useNodeStore = create<NodeStore>((set, get) => ({
   nodes: [],
   edges: [],
   packages: loadPackages(),
+  packageGroups: loadPackageGroups(),
   history: [],
   future: [],
 
@@ -163,11 +199,16 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
     set({ edges: get().edges.filter((e: any) => !edgeIds.includes(e.id)) });
   },
 
-  savePackage: (name, description, nodeIds) => {
-    const { nodes, edges } = get();
+  savePackage: (name, description, nodeIds, options) => {
+    const mode = options?.mode || 'create';
+    const targetGroup = options?.group || '';
+    const { nodes, edges, packages: existingPackages } = get();
+
     // 只处理真实节点（排除 group 节点，避免嵌套打包出错）
     const pkgNodes = nodes.filter((n: any) => nodeIds.includes(n.id) && n.type !== 'group');
-    if (pkgNodes.length === 0) return;
+    if (pkgNodes.length === 0) {
+      return { ok: false, action: 'created', message: '没有可保存的节点' };
+    }
 
     const pkgEdges = edges.filter(
       (e) => pkgNodes.some((n: any) => n.id === e.source) && pkgNodes.some((n: any) => n.id === e.target)
@@ -206,17 +247,49 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       };
     });
 
-    const pkg: NodePackage = {
-      id: `pkg-${Date.now()}`,
-      name,
-      description,
-      nodes: pkgNodesNormalized,
-      edges: pkgEdges,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    // 处理重名 / 覆盖逻辑
+    const trimmedName = (name || '').trim();
+    const existingByName = existingPackages.find((p) => p.name === trimmedName);
 
-    const packages = [...get().packages, pkg];
+    let pkg: NodePackage;
+    let action: 'created' | 'overwritten' | 'renamed' = 'created';
+    let packages: NodePackage[];
+
+    if (existingByName && mode === 'overwrite') {
+      // 覆盖：保留旧 id 和 group（除非显式指定 options.group）
+      pkg = {
+        ...existingByName,
+        name: trimmedName,
+        description: description || existingByName.description,
+        group: options?.group !== undefined ? targetGroup : existingByName.group,
+        nodes: pkgNodesNormalized,
+        edges: pkgEdges,
+        updatedAt: new Date().toISOString(),
+      };
+      packages = existingPackages.map((p) => (p.id === existingByName.id ? pkg : p));
+      action = 'overwritten';
+    } else {
+      // 新建：如果重名（mode=create），自动追加 (2)/(3)
+      let finalName = trimmedName;
+      if (existingByName) {
+        let i = 2;
+        while (existingPackages.some((p) => p.name === `${trimmedName} (${i})`)) i++;
+        finalName = `${trimmedName} (${i})`;
+        action = 'renamed';
+      }
+      pkg = {
+        id: `pkg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        name: finalName,
+        description,
+        group: targetGroup,
+        nodes: pkgNodesNormalized,
+        edges: pkgEdges,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      packages = [...existingPackages, pkg];
+    }
+
     savePackages(packages);
 
     // 节点类型对应的默认尺寸（极简紧凑版）
@@ -239,7 +312,10 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       maxX = Math.max(maxX, abs.x + size.w);
       maxY = Math.max(maxY, abs.y + size.h);
     });
-    if (!Number.isFinite(minX)) { set({ packages }); return; }
+    if (!Number.isFinite(minX)) {
+      set({ packages });
+      return { ok: true, action, pkgId: pkg.id };
+    }
 
     const groupId = `group-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const groupPosition = { x: minX - padding, y: minY - padding - headerPad };
@@ -253,7 +329,7 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       style: { width: groupWidth, height: groupHeight },
       width: groupWidth,
       height: groupHeight,
-      data: { type: 'group', label: name || '功能组', packageId: pkg.id },
+      data: { type: 'group', label: pkg.name || '功能组', packageId: pkg.id },
       zIndex: -1,
       selectable: true,
       draggable: true,
@@ -281,6 +357,86 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       nodes: [...others, groupNode, ...newChildren],
       packages,
     });
+
+    return { ok: true, action, pkgId: pkg.id };
+  },
+
+  hasPackageName: (name: string) => {
+    const trimmed = (name || '').trim();
+    return get().packages.some((p) => p.name === trimmed);
+  },
+
+  renamePackage: (pkgId, newName) => {
+    const trimmed = (newName || '').trim();
+    if (!trimmed) return false;
+    const pkgs = get().packages;
+    if (pkgs.some((p) => p.name === trimmed && p.id !== pkgId)) return false;
+    const updated = pkgs.map((p) => (p.id === pkgId ? { ...p, name: trimmed, updatedAt: new Date().toISOString() } : p));
+    savePackages(updated);
+    set({ packages: updated });
+    return true;
+  },
+
+  movePackageToGroup: (pkgId, group) => {
+    const pkgs = get().packages.map((p) =>
+      p.id === pkgId ? { ...p, group, updatedAt: new Date().toISOString() } : p
+    );
+    savePackages(pkgs);
+    set({ packages: pkgs });
+  },
+
+  createPackageGroup: (name) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return false;
+    const groups = get().packageGroups;
+    if (groups.some((g) => g.name === trimmed)) return false;
+    const next: PackageGroup = {
+      id: `grp-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      name: trimmed,
+      collapsed: false,
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...groups, next];
+    savePackageGroups(updated);
+    set({ packageGroups: updated });
+    return true;
+  },
+
+  renamePackageGroup: (oldName, newName) => {
+    const trimmed = (newName || '').trim();
+    if (!trimmed) return false;
+    const groups = get().packageGroups;
+    if (groups.some((g) => g.name === trimmed)) return false;
+    const updatedGroups = groups.map((g) => (g.name === oldName ? { ...g, name: trimmed } : g));
+    savePackageGroups(updatedGroups);
+    // 同步更新已绑定的包
+    const pkgs = get().packages.map((p) => (p.group === oldName ? { ...p, group: trimmed } : p));
+    savePackages(pkgs);
+    set({ packageGroups: updatedGroups, packages: pkgs });
+    return true;
+  },
+
+  deletePackageGroup: (name, mode) => {
+    const groups = get().packageGroups.filter((g) => g.name !== name);
+    savePackageGroups(groups);
+    if (mode === 'delete-all') {
+      const pkgs = get().packages.filter((p) => p.group !== name);
+      savePackages(pkgs);
+      set({ packageGroups: groups, packages: pkgs });
+    } else {
+      // unassign
+      const pkgs = get().packages.map((p) => (p.group === name ? { ...p, group: '' } : p));
+      savePackages(pkgs);
+      set({ packageGroups: groups, packages: pkgs });
+    }
+  },
+
+  togglePackageGroupCollapsed: (name) => {
+    const groups = get().packageGroups.map((g) =>
+      g.name === name ? { ...g, collapsed: !g.collapsed } : g
+    );
+    savePackageGroups(groups);
+    set({ packageGroups: groups });
   },
 
   loadPackage: (pkgId) => {

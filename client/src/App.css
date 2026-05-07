@@ -829,3 +829,60 @@ body {
   border: 2px dashed #6366f1;
   border-radius: 4px;
 }
+
+/* ===== 常用功能分组 ===== */
+.package-group {
+  margin-bottom: 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.package-group[data-drag-over="true"] {
+  background: var(--accent-bg);
+}
+.package-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text-primary);
+  border-radius: 4px;
+}
+.package-group-header:hover {
+  background: var(--bg-card-body);
+}
+.package-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 2px;
+}
+.package-group-empty {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  font-style: italic;
+}
+
+/* 包菜单按钮 */
+.package-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: inherit;
+}
+.package-menu-item:hover {
+  background: var(--accent-bg);
+}
+.package-menu-item.danger {
+  color: var(--danger);
+}
+.package-menu-item.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}

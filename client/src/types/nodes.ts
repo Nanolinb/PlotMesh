@@ -88,8 +88,17 @@ export interface NodePackage {
   id: string;
   name: string;
   description?: string;
-  nodes: any[]; // React Flow nodes
-  edges: any[]; // React Flow edges
+  group?: string;       // 分组名，空 = 默认（未分组）
+  nodes: any[];         // React Flow nodes
+  edges: any[];         // React Flow edges
   createdAt: string;
   updatedAt: string;
+}
+
+// 常用功能分组
+export interface PackageGroup {
+  id: string;
+  name: string;
+  collapsed?: boolean;  // 侧边栏中是否折叠
+  createdAt: string;
 }
