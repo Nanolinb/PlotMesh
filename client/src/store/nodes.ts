@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
 import type { CustomNodeData, NodePackage, PackageGroup } from '../types/nodes';
+import { inferExposedPorts } from '../utils/composite';
 
 export type CustomNode = Node<CustomNodeData>;
 export type CustomEdge = Edge;
@@ -58,6 +59,9 @@ interface NodeStore {
   renamePackageGroup: (oldName: string, newName: string) => boolean;
   deletePackageGroup: (name: string, mode: 'unassign' | 'delete-all') => void;
   togglePackageGroupCollapsed: (name: string) => void;
+
+  // 复合节点（group 节点）的折叠/展开
+  toggleGroupCollapsed: (groupId: string) => void;
 
   // 提示词编号更新
   updatePromptNumbers: () => void;
@@ -329,7 +333,14 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       style: { width: groupWidth, height: groupHeight },
       width: groupWidth,
       height: groupHeight,
-      data: { type: 'group', label: pkg.name || '功能组', packageId: pkg.id },
+      data: {
+        type: 'group',
+        label: pkg.name || '功能组',
+        packageId: pkg.id,
+        collapsed: false,
+        exposedPorts: inferExposedPorts(pkgNodes, pkgEdges),
+        childCount: pkgNodes.length,
+      },
       zIndex: -1,
       selectable: true,
       draggable: true,
@@ -439,6 +450,64 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
     set({ packageGroups: groups });
   },
 
+  /**
+   * 复合节点折叠 / 展开
+   * 折叠时：把内部子节点 hidden=true，width/height 收缩到单节点尺寸
+   * 展开时：恢复 hidden=false 和原 width/height
+   */
+  toggleGroupCollapsed: (groupId: string) => {
+    const nodes = get().nodes as any[];
+    const group = nodes.find((n) => n.id === groupId && n.type === 'group');
+    if (!group) return;
+    const collapsed = !group.data?.collapsed;
+
+    const COLLAPSED_W = 200;
+    const COLLAPSED_H = Math.max(
+      90,
+      ((group.data?.exposedPorts?.length || 1) * 16) + 70
+    );
+
+    const updated = nodes.map((n: any) => {
+      if (n.id === groupId) {
+        // 切到折叠：保存当前展开尺寸到 data.expandedSize；切到展开：恢复
+        if (collapsed) {
+          const prevW = n.style?.width || n.width || 240;
+          const prevH = n.style?.height || n.height || 160;
+          return {
+            ...n,
+            width: COLLAPSED_W,
+            height: COLLAPSED_H,
+            style: { ...(n.style || {}), width: COLLAPSED_W, height: COLLAPSED_H },
+            data: {
+              ...n.data,
+              collapsed: true,
+              expandedSize: { w: prevW, h: prevH },
+            },
+          };
+        } else {
+          const ex = n.data?.expandedSize || { w: 240, h: 160 };
+          return {
+            ...n,
+            width: ex.w,
+            height: ex.h,
+            style: { ...(n.style || {}), width: ex.w, height: ex.h },
+            data: {
+              ...n.data,
+              collapsed: false,
+            },
+          };
+        }
+      }
+      // 子节点：折叠时隐藏，展开时显示
+      if (n.parentId === groupId) {
+        return { ...n, hidden: collapsed };
+      }
+      return n;
+    });
+
+    set({ nodes: updated });
+  },
+
   loadPackage: (pkgId) => {
     const pkg = get().packages.find((p) => p.id === pkgId);
     if (!pkg) return;
@@ -497,20 +566,29 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       id: groupId,
       type: 'group',
       position: groupPosition,
-      style: { width: groupWidth, height: groupHeight },
-      width: groupWidth,
-      height: groupHeight,
-      data: { type: 'group', label: pkg.name || '功能组', packageId: pkg.id },
+      style: { width: 200, height: Math.max(90, ((inferExposedPorts(newNodes, newEdges).length || 1) * 16) + 70) },
+      width: 200,
+      height: Math.max(90, ((inferExposedPorts(newNodes, newEdges).length || 1) * 16) + 70),
+      data: {
+        type: 'group',
+        label: pkg.name || '功能组',
+        packageId: pkg.id,
+        collapsed: true,            // 拖出时默认折叠
+        exposedPorts: inferExposedPorts(newNodes, newEdges),
+        childCount: newNodes.length,
+        expandedSize: { w: groupWidth, h: groupHeight }, // 双击展开后还原此尺寸
+      },
       zIndex: -1,
       selectable: true,
       draggable: true,
     };
 
-    // 子节点转为相对 group 的坐标
+    // 子节点转为相对 group 的坐标，默认隐藏（折叠态）
     const newChildren = newNodes.map((n: any) => ({
       ...n,
       parentId: groupId,
       extent: 'parent' as const,
+      hidden: true,
       position: {
         x: (n.position?.x || 0) + offsetX - groupPosition.x,
         y: (n.position?.y || 0) + offsetY - groupPosition.y,

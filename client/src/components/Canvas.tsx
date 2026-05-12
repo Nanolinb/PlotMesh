@@ -226,9 +226,50 @@ export default function Canvas() {
     setRunLog([]);
     const log = (msg: string) => setRunLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
     try {
-      const allNodes = useNodeStore.getState().nodes as any[];
-      const allEdges = useNodeStore.getState().edges as any[];
-      log(`开始执行，共 ${allNodes.length} 个节点`);
+      const allNodesRaw = useNodeStore.getState().nodes as any[];
+      const allEdgesRaw = useNodeStore.getState().edges as any[];
+      log(`开始执行，共 ${allNodesRaw.length} 个节点`);
+
+      /**
+       * 折叠的 group 节点本身不参与执行，但外界连到它的边需要重定向到内部子节点。
+       * 端口 id 约定（见 utils/composite.ts）：
+       *   in__<childId>__              → target=childId, targetHandle=null
+       *   out__<childId>__             → source=childId, sourceHandle=null
+       *   out__<childId>__<handleId>   → source=childId, sourceHandle=<handleId>
+       */
+      const collapsedGroups = new Set(allNodesRaw.filter((n: any) => n.type === 'group' && n.data?.collapsed).map((n: any) => n.id));
+      const parsePort = (id: string | null | undefined) => {
+        if (!id || typeof id !== 'string') return null;
+        const parts = id.split('__');
+        if (parts.length < 3) return null;
+        const role = parts[0] === 'in' ? 'in' : parts[0] === 'out' ? 'out' : null;
+        if (!role) return null;
+        // childId 在中间所有段，handle 在最末段
+        const handle = parts[parts.length - 1];
+        const childId = parts.slice(1, -1).join('__');
+        return { role: role as 'in' | 'out', childId, handle: handle || null };
+      };
+      // 重定向边
+      const allEdges = allEdgesRaw.map((e: any) => {
+        let next = { ...e };
+        if (collapsedGroups.has(e.target)) {
+          const p = parsePort(e.targetHandle);
+          if (p && p.role === 'in') {
+            next.target = p.childId;
+            next.targetHandle = p.handle;
+          }
+        }
+        if (collapsedGroups.has(e.source)) {
+          const p = parsePort(e.sourceHandle);
+          if (p && p.role === 'out') {
+            next.source = p.childId;
+            next.sourceHandle = p.handle;
+          }
+        }
+        return next;
+      });
+      // 节点列表里去除"折叠 group"自身（执行不需要它）
+      const allNodes = allNodesRaw.filter((n: any) => !(n.type === 'group' && n.data?.collapsed));
 
       const adj = new Map<string, string[]>();
       const inDegree = new Map<string, number>();

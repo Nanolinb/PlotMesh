@@ -886,3 +886,13 @@ body {
 .package-menu-item.danger:hover {
   background: rgba(239, 68, 68, 0.1);
 }
+
+/* ===== 复合节点 折叠态 ===== */
+.composite-node-collapsed {
+  min-width: 160px;
+  max-width: 240px;
+  width: 100%;
+}
+.composite-node-collapsed .node-header {
+  font-size: 12px;
+}
