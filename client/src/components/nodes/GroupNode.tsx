@@ -9,6 +9,30 @@ type Props = {
   selected?: boolean;
 };
 
+/** 折叠图标：两个 45° 朝内的箭头（缩小为黑盒） */
+function CollapseIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* 左上 → 中心 */}
+      <path d="M2 2 L7 7 M3 6 L7 6 L7 2" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      {/* 右下 → 中心 */}
+      <path d="M14 14 L9 9 M13 10 L9 10 L9 14" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 展开图标：两个 45° 朝外的箭头（撑开看内部） */
+function ExpandIcon({ size = 14, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* 中心 → 左上 */}
+      <path d="M7 7 L2 2 M2 6 L2 2 L6 2" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      {/* 中心 → 右下 */}
+      <path d="M9 9 L14 14 M14 10 L14 14 L10 14" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /**
  * GroupNode 是复合节点的容器：
  *  - 默认展开态：透明虚线大框，子节点摆在里面
@@ -104,8 +128,8 @@ function GroupNode({ id, data, selected }: Props) {
             className="nodrag"
             onClick={onToggle}
             title="展开看内部"
-            style={{ background: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.5)', borderRadius: 4, color: 'white', cursor: 'pointer', padding: '0 7px', fontSize: 13, fontWeight: 700 }}
-          >⊞</button>
+            style={{ background: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.5)', borderRadius: 4, color: 'white', cursor: 'pointer', padding: '2px 7px', display: 'inline-flex', alignItems: 'center' }}
+          ><ExpandIcon size={13} color="white" /></button>
         </div>
 
         <div className="node-body" style={{ padding: '6px 8px' }}>
@@ -154,8 +178,7 @@ function GroupNode({ id, data, selected }: Props) {
             onClick={onToggle}
             title="折叠为单节点（黑盒）"
           >
-            <span style={{ fontSize: 13, fontWeight: 700 }}>⊟</span>
-            <span style={{ marginLeft: 4 }}>折叠</span>
+            <CollapseIcon size={14} color="white" />
           </button>
         </div>
       )}

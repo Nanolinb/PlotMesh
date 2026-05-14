@@ -901,13 +901,12 @@ body {
 .group-collapse-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   background: var(--accent);
   color: white;
   border: 1px solid var(--accent);
   border-radius: 6px;
-  padding: 3px 10px;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 5px 8px;
   cursor: pointer;
   box-shadow: 0 1px 3px rgba(99,102,241,0.35);
   transition: transform 0.1s, box-shadow 0.1s;
