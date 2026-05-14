@@ -78,6 +78,9 @@ export default function Canvas() {
   const [pkgDesc, setPkgDesc] = useState('');
   const [pkgGroup, setPkgGroup] = useState<string>('');
   const [savedToast, setSavedToast] = useState<string>('');
+  const [showConflict, setShowConflict] = useState<boolean>(false);
+  const [conflictName, setConflictName] = useState<string>('');
+  const [conflictSelectedIds, setConflictSelectedIds] = useState<string[]>([]);
   const [panButton, setPanButton] = useState<'middle' | 'right'>(() => {
     const saved = localStorage.getItem('plotmesh-pan-button');
     return saved === 'middle' ? 'middle' : 'right';
@@ -185,7 +188,41 @@ export default function Canvas() {
     storeAddNode(newNode);
   };
 
-  // 打包：直接从 store 读取选中节点
+  /**
+   * 打开"打包对话框"。会尝试从当前画布上"被选中的节点"推断出一个默认包名：
+   * 1) 如果选中的某个 group（虚线框）刚好包含了所有其它选中节点 → 用它的 label
+   * 2) 否则若所有选中节点共享同一个 parentId 的 group → 用 group label
+   * 3) 都没有就用空字符串，保持用户自己填
+   */
+  const openSaveDialog = useCallback(() => {
+    const allNodes = useNodeStore.getState().nodes as any[];
+    const selectedIds = allNodes.filter((n: any) => n.selected).map((n: any) => n.id);
+    if (!selectedIds.length) {
+      alert('请先选择节点（单击选中，Cmd+点击多选，或空白处拖动框选）');
+      return;
+    }
+    const selected = allNodes.filter((n: any) => selectedIds.includes(n.id));
+    let inferred = '';
+    // 情况 1：选中里有一个 group
+    const groupInSel = selected.find((n: any) => n.type === 'group');
+    if (groupInSel) {
+      inferred = groupInSel.data?.label || '';
+    } else {
+      // 情况 2：所有选中节点都属于同一个父 group
+      const parents = new Set(selected.map((n: any) => n.parentId).filter(Boolean));
+      if (parents.size === 1) {
+        const parentId = [...parents][0];
+        const p = allNodes.find((n: any) => n.id === parentId && n.type === 'group');
+        if (p) inferred = p.data?.label || '';
+      }
+    }
+    setPkgName(inferred);
+    setPkgDesc('');
+    setPkgGroup('');
+    setShowSave(true);
+  }, []);
+
+  // 打包：从 store 读取选中节点（手动点保存按钮触发）
   const handleSave = () => {
     const allNodes = useNodeStore.getState().nodes as any[];
     const selectedIds = allNodes.filter((n: any) => n.selected).map((n: any) => n.id);
@@ -194,40 +231,64 @@ export default function Canvas() {
     const trimmedName = pkgName.trim();
     if (!trimmedName) return;
 
-    const exists = useNodeStore.getState().hasPackageName(trimmedName);
-    if (exists) {
-      // 弹出冲突处理：覆盖 / 改名 / 取消
-      const choice = window.confirm(
-        `已有同名常用功能「${trimmedName}」。\n\n点击「确定」覆盖原有，点击「取消」自动追加编号保存为新版本。`
-      );
-      storePushHistory();
-      const result = useNodeStore.getState().savePackage(trimmedName, pkgDesc, selectedIds, {
-        group: pkgGroup,
-        mode: choice ? 'overwrite' : 'create',
-      });
-      if (result.ok) {
-        if (result.action === 'overwritten') {
-          setSavedToast(`✅ 已覆盖更新「${trimmedName}」（已存在的画布实例不会自动更新）`);
-        } else if (result.action === 'renamed') {
-          setSavedToast(`✅ 已另存为新版本，避免覆盖`);
-        }
-        setTimeout(() => setSavedToast(''), 3500);
-      }
-    } else {
-      storePushHistory();
-      const result = useNodeStore.getState().savePackage(trimmedName, pkgDesc, selectedIds, {
-        group: pkgGroup,
-        mode: 'create',
-      });
-      if (result.ok) {
-        setSavedToast(`✅ 已保存「${trimmedName}」${pkgGroup ? `到分组「${pkgGroup}」` : ''}`);
-        setTimeout(() => setSavedToast(''), 2500);
-      }
+    if (useNodeStore.getState().hasPackageName(trimmedName)) {
+      // 名字冲突 → 进入"覆盖/改名/取消"二级模态框，不立即落库
+      setConflictName(trimmedName);
+      setConflictSelectedIds(selectedIds);
+      setShowConflict(true);
+      return;
+    }
+
+    // 没冲突，直接保存
+    storePushHistory();
+    const result = useNodeStore.getState().savePackage(trimmedName, pkgDesc, selectedIds, {
+      group: pkgGroup,
+      mode: 'create',
+    });
+    if (result.ok) {
+      setSavedToast(`✅ 已保存「${trimmedName}」${pkgGroup ? `到分组「${pkgGroup}」` : ''}`);
+      setTimeout(() => setSavedToast(''), 2500);
     }
     setPkgName('');
     setPkgDesc('');
     setPkgGroup('');
     setShowSave(false);
+  };
+
+  // 冲突弹窗回调：覆盖
+  const handleConflictOverwrite = () => {
+    storePushHistory();
+    const result = useNodeStore.getState().savePackage(conflictName, pkgDesc, conflictSelectedIds, {
+      group: pkgGroup,
+      mode: 'overwrite',
+    });
+    if (result.ok) {
+      setSavedToast(`✅ 已覆盖更新「${conflictName}」（已拖出的画布实例不会自动更新）`);
+      setTimeout(() => setSavedToast(''), 3500);
+    }
+    setShowConflict(false);
+    setShowSave(false);
+    setPkgName('');
+    setPkgDesc('');
+    setPkgGroup('');
+    setConflictName('');
+    setConflictSelectedIds([]);
+  };
+
+  // 冲突弹窗回调：返回去改名（不关闭原对话框，提示用户改）
+  const handleConflictRename = () => {
+    setShowConflict(false);
+    // 留在 Save 弹窗，让用户编辑名字
+    setSavedToast(`ℹ️ 请修改名称以避免冲突`);
+    setTimeout(() => setSavedToast(''), 2500);
+    setConflictName('');
+    setConflictSelectedIds([]);
+  };
+
+  const handleConflictCancel = () => {
+    setShowConflict(false);
+    setConflictName('');
+    setConflictSelectedIds([]);
   };
 
   // 导出工作流：下载为 .json 文件
@@ -541,7 +602,7 @@ export default function Canvas() {
         e.preventDefault();
         const allNodes = useNodeStore.getState().nodes as any[];
         const ids = allNodes.filter((n: any) => n.selected).map((n: any) => n.id);
-        if (ids.length > 0) setShowSave(true);
+        if (ids.length > 0) openSaveDialog();
       }
     };
     window.addEventListener('keydown', handler);
@@ -555,7 +616,7 @@ export default function Canvas() {
         packageGroups={storePackageGroups}
         onLoadPackage={storeLoadPackage}
         onDeletePackage={storeDeletePackage}
-        onSavePackage={() => setShowSave(true)}
+        onSavePackage={() => openSaveDialog()}
       />
 
       <div className="canvas-container" ref={reactFlowWrapper} style={{ flex: 1, position: 'relative' }}>
@@ -597,7 +658,7 @@ export default function Canvas() {
           <button className="toolbar-btn" onClick={() => storeUndo()} title="撤销 (Cmd+Z)">↶ 撤销</button>
           <button className="toolbar-btn" onClick={() => storeRedo()} title="重做 (Cmd+Shift+Z)">↷ 重做</button>
           <button className="toolbar-btn" onClick={() => setShowApiConfig(true)} title="配置大模型 API Key">🔑 API 配置</button>
-          <button className="toolbar-btn" onClick={() => setShowSave(true)}>📦 打包</button>
+          <button className="toolbar-btn" onClick={() => openSaveDialog()}>📦 打包</button>
           <button className="toolbar-btn" onClick={handleExport} title="导出当前工作流为 JSON 文件">⬇️ 导出</button>
           <button className="toolbar-btn" onClick={handleImportClick} title="从 JSON 文件导入工作流">⬆️ 导入</button>
           <input
@@ -697,6 +758,28 @@ export default function Canvas() {
             <div className="modal-actions">
               <button onClick={() => { setShowSave(false); setPkgName(''); setPkgDesc(''); setPkgGroup(''); }}>取消</button>
               <button className="primary" onClick={handleSave} disabled={!pkgName.trim()}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 名字冲突的处理对话框（覆盖 / 改名 / 取消） */}
+      {showConflict && (
+        <div className="modal-overlay" onClick={handleConflictCancel} style={{ zIndex: 2100 }}>
+          <div className="modal-content" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h3>⚠️ 名称已存在</h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              已经存在一个名为 <strong style={{ color: 'var(--text-primary)' }}>「{conflictName}」</strong> 的常用功能。
+            </p>
+            <div style={{ background: 'var(--bg-card-body)', borderRadius: 6, padding: 10, fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.7 }}>
+              <div><strong>覆盖</strong>：使用当前选中的节点替换旧版本（保留原 id 和分组），已经在画布上的实例不会自动更新</div>
+              <div><strong>重新命名</strong>：返回上一步修改名称后再保存</div>
+              <div><strong>取消</strong>：什么都不做</div>
+            </div>
+            <div className="modal-actions">
+              <button onClick={handleConflictCancel}>取消</button>
+              <button onClick={handleConflictRename}>重新命名</button>
+              <button className="primary" onClick={handleConflictOverwrite}>覆盖原有</button>
             </div>
           </div>
         </div>
