@@ -3,6 +3,7 @@ import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
 import type { CustomNodeData, NodePackage, PackageGroup } from '../types/nodes';
 import { inferExposedPorts } from '../utils/composite';
+import { SAMPLE_PACKAGES, SAMPLE_GROUPS } from '../data/presets';
 
 export type CustomNode = Node<CustomNodeData>;
 export type CustomEdge = Edge;
@@ -83,9 +84,42 @@ interface NodeStore {
 
 const STORAGE_KEY = 'node-editor-packages';
 const GROUPS_KEY = 'node-editor-package-groups';
+const PRESETS_INJECTED_KEY = 'node-editor-presets-injected';
 const MAX_HISTORY = 50;
 
+/**
+ * 首次打开 PlotMesh 时往 localStorage 里注入预制示例。
+ * 用 PRESETS_INJECTED_KEY 标记，注入过一次就不会再覆盖用户数据。
+ * 用户即使把示例都删了，下次启动也不会"复活"——这是有意为之，避免烦人。
+ */
+function ensurePresetsInjected(): { packages: NodePackage[]; groups: PackageGroup[] } {
+  const alreadyInjected = localStorage.getItem(PRESETS_INJECTED_KEY) === '1';
+  let packages: NodePackage[] = [];
+  let groups: PackageGroup[] = [];
+  try {
+    const p = localStorage.getItem(STORAGE_KEY);
+    if (p) packages = JSON.parse(p);
+  } catch {}
+  try {
+    const g = localStorage.getItem(GROUPS_KEY);
+    if (g) groups = JSON.parse(g);
+  } catch {}
+
+  if (!alreadyInjected) {
+    // 仅当用户未注入过且原本两个都为空时才注入，避免误覆盖
+    if (packages.length === 0 && groups.length === 0) {
+      packages = [...SAMPLE_PACKAGES];
+      groups = [...SAMPLE_GROUPS];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(packages));
+      localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
+    }
+    localStorage.setItem(PRESETS_INJECTED_KEY, '1');
+  }
+  return { packages, groups };
+}
+
 function loadPackages(): NodePackage[] {
+  ensurePresetsInjected();
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     return data ? JSON.parse(data) : [];
