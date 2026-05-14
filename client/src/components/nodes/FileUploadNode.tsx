@@ -69,11 +69,7 @@ function FileUploadNode({ id, data, selected }: Props) {
       const temp = tempItems[i];
       try {
         const serverFile = await uploadToServer(f);
-        // 文本类文件顺便取内容预览，供 LLM 节点使用
-        let content = '';
-        if (/\.(txt|md|json|csv|log|yml|yaml|xml|html|js|ts|jsx|tsx|py|java|go|rs|sh|css|scss)$/i.test(f.name)) {
-          content = await readTextPreview(f);
-        }
+        // 后端已经把 docx / xlsx / pdf / 文本类 文件解析成纯文本返回到 content 字段
         finalItems.push({
           id: temp.id,
           name: serverFile.originalName,
@@ -82,7 +78,10 @@ function FileUploadNode({ id, data, selected }: Props) {
           ext: serverFile.ext,
           path: serverFile.path,
           filename: serverFile.filename,
-          content,
+          content: (serverFile as any).content || '',
+          contentLength: (serverFile as any).contentLength || 0,
+          parsed: (serverFile as any).parsed,
+          parseError: (serverFile as any).parseError,
           uploading: false,
         });
       } catch (e: any) {

@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { parseFileContent } from '../utils/parseFile.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,9 +52,20 @@ const upload = multer({
 
 const router = Router();
 
-router.post('/file', upload.single('file'), (req, res) => {
+router.post('/file', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '未检测到文件' });
+    const fullPath = path.join(uploadDir, req.file.filename);
+
+    // 后端解析文件内容（docx/xlsx/pdf/文本类）
+    let content = null;
+    let parseError = null;
+    try {
+      content = await parseFileContent(fullPath, req.file.originalname);
+    } catch (e) {
+      parseError = e.message || String(e);
+    }
+
     const fileInfo = {
       id: req.file.filename,
       originalName: req.file.originalname,
@@ -62,6 +74,10 @@ router.post('/file', upload.single('file'), (req, res) => {
       size: req.file.size,
       mimetype: req.file.mimetype,
       ext: path.extname(req.file.originalname).toLowerCase(),
+      content: content || '',                  // 解析得到的纯文本内容（喂给 LLM）
+      contentLength: content ? content.length : 0,
+      parsed: content !== null && !parseError,
+      parseError: parseError || undefined,
     };
     res.json({ success: true, file: fileInfo });
   } catch (error) {

@@ -343,7 +343,11 @@ export default function Canvas() {
           } else {
             const parts = files.map((f: any) => {
               const header = `【文件】${f.name}${f.path ? ` (${f.path})` : ''}`;
-              const body = f.content ? `\n${f.content}` : '\n(二进制文件，未提取文本内容)';
+              const body = f.content
+                ? `\n${f.content}`
+                : f.parseError
+                  ? `\n[文件解析失败：${f.parseError}]`
+                  : '\n[此文件类型暂不支持自动提取文本内容（图片或未知二进制）]';
               return `${header}${body}`;
             });
             results.set(nodeId, parts.join('\n\n'));
