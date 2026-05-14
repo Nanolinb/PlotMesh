@@ -242,8 +242,20 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
     const targetGroup = options?.group || '';
     const { nodes, edges, packages: existingPackages } = get();
 
+    // 选中 group 时，自动把它的所有子节点纳入打包范围
+    // （场景：用户拖一个折叠的常用功能到画布想"再存一份/覆盖"——直接选中 group 就够了）
+    const expandedIds = new Set<string>(nodeIds);
+    nodeIds.forEach((id) => {
+      const n = nodes.find((x: any) => x.id === id);
+      if (n && n.type === 'group') {
+        nodes.forEach((c: any) => {
+          if (c.parentId === id) expandedIds.add(c.id);
+        });
+      }
+    });
+
     // 只处理真实节点（排除 group 节点，避免嵌套打包出错）
-    const pkgNodes = nodes.filter((n: any) => nodeIds.includes(n.id) && n.type !== 'group');
+    const pkgNodes = nodes.filter((n: any) => expandedIds.has(n.id) && n.type !== 'group');
     if (pkgNodes.length === 0) {
       return { ok: false, action: 'created', message: '没有可保存的节点' };
     }
@@ -381,8 +393,9 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
     };
 
     // 转子节点为相对于新 group 的坐标
-    const pkgIdSet = new Set(nodeIds);
-    const others = nodes.filter((n: any) => !pkgIdSet.has(n.id));
+    // 要从画布移除：所有原始 nodeIds（含原 group） + 自动展开的子节点
+    const removeIdSet = new Set<string>([...nodeIds, ...expandedIds]);
+    const others = nodes.filter((n: any) => !removeIdSet.has(n.id));
     const newChildren = pkgNodes.map((n: any) => {
       const abs = getAbsPos(n);
       return {

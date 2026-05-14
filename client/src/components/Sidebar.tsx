@@ -19,7 +19,7 @@ const NODE_TYPES = [
   { type: 'output', label: '📤 输出', description: '预览/下载/复制' },
 ];
 
-export default function Sidebar({ packages, packageGroups, onLoadPackage, onDeletePackage, onSavePackage }: SidebarProps) {
+export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showGroupMenu, setShowGroupMenu] = useState<string | null>(null); // 哪个 pkgId 正在弹"移动到分组"
   const createGroup = useNodeStore((s) => s.createPackageGroup);
@@ -113,8 +113,8 @@ export default function Sidebar({ packages, packageGroups, onLoadPackage, onDele
     >
       <div
         className="package-item-content"
-        onClick={() => onLoadPackage(pkg.id)}
-        title={`点击加载「${pkg.name}」${pkg.description ? `\n${pkg.description}` : ''}`}
+        title={`拖到画布即可使用「${pkg.name}」${pkg.description ? `\n${pkg.description}` : ''}`}
+        style={{ cursor: 'grab' }}
       >
         <span className="package-name">{pkg.name}</span>
         <span className="package-meta">
