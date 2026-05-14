@@ -78,6 +78,15 @@ export default function Canvas() {
   const [pkgDesc, setPkgDesc] = useState('');
   const [pkgGroup, setPkgGroup] = useState<string>('');
   const [savedToast, setSavedToast] = useState<string>('');
+  const [panButton, setPanButton] = useState<'middle' | 'right'>(() => {
+    const saved = localStorage.getItem('plotmesh-pan-button');
+    return saved === 'middle' ? 'middle' : 'right';
+  });
+  const togglePanButton = () => {
+    const next = panButton === 'right' ? 'middle' : 'right';
+    setPanButton(next);
+    localStorage.setItem('plotmesh-pan-button', next);
+  };
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [rfInstance, setRfInstance] = useState<any>(null);
@@ -129,6 +138,37 @@ export default function Canvas() {
 
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault();
+
+    // 1) 拖入侧边栏的「常用功能（包）」 -> 加载到画布的鼠标位置
+    const pkgId = event.dataTransfer.getData('application/pkg-id');
+    if (pkgId) {
+      const dropPos = rfInstance?.screenToFlowPosition
+        ? rfInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+        : { x: event.clientX, y: event.clientY };
+      storePushHistory();
+      // 用 store 内的 loadPackage，但加载完成后把整组移动到鼠标位置
+      useNodeStore.getState().loadPackage(pkgId);
+      // 找出最后一个 group 节点（刚加载的），整体平移到鼠标
+      const allNodes = useNodeStore.getState().nodes as any[];
+      const lastGroup = [...allNodes].reverse().find((n: any) => n.type === 'group');
+      if (lastGroup) {
+        const dx = dropPos.x - (lastGroup.position?.x || 0);
+        const dy = dropPos.y - (lastGroup.position?.y || 0);
+        const moved = allNodes.map((n: any) => {
+          if (n.id === lastGroup.id) {
+            return { ...n, position: { x: dropPos.x, y: dropPos.y } };
+          }
+          // 子节点用 parent 相对坐标，不需要再动
+          return n;
+        });
+        useNodeStore.setState({ nodes: moved });
+        // 不修改子节点：它们用 parentId + 相对 position，跟随 group 移动
+        void dx; void dy;
+      }
+      return;
+    }
+
+    // 2) 拖入侧边栏的「节点类型」
     const type = event.dataTransfer.getData('application/reactflow');
     if (!type) return;
     // React Flow v12 的 screenToFlowPosition 直接接收 clientX/clientY，不需要减 bounds
@@ -525,10 +565,12 @@ export default function Canvas() {
           onDragOver={handleDragOver}
           onInit={setRfInstance}
           nodeTypes={nodeTypes}
-          fitView
+          defaultViewport={{ x: 0, y: 0, zoom: 1.5 }}
+          minZoom={0.5}
+          maxZoom={2}
           deleteKeyCode={null}  /* 我们自己处理 Delete 键 */
           selectionOnDrag={true}
-          panOnDrag={[2]}  /* 只有鼠标右键（button 2）才平移 */
+          panOnDrag={panButton === 'middle' ? [1] : [2]}  /* middle=中键(1) / right=右键(2) */
           selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
           selectNodesOnDrag={false}
@@ -561,6 +603,13 @@ export default function Canvas() {
             style={{ display: 'none' }}
             onChange={handleImportFile}
           />
+          <button
+            className="toolbar-btn"
+            onClick={togglePanButton}
+            title={`画布平移：当前${panButton === 'right' ? '右键' : '中键'}拖动；点击切换为${panButton === 'right' ? '中键' : '右键'}`}
+          >
+            {panButton === 'right' ? '🖱 平移：右键' : '🖱 平移：中键'}
+          </button>
           <button
             className="toolbar-btn"
             onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}

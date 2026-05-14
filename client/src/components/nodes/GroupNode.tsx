@@ -103,9 +103,9 @@ function GroupNode({ id, data, selected }: Props) {
           <button
             className="nodrag"
             onClick={onToggle}
-            title="展开"
-            style={{ background: 'rgba(255,255,255,0.25)', border: 'none', borderRadius: 4, color: 'white', cursor: 'pointer', padding: '0 6px', fontSize: 11 }}
-          >⤢</button>
+            title="展开看内部"
+            style={{ background: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.5)', borderRadius: 4, color: 'white', cursor: 'pointer', padding: '0 7px', fontSize: 13, fontWeight: 700 }}
+          >⊞</button>
         </div>
 
         <div className="node-body" style={{ padding: '6px 8px' }}>
@@ -150,11 +150,13 @@ function GroupNode({ id, data, selected }: Props) {
         >
           <span>📦 {data.label || '功能组'}</span>
           <button
-            className="nodrag"
+            className="nodrag group-collapse-btn"
             onClick={onToggle}
-            title="折叠为单节点"
-            style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.4)', borderRadius: 4, color: 'var(--accent)', cursor: 'pointer', padding: '0 6px', fontSize: 11 }}
-          >⇲</button>
+            title="折叠为单节点（黑盒）"
+          >
+            <span style={{ fontSize: 13, fontWeight: 700 }}>⊟</span>
+            <span style={{ marginLeft: 4 }}>折叠</span>
+          </button>
         </div>
       )}
     </div>
