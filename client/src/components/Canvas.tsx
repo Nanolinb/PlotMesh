@@ -102,6 +102,18 @@ export default function Canvas() {
   // pasteCount 用于让连续粘贴每次再偏移一点，避免完全重叠。
   const clipboardRef = useRef<{ nodes: any[]; edges: any[]; pasteCount: number } | null>(null);
 
+  // 右键菜单状态
+  // - screen: 菜单浮层在屏幕上的位置
+  // - flow: 菜单触发时对应的画布坐标（用于"在此处新建节点"）
+  // - submenuOpen: 是否展开「新建节点」二级菜单
+  const [ctxMenu, setCtxMenu] = useState<{
+    screen: { x: number; y: number };
+    flow: { x: number; y: number };
+    submenuOpen: boolean;
+  } | null>(null);
+  // 是否弹出"是否存储画布为常用功能"的确认框
+  const [showSaveAllConfirm, setShowSaveAllConfirm] = useState(false);
+
   // 主题切换：light / dark，持久化到 localStorage
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
@@ -153,6 +165,104 @@ export default function Canvas() {
     event.dataTransfer.dropEffect = 'move';
   };
 
+  // 把当前选中的节点框成一个新的画布 group（不写入常用功能）。
+  // 与 savePackage 类似的几何计算：找选中节点的包围盒，外扩 padding，再把节点改成 group 的 children。
+  // 跳过本身就是 group 的节点（避免 group 套 group），也跳过已经有 parentId 的子节点。
+  const groupSelectedOnCanvas = useCallback((label?: string): { ok: boolean; reason?: string } => {
+    const all = useNodeStore.getState().nodes as any[];
+    const selected = all.filter((n: any) => n.selected);
+    // 只对"顶层裸节点"分组：排除 group 本身、以及已经在某个 group 里的子节点
+    const candidates = selected.filter((n: any) => n.type !== 'group' && !n.parentId);
+    if (candidates.length < 2) {
+      return { ok: false, reason: '至少选 2 个顶层节点才能 Group' };
+    }
+
+    // 节点估算尺寸（与 savePackage 保持一致）
+    const nodeSizes: Record<string, { w: number; h: number }> = {
+      textPrompt: { w: 220, h: 130 },
+      fileUpload: { w: 220, h: 150 },
+      llm: { w: 240, h: 180 },
+      textTransform: { w: 220, h: 150 },
+      condition: { w: 220, h: 150 },
+      output: { w: 150, h: 110 },
+    };
+    const getSize = (t: string) => nodeSizes[t] || { w: 150, h: 110 };
+
+    const padding = 40;
+    const headerPad = 30;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    candidates.forEach((n: any) => {
+      const x = n.position?.x || 0;
+      const y = n.position?.y || 0;
+      const sz = getSize(n.type);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + sz.w);
+      maxY = Math.max(maxY, y + sz.h);
+    });
+    if (!Number.isFinite(minX)) return { ok: false, reason: '无法计算包围盒' };
+
+    const groupId = `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const groupPosition = { x: minX - padding, y: minY - padding - headerPad };
+    const groupWidth = Math.max(240, (maxX - minX) + padding * 2);
+    const groupHeight = Math.max(140, (maxY - minY) + padding * 2 + headerPad);
+
+    const groupNode: any = {
+      id: groupId,
+      type: 'group',
+      position: groupPosition,
+      style: { width: groupWidth, height: groupHeight },
+      width: groupWidth,
+      height: groupHeight,
+      data: {
+        type: 'group',
+        label: label || '功能组',
+        // 注意：不写 packageId（说明这是画布内 group，不绑定任何常用功能）
+        collapsed: false,
+        childCount: candidates.length,
+      },
+      zIndex: -1,
+      selectable: true,
+      draggable: true,
+      selected: true,
+    };
+
+    // 把候选节点改成 group 的 children（坐标改为相对父）
+    const childIdSet = new Set(candidates.map((n: any) => n.id));
+    const newNodes = all.map((n: any) => {
+      if (childIdSet.has(n.id)) {
+        return {
+          ...n,
+          parentId: groupId,
+          extent: 'parent' as const,
+          position: {
+            x: (n.position?.x || 0) - groupPosition.x,
+            y: (n.position?.y || 0) - groupPosition.y,
+          },
+          selected: false,
+        };
+      }
+      return { ...n, selected: false };
+    });
+
+    // group 节点必须排在它的子节点之前（React Flow 要求）
+    storePushHistory();
+    useNodeStore.setState({ nodes: [groupNode, ...newNodes] });
+    return { ok: true };
+  }, [storePushHistory]);
+
+  // 在指定画布坐标新建节点（右键菜单使用）
+  const createNodeAt = useCallback((type: string, flowPos: { x: number; y: number }) => {
+    const newNode: any = {
+      id: getNewId(type),
+      type,
+      position: flowPos,
+      data: getDefaultData(type),
+    };
+    storePushHistory();
+    storeAddNode(newNode);
+  }, [storeAddNode, storePushHistory]);
+
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault();
 
@@ -203,16 +313,26 @@ export default function Canvas() {
   };
 
   /**
-   * 打开"打包对话框"。会尝试从当前画布上"被选中的节点"推断出一个默认包名：
+   * 打开"存常用功能"对话框。会尝试从当前画布上"被选中的节点"推断出一个默认包名：
    * 1) 如果选中的某个 group（虚线框）刚好包含了所有其它选中节点 → 用它的 label
    * 2) 否则若所有选中节点共享同一个 parentId 的 group → 用 group label
    * 3) 都没有就用空字符串，保持用户自己填
+   *
+   * 行为分支（按选中数量）：
+   * - 0 个：弹"是否存储画布为常用功能？"二次确认；用户确认后用整个画布作为待保存集合
+   * - 1 个：直接进命名对话框（与旧行为一致）
+   * - ≥2 个：直接进命名对话框，由底层 savePackage 自动以 group 方式聚合
    */
   const openSaveDialog = useCallback(() => {
     const allNodes = useNodeStore.getState().nodes as any[];
     const selectedIds = allNodes.filter((n: any) => n.selected).map((n: any) => n.id);
     if (!selectedIds.length) {
-      alert('请先选择节点（单击选中，Cmd+点击多选，或空白处拖动框选）');
+      // 无选中 → 先问"是否要把整个画布存为常用功能"
+      if (allNodes.length === 0) {
+        alert('画布是空的，没有可保存的内容。');
+        return;
+      }
+      setShowSaveAllConfirm(true);
       return;
     }
     const selected = allNodes.filter((n: any) => selectedIds.includes(n.id));
@@ -231,6 +351,21 @@ export default function Canvas() {
       }
     }
     setPkgName(inferred);
+    setPkgDesc('');
+    setPkgGroup('');
+    setShowSave(true);
+  }, []);
+
+  // "是否把整个画布存为常用功能"确认后：选中所有节点，再走标准命名对话框
+  const confirmSaveWholeCanvas = useCallback(() => {
+    setShowSaveAllConfirm(false);
+    const all = useNodeStore.getState().nodes as any[];
+    if (!all.length) return;
+    // 把所有顶层节点选中（避免重复选 group 内的子节点导致重叠）
+    useNodeStore.setState({
+      nodes: all.map((n: any) => ({ ...n, selected: !n.parentId })),
+    });
+    setPkgName('');
     setPkgDesc('');
     setPkgGroup('');
     setShowSave(true);
@@ -869,6 +1004,12 @@ export default function Canvas() {
           setTimeout(() => setSavedToast(''), 1200);
         }
       }
+
+      // Escape = 关闭右键菜单
+      if (e.key === 'Escape') {
+        setCtxMenu(null);
+        setShowSaveAllConfirm(false);
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -905,12 +1046,169 @@ export default function Canvas() {
           multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
           selectNodesOnDrag={false}
           elementsSelectable={true}
+          onPaneContextMenu={(e: any) => {
+            // 在画布空白处右键 → 弹自定义菜单
+            // 注：当 panOnDrag=右键 时，按住右键拖动会先平移；只有"点而不拖"时才会触发 contextmenu
+            e.preventDefault?.();
+            const flow = rfInstance?.screenToFlowPosition
+              ? rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+              : { x: e.clientX, y: e.clientY };
+            setCtxMenu({
+              screen: { x: e.clientX, y: e.clientY },
+              flow,
+              submenuOpen: false,
+            });
+          }}
+          onNodeContextMenu={(e: any) => {
+            // 节点上右键也弹同一个菜单（基于点击位置）
+            e.preventDefault?.();
+            const flow = rfInstance?.screenToFlowPosition
+              ? rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+              : { x: e.clientX, y: e.clientY };
+            setCtxMenu({
+              screen: { x: e.clientX, y: e.clientY },
+              flow,
+              submenuOpen: false,
+            });
+          }}
           className="canvas-flow"
         >
           <Background variant="dots" gap={20} size={1} color="#e2e8f0" />
           <Controls />
           <MiniMap nodeColor={() => '#6366f1'} style={{ background: '#f8fafc' }} />
         </ReactFlow>
+
+        {/* 右键菜单：在画布或节点上右键时弹出 */}
+        {ctxMenu && (() => {
+          // 计算"Group"是否可激活：≥2 个顶层裸节点（排除 group 本身、子节点）
+          const all = useNodeStore.getState().nodes as any[];
+          const groupable = all.filter((n: any) => n.selected && n.type !== 'group' && !n.parentId);
+          const canGroup = groupable.length >= 2;
+          // 7 类节点（与 Sidebar 保持一致；group 通过本菜单的"Group"项创建，不出现在新建列表里）
+          const NODE_OPTIONS = [
+            { type: 'textPrompt', label: '✏️ 文本提示词' },
+            { type: 'fileUpload', label: '📁 文件上传' },
+            { type: 'llm', label: '🤖 大模型' },
+            { type: 'textTransform', label: '🔤 文本处理' },
+            { type: 'condition', label: '🔀 条件分支' },
+            { type: 'output', label: '📤 输出' },
+          ];
+          const closeMenu = () => setCtxMenu(null);
+          // 防止菜单超出视口右/下边界
+          const maxX = window.innerWidth - 220;
+          const maxY = window.innerHeight - 240;
+          const left = Math.min(ctxMenu.screen.x, maxX);
+          const top = Math.min(ctxMenu.screen.y, maxY);
+          return (
+            <>
+              {/* 透明遮罩：点击或按 Escape 都关闭菜单 */}
+              <div
+                onClick={closeMenu}
+                onContextMenu={(e) => { e.preventDefault(); closeMenu(); }}
+                style={{ position: 'fixed', inset: 0, zIndex: 998 }}
+              />
+              <div
+                className="context-menu"
+                style={{
+                  position: 'fixed',
+                  left,
+                  top,
+                  zIndex: 999,
+                  minWidth: 200,
+                  background: 'var(--surface, #fff)',
+                  color: 'var(--text, #1a1a1a)',
+                  border: '1px solid var(--border, #e2e8f0)',
+                  borderRadius: 8,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                  padding: '6px 0',
+                  fontSize: 13,
+                  userSelect: 'none',
+                }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {/* 「新建节点」一级，hover 展开二级 */}
+                <div
+                  onMouseEnter={() => setCtxMenu({ ...ctxMenu, submenuOpen: true })}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 14px',
+                    cursor: 'pointer',
+                    background: ctxMenu.submenuOpen ? 'rgba(99,102,241,0.1)' : 'transparent',
+                    position: 'relative',
+                  }}
+                >
+                  <span>➕ 新建节点</span>
+                  <span style={{ opacity: 0.6 }}>▶</span>
+
+                  {ctxMenu.submenuOpen && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '100%',
+                        top: -6,
+                        marginLeft: 2,
+                        minWidth: 180,
+                        background: 'var(--surface, #fff)',
+                        color: 'var(--text, #1a1a1a)',
+                        border: '1px solid var(--border, #e2e8f0)',
+                        borderRadius: 8,
+                        boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                        padding: '6px 0',
+                      }}
+                    >
+                      {NODE_OPTIONS.map((opt) => (
+                        <div
+                          key={opt.type}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            createNodeAt(opt.type, ctxMenu.flow);
+                            closeMenu();
+                          }}
+                          style={{ padding: '8px 14px', cursor: 'pointer' }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                        >
+                          {opt.label}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ height: 1, background: 'var(--border, #e2e8f0)', margin: '4px 0' }} />
+
+                {/* 「Group（仅画布内）」：≥2 顶层节点选中时激活，否则灰色 */}
+                <div
+                  onMouseEnter={() => setCtxMenu({ ...ctxMenu, submenuOpen: false })}
+                  onClick={() => {
+                    if (!canGroup) return;
+                    const r = groupSelectedOnCanvas();
+                    if (r.ok) {
+                      setSavedToast(`已 Group ${groupable.length} 个节点（仅画布内）`);
+                      setTimeout(() => setSavedToast(''), 1600);
+                    }
+                    closeMenu();
+                  }}
+                  title={canGroup ? '将选中的 ≥2 个节点框成画布内 Group（不会写入常用功能）' : '至少选中 2 个未在 Group 内的节点才能使用'}
+                  style={{
+                    padding: '8px 14px',
+                    cursor: canGroup ? 'pointer' : 'not-allowed',
+                    color: canGroup ? 'var(--text, #1a1a1a)' : 'var(--text-muted, #94a3b8)',
+                    opacity: canGroup ? 1 : 0.55,
+                  }}
+                  onMouseOver={(e) => {
+                    if (canGroup) e.currentTarget.style.background = 'rgba(99,102,241,0.1)';
+                  }}
+                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  📦 Group（打包到画布）
+                </div>
+              </div>
+            </>
+          );
+        })()}
 
         {/* 工具栏 */}
         <div className="canvas-toolbar">
@@ -923,7 +1221,7 @@ export default function Canvas() {
           <button className="toolbar-btn" onClick={() => storeUndo()} title="撤销 (Cmd+Z)">↶ 撤销</button>
           <button className="toolbar-btn" onClick={() => storeRedo()} title="重做 (Cmd+Shift+Z)">↷ 重做</button>
           <button className="toolbar-btn" onClick={() => setShowApiConfig(true)} title="配置大模型 API Key">🔑 API 配置</button>
-          <button className="toolbar-btn" onClick={() => openSaveDialog()}>📦 打包</button>
+          <button className="toolbar-btn" onClick={() => openSaveDialog()} title="将选中节点（或整个画布）存为常用功能">📦 存常用功能</button>
           <button className="toolbar-btn" onClick={handleExport} title="导出当前工作流为 JSON 文件">⬇️ 导出</button>
           <button className="toolbar-btn" onClick={handleImportClick} title="从 JSON 文件导入工作流">⬆️ 导入</button>
           <input
@@ -980,6 +1278,23 @@ export default function Canvas() {
 
       {/* API Key 配置对话框 */}
       <ApiKeyConfigModal open={showApiConfig} onClose={() => setShowApiConfig(false)} />
+
+      {/* 「是否存储画布为常用功能？」确认框（点存常用功能但未选中节点时弹出） */}
+      {showSaveAllConfirm && (
+        <div className="modal-overlay" onClick={() => setShowSaveAllConfirm(false)} style={{ zIndex: 2050 }}>
+          <div className="modal-content" style={{ width: 380 }} onClick={(e) => e.stopPropagation()}>
+            <h3>存为常用功能</h3>
+            <p style={{ margin: '12px 0 20px', lineHeight: 1.6 }}>
+              当前没有选中任何节点。<br />
+              是否把<strong>整张画布</strong>存为一个常用功能？
+            </p>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setShowSaveAllConfirm(false)}>取消</button>
+              <button className="btn primary" onClick={confirmSaveWholeCanvas}>确认</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 保存对话框 */}
       {showSave && (

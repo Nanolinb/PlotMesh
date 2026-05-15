@@ -44,7 +44,7 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 | 📋 Log | Inspect every step |
 | ↶ Undo / ↷ Redo | Cmd+Z / Cmd+Shift+Z, full history |
 | 🔑 API Config | Visual editor for model API keys, persisted to `.env` |
-| 📦 Save preset | Bundle selected nodes; on name conflict choose *Overwrite / Rename / Cancel* |
+| 📦 Save preset | With selection: bundle selected nodes; without selection: prompts "Save the whole canvas as a preset?". On name conflict choose *Overwrite / Rename / Cancel* |
 | ⬇️ Export / ⬆️ Import | Whole workflow ↔ JSON |
 | 🌙 Dark / ☀️ Light | Theme toggle, preference persisted |
 
@@ -61,6 +61,13 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 | Save as preset | `⌘ + S` | `Ctrl + S` |
 
 > Copying a group automatically grabs its children and the edges between them. Pasted nodes are reset to a clean `idle` state — they don't carry over old run results.
+
+### 🖱 Right-click menu (on canvas)
+
+Right-click anywhere on the canvas or on a node to open a context menu:
+
+- **➕ New Node ▶**: creates a node at the cursor's flow position (submenu lists the 6 node types)
+- **📦 Group (canvas-only)**: enabled when ≥2 top-level nodes are selected (not already inside a group). Wraps them into a **canvas-only** group — does **not** persist to presets. Greyed out otherwise.
 
 ## 🚀 Quick start
 
