@@ -64,10 +64,11 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 
 ### 🖱 Right-click menu (on canvas)
 
-Right-click anywhere on the canvas or on a node to open a context menu:
+Right-click **anywhere** on the canvas to open the context menu — blank pane, on a node, inside a group, or on the marquee selection rectangle:
 
 - **➕ New Node ▶**: creates a node at the cursor's flow position (submenu lists the 6 node types)
 - **📦 Group (canvas-only)**: enabled when ≥2 top-level nodes are selected (not already inside a group). Wraps them into a **canvas-only** group — does **not** persist to presets. Greyed out otherwise.
+- **🔓 Ungroup**: appears only when the right-click point falls inside an existing group (including blank space inside the group). Dissolves the group, restoring children to absolute coordinates and selecting them.
 
 ## 🚀 Quick start
 

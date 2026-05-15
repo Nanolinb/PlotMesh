@@ -106,10 +106,12 @@ export default function Canvas() {
   // - screen: 菜单浮层在屏幕上的位置
   // - flow: 菜单触发时对应的画布坐标（用于"在此处新建节点"）
   // - submenuOpen: 是否展开「新建节点」二级菜单
+  // - targetGroupId: 如果右键命中了某个 group（或某个 group 的子节点），记录它的 id，用于显示 Ungroup 项
   const [ctxMenu, setCtxMenu] = useState<{
     screen: { x: number; y: number };
     flow: { x: number; y: number };
     submenuOpen: boolean;
+    targetGroupId?: string;
   } | null>(null);
   // 是否弹出"是否存储画布为常用功能"的确认框
   const [showSaveAllConfirm, setShowSaveAllConfirm] = useState(false);
@@ -262,6 +264,66 @@ export default function Canvas() {
     storePushHistory();
     storeAddNode(newNode);
   }, [storeAddNode, storePushHistory]);
+
+  // 根据 flow 坐标判断点击落在哪个 group 内（取最深层、最后绘制的那个）
+  const findGroupAtFlowPos = useCallback((flow: { x: number; y: number }): string | undefined => {
+    const all = useNodeStore.getState().nodes as any[];
+    const groups = all.filter((n: any) => n.type === 'group');
+    // 倒序遍历：后添加的 group 一般在视觉上更靠前
+    for (let i = groups.length - 1; i >= 0; i--) {
+      const g = groups[i];
+      const x = g.position?.x || 0;
+      const y = g.position?.y || 0;
+      const w = g.width || g.style?.width || 0;
+      const h = g.height || g.style?.height || 0;
+      if (flow.x >= x && flow.x <= x + w && flow.y >= y && flow.y <= y + h) {
+        return g.id;
+      }
+    }
+    return undefined;
+  }, []);
+
+  // 解散一个 group：把它的子节点解放出来（恢复绝对坐标），删掉 group 本身
+  const ungroup = useCallback((groupId: string) => {
+    const all = useNodeStore.getState().nodes as any[];
+    const group = all.find((n: any) => n.id === groupId && n.type === 'group');
+    if (!group) return;
+    const gx = group.position?.x || 0;
+    const gy = group.position?.y || 0;
+
+    storePushHistory();
+    const released = all
+      .filter((n: any) => n.id !== groupId)
+      .map((n: any) => {
+        if (n.parentId === groupId) {
+          const { parentId, extent, ...rest } = n;
+          return {
+            ...rest,
+            position: {
+              x: gx + (n.position?.x || 0),
+              y: gy + (n.position?.y || 0),
+            },
+            selected: true,
+          };
+        }
+        return n;
+      });
+    useNodeStore.setState({ nodes: released });
+  }, [storePushHistory]);
+
+  // 统一的右键菜单打开入口：传入屏幕坐标，自动算 flow 坐标 + 命中 group
+  const openCtxMenuAt = useCallback((clientX: number, clientY: number) => {
+    const flow = rfInstance?.screenToFlowPosition
+      ? rfInstance.screenToFlowPosition({ x: clientX, y: clientY })
+      : { x: clientX, y: clientY };
+    const targetGroupId = findGroupAtFlowPos(flow);
+    setCtxMenu({
+      screen: { x: clientX, y: clientY },
+      flow,
+      submenuOpen: false,
+      targetGroupId,
+    });
+  }, [rfInstance, findGroupAtFlowPos]);
 
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault();
@@ -1025,7 +1087,27 @@ export default function Canvas() {
         onSavePackage={() => openSaveDialog()}
       />
 
-      <div className="canvas-container" ref={reactFlowWrapper} style={{ flex: 1, position: 'relative' }}>
+      <div
+        className="canvas-container"
+        ref={reactFlowWrapper}
+        style={{ flex: 1, position: 'relative' }}
+        onContextMenu={(e) => {
+          // 兜底：react-flow 内置的 onPaneContextMenu / onNodeContextMenu / onSelectionContextMenu
+          // 已经在大多数命中点工作；这里再兜一层，确保画布的任何角落右键都能弹菜单。
+          // 排除：Controls / MiniMap / 自定义浮层（context-menu / modal-overlay 内）
+          const target = e.target as HTMLElement;
+          if (!target) return;
+          if (target.closest('.context-menu')) return;
+          if (target.closest('.modal-overlay')) return;
+          if (target.closest('.react-flow__controls')) return;
+          if (target.closest('.react-flow__minimap')) return;
+          if (target.closest('.canvas-toolbar')) return;
+          // 输入框内交给浏览器默认菜单
+          if (target.closest('input, textarea, [contenteditable="true"]')) return;
+          e.preventDefault();
+          openCtxMenuAt(e.clientX, e.clientY);
+        }}
+      >
         <ReactFlow
           nodes={nodes as any[]}
           edges={edges as any[]}
@@ -1050,26 +1132,17 @@ export default function Canvas() {
             // 在画布空白处右键 → 弹自定义菜单
             // 注：当 panOnDrag=右键 时，按住右键拖动会先平移；只有"点而不拖"时才会触发 contextmenu
             e.preventDefault?.();
-            const flow = rfInstance?.screenToFlowPosition
-              ? rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-              : { x: e.clientX, y: e.clientY };
-            setCtxMenu({
-              screen: { x: e.clientX, y: e.clientY },
-              flow,
-              submenuOpen: false,
-            });
+            openCtxMenuAt(e.clientX, e.clientY);
           }}
           onNodeContextMenu={(e: any) => {
             // 节点上右键也弹同一个菜单（基于点击位置）
             e.preventDefault?.();
-            const flow = rfInstance?.screenToFlowPosition
-              ? rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-              : { x: e.clientX, y: e.clientY };
-            setCtxMenu({
-              screen: { x: e.clientX, y: e.clientY },
-              flow,
-              submenuOpen: false,
-            });
+            openCtxMenuAt(e.clientX, e.clientY);
+          }}
+          onSelectionContextMenu={(e: any) => {
+            // 在框选出来的选区矩形上右键
+            e.preventDefault?.();
+            openCtxMenuAt(e.clientX, e.clientY);
           }}
           className="canvas-flow"
         >
@@ -1205,6 +1278,32 @@ export default function Canvas() {
                 >
                   📦 Group（打包到画布）
                 </div>
+
+                {/* 「Ungroup（解散分组）」：仅当右键命中了某个 group 时显示 */}
+                {ctxMenu.targetGroupId && (() => {
+                  const g = (useNodeStore.getState().nodes as any[]).find((n: any) => n.id === ctxMenu.targetGroupId);
+                  const label = g?.data?.label || '当前分组';
+                  return (
+                    <>
+                      <div style={{ height: 1, background: 'var(--border, #e2e8f0)', margin: '4px 0' }} />
+                      <div
+                        onMouseEnter={() => setCtxMenu({ ...ctxMenu, submenuOpen: false })}
+                        onClick={() => {
+                          ungroup(ctxMenu.targetGroupId!);
+                          setSavedToast(`已解散「${label}」`);
+                          setTimeout(() => setSavedToast(''), 1600);
+                          closeMenu();
+                        }}
+                        title="把分组拆开，子节点保留在原位（仅画布操作，不影响已保存的常用功能）"
+                        style={{ padding: '8px 14px', cursor: 'pointer' }}
+                        onMouseOver={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
+                        onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        🔓 Ungroup（解散「{label}」）
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </>
           );
