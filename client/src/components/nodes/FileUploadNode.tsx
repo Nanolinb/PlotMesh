@@ -136,7 +136,12 @@ function FileUploadNode({ id, data, selected }: Props) {
       onDrop={handleDrop}
       style={{ border: dragOver ? '2px dashed #10b981' : '2px solid transparent' }}
     >
-      <Handle type="target" position={Position.Left} />
+      {/*
+        说明：文件上传节点是工作流的「源」节点，自身只读取挂载到节点上的文件，
+        不消费任何上游输入。为避免用户把提示词错连进来导致"提示词丢失"的歧义，
+        这里**不渲染入口端口**（target Handle），从 UI 层面直接禁止入边。
+        相关讨论：v1.x prompt 隔离方案。
+      */}
       <Handle type="source" position={Position.Right} />
 
       <div className="node-header" style={{ background: 'linear-gradient(135deg, #3b82f6, #60a5fa)' }}>

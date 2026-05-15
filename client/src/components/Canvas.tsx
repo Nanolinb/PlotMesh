@@ -121,6 +121,15 @@ export default function Canvas() {
   }, [storeOnEdgesChange]);
 
   const handleConnect = useCallback((connection: Connection) => {
+    // 防御：fileUpload 是源节点，不消费上游输入。
+    // 即使将来有人误开了 target handle，这里也会阻止建立指向它的边。
+    if (connection.target) {
+      const targetNode = useNodeStore.getState().nodes.find((n: any) => n.id === connection.target);
+      if (targetNode && (targetNode.data as any)?.type === 'fileUpload') {
+        // 静默拒绝，避免误导用户以为连接成功
+        return;
+      }
+    }
     storePushHistory();
     // 生成唯一 id（加随机串防止同毫秒冲突）
     const uniqueId = `edge-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
