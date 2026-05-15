@@ -573,7 +573,60 @@ export default function Canvas() {
     e.target.value = '';
   };
 
-  const executeFlow = async () => {
+  // 当前正在执行的 group id（若是局部运行）。None 表示全图运行 / 空闲。
+  // 用来在 GroupNode UI 上显示"运行中"高亮。
+  const [runningGroupId, setRunningGroupId] = useState<string | null>(null);
+
+  /**
+   * 仅运行一个 group 框内的子节点（含嵌套）。
+   * 子节点之间的边会保留；与外部节点的边在执行时被忽略——意味着 group 是个独立子图。
+   * 这里还会把 group 自己的 status 写为 running / success / error，方便 GroupNode UI 切色。
+   */
+  const runGroupOnly = useCallback(async (groupId: string) => {
+    const all = useNodeStore.getState().nodes as any[];
+    // 收集 group + 嵌套 group 的所有子节点（深度优先遍历，避免漏掉 group 套 group 的情形）
+    const collect = (gid: string, acc: Set<string>) => {
+      all.forEach((n: any) => {
+        if (n.parentId === gid && !acc.has(n.id)) {
+          acc.add(n.id);
+          if (n.type === 'group') collect(n.id, acc);
+        }
+      });
+    };
+    const subset = new Set<string>();
+    collect(groupId, subset);
+    if (subset.size === 0) {
+      alert('该分组里还没有可运行的节点');
+      return;
+    }
+    setRunningGroupId(groupId);
+    // 标记 group 为 running，让 GroupNode UI 切橙色
+    storeUpdateNodeData(groupId, { status: 'running' });
+    try {
+      await executeFlow(subset);
+      // executeFlow 内部已经把每个子节点的 status 更新好；group 自己根据子节点结果再写一次状态
+      const after = useNodeStore.getState().nodes as any[];
+      const childStates = after.filter((n: any) => subset.has(n.id)).map((n: any) => n.data?.status);
+      const hasError = childStates.includes('error');
+      storeUpdateNodeData(groupId, { status: hasError ? 'error' : 'success' });
+    } catch (e) {
+      storeUpdateNodeData(groupId, { status: 'error' });
+    }
+  }, [storeUpdateNodeData]);
+
+  // 把 runGroupOnly 暴露给 GroupNode（通过 window，避免一路 props drill）
+  useEffect(() => {
+    (window as any).__pmRunGroup = (id: string) => runGroupOnly(id);
+    return () => { (window as any).__pmRunGroup = undefined; };
+  }, [runGroupOnly]);
+
+  /**
+   * 执行画布。可传入 subsetIds 限制只跑这些节点 + 它们之间的边（拓扑序仍然成立）。
+   * 当 subsetIds 提供时，外部入边会被忽略，相当于把子图当成独立图来跑——这意味着子图里的
+   * 源节点（textPrompt / fileUpload）会"原样"贡献内容，下游节点收到的 upstream 只来自子集内。
+   * 子集外的节点状态保持不变（既不重置也不写入新结果）。
+   */
+  const executeFlow = async (subsetIds?: Set<string>) => {
     setIsRunning(true);
     setRunLog([]);
     const log = (msg: string) => setRunLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -621,12 +674,23 @@ export default function Canvas() {
         return next;
       });
       // 节点列表里去除"折叠 group"自身（执行不需要它）
-      const allNodes = allNodesRaw.filter((n: any) => !(n.type === 'group' && n.data?.collapsed));
+      const allNodesPostCollapse = allNodesRaw.filter((n: any) => !(n.type === 'group' && n.data?.collapsed));
+
+      // 应用 subsetIds 过滤：只保留集合内的节点 + 集合内的边
+      const allNodes = subsetIds
+        ? allNodesPostCollapse.filter((n: any) => subsetIds.has(n.id))
+        : allNodesPostCollapse;
+      const filteredEdges = subsetIds
+        ? allEdges.filter((e: any) => subsetIds.has(e.source) && subsetIds.has(e.target))
+        : allEdges;
+      if (subsetIds) {
+        log(`局部运行：${allNodes.length} 个节点 / ${filteredEdges.length} 条边`);
+      }
 
       const adj = new Map<string, string[]>();
       const inDegree = new Map<string, number>();
       allNodes.forEach((n: any) => { adj.set(n.id, []); inDegree.set(n.id, 0); });
-      allEdges.forEach((e: any) => {
+      filteredEdges.forEach((e: any) => {
         if (adj.has(e.source)) (adj.get(e.source)!).push(e.target);
         inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
       });
@@ -686,7 +750,7 @@ export default function Canvas() {
           // 这样可以避免文件正文里出现"请帮我..."等措辞被 LLM 误当成指令执行。
           const fileChunks: string[] = [];
           const instructionChunks: string[] = [];
-          allEdges.forEach((e: any) => {
+          filteredEdges.forEach((e: any) => {
             if (e.target !== nodeId) return;
             const v = results.get(e.source);
             if (!v) return;
@@ -759,7 +823,7 @@ export default function Canvas() {
         }
         if (data.type === 'output') {
           let upstream = '';
-          allEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
           upstream = stripFilePrefix(upstream);
           results.set(nodeId, upstream);
           storeUpdateNodeData(nodeId, { status: 'success', output: upstream });
@@ -768,7 +832,7 @@ export default function Canvas() {
         // 条件分支：根据 mode 和 keyword 判定 true/false 分支
         if (data.type === 'condition') {
           let upstream = '';
-          allEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
           upstream = stripFilePrefix(upstream);
           const d = data as any;
           const kw = String(d.keyword || '');
@@ -792,7 +856,7 @@ export default function Canvas() {
         // 文本处理：各种字符串变换
         if (data.type === 'textTransform') {
           let upstream = '';
-          allEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
           upstream = stripFilePrefix(upstream);
           const d = data as any;
           const tf = d.transform || 'trim';
@@ -829,7 +893,7 @@ export default function Canvas() {
           // 如果当前是 condition 节点，且这条边的 sourceHandle 和匹配结果不符，跳过
           if (data.type === 'condition') {
             const matched = (data as any).__matched;
-            const outEdge = allEdges.find((e: any) => e.source === nodeId && e.target === tid);
+            const outEdge = filteredEdges.find((e: any) => e.source === nodeId && e.target === tid);
             const handleId = outEdge?.sourceHandle;
             if (handleId === 'true' && !matched) {
               // 在 inDegree 里降到 0 后也不推进
@@ -850,6 +914,7 @@ export default function Canvas() {
       log(`❌ 出错：${err.message}`);
     } finally {
       setIsRunning(false);
+      setRunningGroupId(null);
       setShowLog(true);
     }
   };

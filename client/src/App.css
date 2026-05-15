@@ -422,6 +422,25 @@ body {
   box-shadow: 0 0 0 2px #4338ca;
 }
 
+/* group 运行时高亮：按 data-status 切换边框颜色 + 浅色背景 */
+.group-node[data-status="running"] {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  animation: pm-group-pulse 1.4s ease-in-out infinite;
+}
+.group-node[data-status="success"] {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.06);
+}
+.group-node[data-status="error"] {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+@keyframes pm-group-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.25); }
+}
+
 .group-node-label {
   position: absolute;
   top: -14px;

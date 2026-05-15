@@ -34,7 +34,7 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 | 🔤 | Text Transform | 9 transforms: case, trim, replace, JSON extract, count, etc. |
 | 🔀 | Condition | Route by keyword/regex. **Two outputs**: top = match, bottom = no match. |
 | 📤 | Output | Export to **real** txt/md/docx/xlsx/pdf/png files. |
-| 📦 | Group | Auto-frames selected nodes; save as a reusable preset. |
+| 📦 | Group | Auto-frames selected nodes; save as a reusable preset. **The expanded group label has a ▶ button** to run only the nodes inside (orange pulse while running, green on success, red on error). |
 
 ## 🎨 Toolbar
 

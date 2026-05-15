@@ -142,14 +142,30 @@ function GroupNode({ id, data, selected }: Props) {
   }
 
   /* ===== 展开态：原虚线大框 ===== */
+  // 状态颜色：running 橙；error 红；success / 默认 紫
+  const status = data.status as ('idle' | 'running' | 'success' | 'error' | undefined);
+  const accentColor =
+    status === 'running' ? '#f59e0b'
+      : status === 'error' ? '#ef4444'
+        : '#6366f1'; // success 和 idle 都用默认紫
+  const headerBg =
+    status === 'running' ? 'linear-gradient(135deg, #f59e0b, #fbbf24)'
+      : status === 'error' ? 'linear-gradient(135deg, #ef4444, #f87171)'
+        : 'linear-gradient(135deg, #6366f1, #818cf8)';
+  const handleRunGroup = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    const fn = (window as any).__pmRunGroup;
+    if (typeof fn === 'function') fn(id);
+  }, [id]);
+
   return (
-    <div className={`group-node ${selected ? 'selected' : ''}`}>
+    <div className={`group-node ${selected ? 'selected' : ''}`} data-status={status || 'idle'}>
       <NodeResizer
         minWidth={200}
         minHeight={120}
         isVisible={selected}
-        lineStyle={{ borderColor: '#6366f1' }}
-        handleStyle={{ width: 8, height: 8, backgroundColor: '#6366f1', borderRadius: 2 }}
+        lineStyle={{ borderColor: accentColor }}
+        handleStyle={{ width: 8, height: 8, backgroundColor: accentColor, borderRadius: 2 }}
       />
       {editing ? (
         <input
@@ -170,16 +186,34 @@ function GroupNode({ id, data, selected }: Props) {
           className="group-node-label"
           onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
           title="双击重命名"
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: headerBg,
+            gap: 4,
+          }}
         >
           <span>📦 {data.label || '功能组'}</span>
-          <button
-            className="nodrag group-collapse-btn"
-            onClick={onToggle}
-            title="折叠为单节点（黑盒）"
-          >
-            <CollapseIcon size={14} color="white" />
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {/* 仅运行本 group 内子节点 */}
+            <button
+              className="nodrag group-collapse-btn"
+              onClick={handleRunGroup}
+              disabled={status === 'running'}
+              title={status === 'running' ? '正在运行…' : '只运行本分组内的节点（不会触发画布上的其它节点）'}
+              style={{ background: status === 'running' ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.3)', cursor: status === 'running' ? 'wait' : 'pointer' }}
+            >
+              {status === 'running' ? '⏳' : '▶'}
+            </button>
+            <button
+              className="nodrag group-collapse-btn"
+              onClick={onToggle}
+              title="折叠为单节点（黑盒）"
+            >
+              <CollapseIcon size={14} color="white" />
+            </button>
+          </div>
         </div>
       )}
     </div>
