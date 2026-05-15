@@ -48,6 +48,20 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 | ⬇️ Export / ⬆️ Import | Whole workflow ↔ JSON |
 | 🌙 Dark / ☀️ Light | Theme toggle, preference persisted |
 
+### ⌨️ Keyboard shortcuts
+
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Copy selected nodes | `⌘ + C` | `Ctrl + C` |
+| Paste (offset down-right, increments on repeat) | `⌘ + V` | `Ctrl + V` |
+| Cut | `⌘ + X` | `Ctrl + X` |
+| Duplicate in place | `⌘ + D` | `Ctrl + D` |
+| Undo / Redo | `⌘ + Z` / `⌘ + ⇧ + Z` | `Ctrl + Z` / `Ctrl + Shift + Z` |
+| Delete selected node/edge | `Delete` / `Backspace` | `Delete` / `Backspace` |
+| Save as preset | `⌘ + S` | `Ctrl + S` |
+
+> Copying a group automatically grabs its children and the edges between them. Pasted nodes are reset to a clean `idle` state — they don't carry over old run results.
+
 ## 🚀 Quick start
 
 ### Requirements

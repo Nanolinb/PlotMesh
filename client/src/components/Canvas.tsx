@@ -97,6 +97,11 @@ export default function Canvas() {
   const [showLog, setShowLog] = useState(false);
   const [runLog, setRunLog] = useState<string[]>([]);
 
+  // 内部剪贴板（不污染系统剪贴板）。
+  // 形如 { nodes: CustomNode[], edges: CustomEdge[], pasteCount: number }
+  // pasteCount 用于让连续粘贴每次再偏移一点，避免完全重叠。
+  const clipboardRef = useRef<{ nodes: any[]; edges: any[]; pasteCount: number } | null>(null);
+
   // 主题切换：light / dark，持久化到 localStorage
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
@@ -612,6 +617,162 @@ export default function Canvas() {
     }
   };
 
+  // ───────── 复制 / 粘贴 / 副本 ─────────
+  // 复制选中节点到内部剪贴板。如果选中了 group，自动连同 children 一起复制；
+  // 同时复制「两端都在选中集合内」的边，保持子图完整性。
+  const copySelectedToClipboard = useCallback((): number => {
+    const allNodes = useNodeStore.getState().nodes as any[];
+    const allEdges = useNodeStore.getState().edges as any[];
+    const directlySelected = allNodes.filter((n: any) => n.selected);
+    if (!directlySelected.length) return 0;
+
+    // 把选中 group 的 children 也纳入
+    const idSet = new Set<string>(directlySelected.map((n: any) => n.id));
+    directlySelected.forEach((n: any) => {
+      if (n.type === 'group') {
+        allNodes.forEach((c: any) => {
+          if (c.parentId === n.id) idSet.add(c.id);
+        });
+      }
+    });
+
+    const cloned = allNodes
+      .filter((n: any) => idSet.has(n.id))
+      // 深拷贝避免引用串扰
+      .map((n: any) => JSON.parse(JSON.stringify(n)));
+
+    const clonedEdges = allEdges
+      .filter((e: any) => idSet.has(e.source) && idSet.has(e.target))
+      .map((e: any) => JSON.parse(JSON.stringify(e)));
+
+    clipboardRef.current = { nodes: cloned, edges: clonedEdges, pasteCount: 0 };
+    return cloned.length;
+  }, []);
+
+  // 把内部剪贴板里的节点写回画布，并选中新节点。
+  // dx/dy 是基础偏移量；如果传入 anchor（鼠标或视口中心），会用 anchor 而不是简单偏移。
+  const pasteFromClipboard = useCallback((opts?: { anchor?: { x: number; y: number } }): number => {
+    const clip = clipboardRef.current;
+    if (!clip || !clip.nodes.length) return 0;
+
+    storePushHistory();
+    clip.pasteCount += 1;
+    // 默认每次粘贴向右下偏移 40px * 第几次粘贴
+    const shift = 40 * clip.pasteCount;
+    const baseDx = opts?.anchor ? 0 : shift;
+    const baseDy = opts?.anchor ? 0 : shift;
+
+    // 给每个旧 id 生成新 id 的映射（用于重写边的 source/target、parentId）
+    const idMap = new Map<string, string>();
+    const ts = Date.now();
+    clip.nodes.forEach((n: any, idx: number) => {
+      idMap.set(n.id, `${n.type || 'node'}-${ts}-${idx}-${Math.random().toString(36).slice(2, 6)}`);
+    });
+
+    // 如果使用 anchor，需要找到选区左上角，把 anchor 作为左上角
+    let anchorDx = baseDx;
+    let anchorDy = baseDy;
+    if (opts?.anchor) {
+      // 只看顶层节点（没有 parentId 的）的位置作为参考
+      const tops = clip.nodes.filter((n: any) => !n.parentId);
+      if (tops.length) {
+        const minX = Math.min(...tops.map((n: any) => n.position?.x || 0));
+        const minY = Math.min(...tops.map((n: any) => n.position?.y || 0));
+        anchorDx = opts.anchor.x - minX;
+        anchorDy = opts.anchor.y - minY;
+      }
+    }
+
+    const newNodes = clip.nodes.map((n: any) => {
+      const newId = idMap.get(n.id)!;
+      const cloned: any = JSON.parse(JSON.stringify(n));
+      cloned.id = newId;
+      cloned.selected = true;
+      // 顶层节点偏移；子节点位置是相对父的，不改
+      if (!cloned.parentId) {
+        cloned.position = {
+          x: (cloned.position?.x || 0) + anchorDx,
+          y: (cloned.position?.y || 0) + anchorDy,
+        };
+      } else if (idMap.has(cloned.parentId)) {
+        // 父节点也在剪贴板里，重新指向新父 id
+        cloned.parentId = idMap.get(cloned.parentId)!;
+      } else {
+        // 父节点不在剪贴板里：脱离父子关系，改用绝对位置
+        const parent = (useNodeStore.getState().nodes as any[]).find((p: any) => p.id === cloned.parentId);
+        const abs = {
+          x: (parent?.position?.x || 0) + (cloned.position?.x || 0) + anchorDx,
+          y: (parent?.position?.y || 0) + (cloned.position?.y || 0) + anchorDy,
+        };
+        delete cloned.parentId;
+        delete cloned.extent;
+        cloned.position = abs;
+      }
+      // 清掉运行状态，避免新节点带着旧的 success / error 状态
+      if (cloned.data) {
+        cloned.data = { ...cloned.data, status: 'idle' };
+        if ('output' in cloned.data) cloned.data.output = '';
+        if ('streamOutput' in cloned.data) cloned.data.streamOutput = '';
+        if ('error' in cloned.data) cloned.data.error = undefined;
+      }
+      return cloned;
+    });
+
+    const newEdges = clip.edges.map((e: any) => {
+      const cloned = JSON.parse(JSON.stringify(e));
+      cloned.id = `edge-${ts}-${Math.random().toString(36).slice(2, 8)}`;
+      cloned.source = idMap.get(e.source) || e.source;
+      cloned.target = idMap.get(e.target) || e.target;
+      cloned.selected = false;
+      return cloned;
+    });
+
+    // 先把现有节点/边的 selected 状态清零，再插入新节点/边
+    const curNodes = useNodeStore.getState().nodes as any[];
+    const curEdges = useNodeStore.getState().edges as any[];
+    useNodeStore.setState({
+      nodes: [
+        ...curNodes.map((n: any) => ({ ...n, selected: false })),
+        ...newNodes,
+      ],
+      edges: [
+        ...curEdges.map((e: any) => ({ ...e, selected: false })),
+        ...newEdges,
+      ],
+    });
+    // 触发提示词重新编号等副作用
+    setTimeout(() => useNodeStore.getState().updatePromptNumbers?.(), 0);
+    return newNodes.length;
+  }, [storePushHistory]);
+
+  // 直接复制选中节点为副本（Cmd/Ctrl+D）：等价于 copy + paste，但不污染剪贴板。
+  const duplicateSelection = useCallback((): number => {
+    const allNodes = useNodeStore.getState().nodes as any[];
+    const allEdges = useNodeStore.getState().edges as any[];
+    const directlySelected = allNodes.filter((n: any) => n.selected);
+    if (!directlySelected.length) return 0;
+
+    const idSet = new Set<string>(directlySelected.map((n: any) => n.id));
+    directlySelected.forEach((n: any) => {
+      if (n.type === 'group') {
+        allNodes.forEach((c: any) => {
+          if (c.parentId === n.id) idSet.add(c.id);
+        });
+      }
+    });
+
+    // 借用 clipboardRef，但不修改它原本的内容。直接构造一个临时的并走 paste 逻辑。
+    const backup = clipboardRef.current;
+    clipboardRef.current = {
+      nodes: allNodes.filter((n: any) => idSet.has(n.id)).map((n: any) => JSON.parse(JSON.stringify(n))),
+      edges: allEdges.filter((e: any) => idSet.has(e.source) && idSet.has(e.target)).map((e: any) => JSON.parse(JSON.stringify(e))),
+      pasteCount: 0,
+    };
+    const n = pasteFromClipboard();
+    clipboardRef.current = backup;
+    return n;
+  }, [pasteFromClipboard]);
+
   // 键盘快捷键
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -654,10 +815,64 @@ export default function Canvas() {
         const ids = allNodes.filter((n: any) => n.selected).map((n: any) => n.id);
         if (ids.length > 0) openSaveDialog();
       }
+
+      // ─────── 复制 / 粘贴 / 剪切 / 副本 ───────
+      // 注意：要避开 contenteditable 元素，并和系统剪贴板共存（不读取/写入系统剪贴板，避免覆盖用户复制的文字）
+      const isEditable =
+        e.target instanceof HTMLElement &&
+        ((e.target as HTMLElement).isContentEditable ||
+          (e.target as HTMLElement).getAttribute('contenteditable') === 'true');
+      if (isEditable) return;
+
+      // Cmd+C / Ctrl+C = 复制选中节点
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
+        const n = copySelectedToClipboard();
+        if (n > 0) {
+          e.preventDefault();
+          setSavedToast(`已复制 ${n} 个节点`);
+          setTimeout(() => setSavedToast(''), 1200);
+        }
+      }
+
+      // Cmd+V / Ctrl+V = 粘贴
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v') {
+        const n = pasteFromClipboard();
+        if (n > 0) {
+          e.preventDefault();
+          setSavedToast(`已粘贴 ${n} 个节点`);
+          setTimeout(() => setSavedToast(''), 1200);
+        }
+      }
+
+      // Cmd+X / Ctrl+X = 剪切（复制 + 删除）
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'x') {
+        const n = copySelectedToClipboard();
+        if (n > 0) {
+          e.preventDefault();
+          const allNodes = useNodeStore.getState().nodes as any[];
+          const directlyIds = allNodes.filter((nd: any) => nd.selected).map((nd: any) => nd.id);
+          if (directlyIds.length) {
+            storePushHistory();
+            storeDeleteNodes(directlyIds);
+          }
+          setSavedToast(`已剪切 ${n} 个节点`);
+          setTimeout(() => setSavedToast(''), 1200);
+        }
+      }
+
+      // Cmd+D / Ctrl+D = 直接复制副本
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+        const n = duplicateSelection();
+        if (n > 0) {
+          e.preventDefault();
+          setSavedToast(`已生成 ${n} 个副本`);
+          setTimeout(() => setSavedToast(''), 1200);
+        }
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [storeDeleteNodes, storeUndo, storeRedo, storePushHistory]);
+  }, [storeDeleteNodes, storeUndo, storeRedo, storePushHistory, copySelectedToClipboard, pasteFromClipboard, duplicateSelection]);
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
