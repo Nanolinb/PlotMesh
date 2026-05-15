@@ -116,17 +116,64 @@ function LLMNode({ id, data, selected }: Props) {
         </div>
 
         <div className="field" style={{ marginBottom: '8px' }}>
-          <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px' }}>温度: {localTemp}</label>
-          <input
-            className="nodrag"
-            type="range"
-            min="0"
-            max="1"
-            step="0.1"
-            value={localTemp}
-            onChange={(e) => handleTempChange(parseFloat(e.target.value))}
-            style={{ width: '100%' }}
-          />
+          {(() => {
+            // 把温度数值映射到 4 档语义化标签，帮用户判断当前是"求稳"还是"求创意"
+            const t = localTemp;
+            let tier: { name: string; tip: string; color: string };
+            if (t <= 0.3) tier = { name: '确定', tip: '低随机性：代码、SQL、JSON 抽取、严谨问答', color: '#0ea5e9' };
+            else if (t <= 0.7) tier = { name: '平衡', tip: '一般问答 / 摘要 / 翻译 / 改写（默认 0.7）', color: '#10b981' };
+            else if (t <= 1.1) tier = { name: '创意', tip: '文案 / 邮件 / 起名 / 故事开头', color: '#f59e0b' };
+            else tier = { name: '发散', tip: '头脑风暴 / 写诗 / 大胆联想（可能跑题）', color: '#ef4444' };
+            return (
+              <>
+                <label
+                  style={{ fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}
+                  title="温度（temperature）越低，输出越稳定可预测；越高越发散有创意"
+                >
+                  <span>温度: {localTemp.toFixed(1)}</span>
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      padding: '1px 6px',
+                      borderRadius: '8px',
+                      background: tier.color + '22',
+                      color: tier.color,
+                      fontWeight: 600,
+                      cursor: 'help',
+                    }}
+                    title={tier.tip}
+                  >
+                    {tier.name}
+                  </span>
+                </label>
+                <input
+                  className="nodrag"
+                  type="range"
+                  min="0"
+                  max="1.5"
+                  step="0.1"
+                  value={localTemp}
+                  onChange={(e) => handleTempChange(parseFloat(e.target.value))}
+                  style={{ width: '100%' }}
+                  title={tier.tip}
+                />
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: '9px',
+                    color: '#94a3b8',
+                    marginTop: '2px',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <span>0 确定</span>
+                  <span>0.7 平衡</span>
+                  <span>1.5 发散</span>
+                </div>
+              </>
+            );
+          })()}
         </div>
 
         {(data as any).streamOutput || data.output ? (

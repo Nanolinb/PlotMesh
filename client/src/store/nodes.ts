@@ -85,7 +85,49 @@ interface NodeStore {
 const STORAGE_KEY = 'node-editor-packages';
 const GROUPS_KEY = 'node-editor-package-groups';
 const PRESETS_INJECTED_KEY = 'node-editor-presets-injected';
+const CANVAS_KEY = 'plotmesh-canvas-draft'; // 画布的"工作中草稿"，用于下次打开继续编辑
 const MAX_HISTORY = 50;
+
+/**
+ * 把画布持久化到 localStorage。剥掉运行时状态，避免下次打开时显示过期的输出。
+ */
+export function saveCanvasDraft(nodes: any[], edges: any[]) {
+  try {
+    const cleanNodes = nodes.map((n) => {
+      if (!n.data) return n;
+      const cleanedData: any = { ...n.data };
+      // 这些字段是运行时产物，不该在重启后保留
+      if ('output' in cleanedData) cleanedData.output = '';
+      if ('streamOutput' in cleanedData) cleanedData.streamOutput = '';
+      if ('error' in cleanedData) cleanedData.error = undefined;
+      cleanedData.status = 'idle';
+      return { ...n, data: cleanedData };
+    });
+    localStorage.setItem(
+      CANVAS_KEY,
+      JSON.stringify({ version: 1, savedAt: Date.now(), nodes: cleanNodes, edges })
+    );
+  } catch (e) {
+    // localStorage 可能写满或被禁用——尽力而为，不抛错
+    console.warn('画布草稿保存失败：', e);
+  }
+}
+
+export function loadCanvasDraft(): { nodes: any[]; edges: any[] } | null {
+  try {
+    const raw = localStorage.getItem(CANVAS_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.nodes)) return null;
+    return { nodes: data.nodes, edges: Array.isArray(data.edges) ? data.edges : [] };
+  } catch {
+    return null;
+  }
+}
+
+export function clearCanvasDraft() {
+  try { localStorage.removeItem(CANVAS_KEY); } catch {}
+}
 
 /**
  * 首次打开 PlotMesh 时往 localStorage 里注入预制示例。
@@ -145,9 +187,12 @@ function savePackageGroups(groups: PackageGroup[]) {
   localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
 }
 
-export const useNodeStore = create<NodeStore>((set, get) => ({
-  nodes: [],
-  edges: [],
+export const useNodeStore = create<NodeStore>((set, get) => {
+  // 启动时尝试从 localStorage 读出上次未完成的画布
+  const draft = loadCanvasDraft();
+  return {
+  nodes: draft?.nodes || [],
+  edges: draft?.edges || [],
   packages: loadPackages(),
   packageGroups: loadPackageGroups(),
   history: [],
@@ -788,6 +833,7 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
 
   reset: () => {
     set({ nodes: [], edges: [] });
+    clearCanvasDraft();
   },
 
   // 导出当前画布为 JSON 字符串
@@ -822,7 +868,8 @@ export const useNodeStore = create<NodeStore>((set, get) => ({
       return false;
     }
   },
-}));
+};
+});
 
 // 开发期调试用：暴露 store 到 window
 if (typeof window !== 'undefined') {

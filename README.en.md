@@ -30,7 +30,7 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 |------|------|------|
 | ✏️ | Text Prompt | Your task statement. Auto-numbered; multiples concatenate in order. |
 | 📁 | File Upload | Upload & parse docx/xlsx/pdf/txt (CJK filenames OK). **Source-only**: it has no input port — it doesn't consume upstream data. |
-| 🤖 | LLM | Calls DeepSeek / GPT / Claude / GLM / Hunyuan. Auto-classifies upstream input as *reference material* vs *instruction* to prevent prompt injection. |
+| 🤖 | LLM | Calls DeepSeek / GPT / Claude / GLM / Hunyuan. Auto-classifies upstream input as *reference material* vs *instruction* to prevent prompt injection. **Temperature** slider has *Stable / Balanced / Creative / Wild* tier badges. |
 | 🔤 | Text Transform | 9 transforms: case, trim, replace, JSON extract, count, etc. |
 | 🔀 | Condition | Route by keyword/regex. **Two outputs**: top = match, bottom = no match. |
 | 📤 | Output | Export to **real** txt/md/docx/xlsx/pdf/png files. |
@@ -144,7 +144,7 @@ Add user auth (Clerk / Supabase Auth) + workflow persistence in a DB + per-user 
 - **Backend**: Node.js + Express (LLM gateway + file upload)
 - **LLM bridging**: five providers unified behind `/api/llm/chat`
 - **Real-format export**: [docx](https://github.com/dolanmiu/docx) / [xlsx](https://github.com/SheetJS/sheetjs) / [jspdf](https://github.com/parallax/jsPDF)
-- **Storage**: browser localStorage (workflows / presets / theme) + server `uploads/` dir
+- **Storage**: browser localStorage (**canvas draft auto-saved**, workflows / presets / theme) + server `uploads/` dir
 - **Prompt-injection defense**: the executor classifies upstream inputs by source — file chunks are wrapped in `<documents>`, instruction chunks in `<instructions>`, plus a guard line in the system prompt.
 
 ## 📁 Layout
@@ -172,7 +172,10 @@ PlotMesh/
 
 - [x] File-upload prompt isolation
 - [x] Preset save: overwrite / rename / cancel dialog
-- [ ] Node context menu (duplicate / align)
+- [x] Canvas right-click menu (new node / Group / Ungroup)
+- [x] Copy/paste shortcuts (C/V/X/D)
+- [x] Auto-save canvas draft (close & reopen the browser, work persists)
+- [ ] Node context menu (more single-node ops)
 - [ ] Prompt template library
 - [ ] LLM streaming output
 - [ ] Realtime multi-user editing (WebSocket + soft lock)

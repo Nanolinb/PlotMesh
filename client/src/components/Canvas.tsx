@@ -19,7 +19,7 @@ import ConditionNode from './nodes/ConditionNode';
 import TextTransformNode from './nodes/TextTransformNode';
 import Sidebar from './Sidebar';
 import ApiKeyConfigModal from './ApiKeyConfigModal';
-import { useNodeStore } from '../store/nodes';
+import { useNodeStore, saveCanvasDraft, clearCanvasDraft } from '../store/nodes';
 
 const nodeTypes = {
   fileUpload: FileUploadNode,
@@ -129,6 +129,46 @@ export default function Canvas() {
     document.documentElement.setAttribute('data-theme', theme);
     try { localStorage.setItem('ui-theme', theme); } catch {}
   }, [theme]);
+
+  // ─────── 画布自动保存到 localStorage ───────
+  // 工作中草稿：下次打开自动恢复，不用每次都手动「导出 JSON」。
+  // 用 debounce（800ms）避免每次拖动节点都写一次磁盘。
+  // 同时维护一个 'saved' / 'saving' / 'idle' 三态指示，让用户知道有没有保存上。
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'idle'>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
+  const isFirstSaveRef = useRef(true);
+  useEffect(() => {
+    // 首次挂载时如果画布刚从草稿恢复，不要立即写一次
+    if (isFirstSaveRef.current) {
+      isFirstSaveRef.current = false;
+      // 但仍然要把当前状态标记为"已保存"
+      if (nodes.length > 0 || edges.length > 0) setSaveStatus('saved');
+      return;
+    }
+    setSaveStatus('saving');
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveCanvasDraft(nodes, edges);
+      setSaveStatus('saved');
+      setLastSavedAt(Date.now());
+    }, 800);
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    };
+  }, [nodes, edges]);
+
+  // 关闭/刷新页面前，强制把最新状态刷盘
+  useEffect(() => {
+    const handler = () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveCanvasDraft(useNodeStore.getState().nodes, useNodeStore.getState().edges);
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
 
   // ✅ 节点变化直接由 store 处理（包括选中状态）
   const handleNodesChange = useCallback((changes: any[]) => {
@@ -1347,6 +1387,35 @@ export default function Canvas() {
           <button className="toolbar-btn danger" onClick={() => { if (confirm('确定清空？')) { storePushHistory(); storeReset(); } }}>
             🗑️ 清空
           </button>
+
+          {/* 自动保存指示器 */}
+          {(() => {
+            const text =
+              saveStatus === 'saving'
+                ? '💾 保存中…'
+                : saveStatus === 'saved'
+                  ? lastSavedAt
+                    ? `✅ 已保存 ${new Date(lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                    : '✅ 已保存'
+                  : '';
+            if (!text) return null;
+            return (
+              <span
+                title="画布会自动保存到本浏览器；下次打开 PlotMesh 自动恢复。导出 JSON 才能跨设备/分享。"
+                style={{
+                  fontSize: 11,
+                  color: 'var(--text-muted, #94a3b8)',
+                  padding: '4px 10px',
+                  marginLeft: 'auto',
+                  whiteSpace: 'nowrap',
+                  opacity: saveStatus === 'saving' ? 0.7 : 1,
+                  transition: 'opacity 0.2s',
+                }}
+              >
+                {text}
+              </span>
+            );
+          })()}
         </div>
 
         {/* 提示 */}

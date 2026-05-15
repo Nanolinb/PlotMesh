@@ -32,7 +32,7 @@
 |------|------|------|
 | ✏️ | 文本提示词 | 输入任务内容，自动编号，多个可按顺序拼接 |
 | 📁 | 文件上传 | 上传并解析 docx/xlsx/pdf/txt（支持中/日/繁体文件名）。**只出不入**——它是源节点，不消费上游输入 |
-| 🤖 | 大模型 | 调用 DeepSeek / GPT / Claude / GLM / 混元；自动区分「参考资料」与「指令」防止 prompt injection |
+| 🤖 | 大模型 | 调用 DeepSeek / GPT / Claude / GLM / 混元；自动区分「参考资料」与「指令」防止 prompt injection。**温度**滑杆带「确定 / 平衡 / 创意 / 发散」分档徽标 |
 | 🔤 | 文本处理 | 大小写/去空格/替换/提取 JSON/计数 等 9 种变换 |
 | 🔀 | 条件分支 | 按关键词/正则分流，**双出口**（上=匹配，下=未匹配） |
 | 📤 | 输出 | 导出为 **真正的** txt/md/docx/xlsx/pdf/png 文件 |
@@ -146,7 +146,7 @@ npm run dev                 # 打开 http://localhost:5173
 - **后端**：Node.js + Express（LLM 网关 + 文件上传）
 - **LLM 接入**：5 家模型统一通过 `/api/llm/chat` 代理
 - **真实格式导出**：[docx](https://github.com/dolanmiu/docx) / [xlsx](https://github.com/SheetJS/sheetjs) / [jspdf](https://github.com/parallax/jsPDF)
-- **存储**：浏览器 localStorage（工作流/常用功能/主题偏好）+ 服务端 `uploads/` 目录
+- **存储**：浏览器 localStorage（**画布草稿**自动持久化、工作流/常用功能/主题偏好）+ 服务端 `uploads/` 目录
 - **抗 prompt injection**：执行器对上游输入按来源分类，文件块包 `<documents>`，指令包 `<instructions>`，system prompt 加 guard
 
 ## 📁 目录结构
@@ -174,7 +174,10 @@ PlotMesh/
 
 - [x] 文件上传 prompt 隔离
 - [x] 同名常用功能的「覆盖 / 重命名 / 取消」对话框
-- [ ] 节点右键菜单（复制 / 对齐）
+- [x] 画布右键菜单（新建节点 / Group / Ungroup）
+- [x] 复制粘贴快捷键（C/V/X/D）
+- [x] 画布草稿自动保存（关闭浏览器再打开，工作不丢）
+- [ ] 节点右键菜单（更多单节点操作）
 - [ ] 提示词模板库
 - [ ] LLM 流式输出（打字机效果）
 - [ ] 多人协同编辑（WebSocket + 软锁定）
