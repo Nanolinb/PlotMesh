@@ -45,7 +45,9 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 | ↶ Undo / ↷ Redo | Cmd+Z / Cmd+Shift+Z, full history |
 | 🔑 API Config | Visual editor for model API keys, persisted to `.env` |
 | 📦 Save preset | With selection: bundle selected nodes; without selection: prompts "Save the whole canvas as a preset?". On name conflict choose *Overwrite / Rename / Cancel* |
-| ⬇️ Export / ⬆️ Import | Whole workflow ↔ JSON |
+| ⬇️ Canvas Export / ⬆️ Canvas Import | Serialize the whole canvas to JSON; import auto-stashes the current canvas into Recent Canvases for rollback |
+| 🕘 Recent Canvases (sidebar bottom) | Up to 8 import/export/overwritten snapshots, click to reload; before replacing the current canvas you'll be asked to stash it |
+| ⏱ Auto-save interval | Toolbar dropdown — *Off / 1 / 2 / 3 / 5 / 10 / 15 minutes*, default 5; flushed once before tab close regardless |
 | 🌙 Dark / ☀️ Light | Theme toggle, preference persisted |
 
 ### ⌨️ Keyboard shortcuts

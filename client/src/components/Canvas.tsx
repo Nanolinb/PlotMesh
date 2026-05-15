@@ -19,7 +19,7 @@ import ConditionNode from './nodes/ConditionNode';
 import TextTransformNode from './nodes/TextTransformNode';
 import Sidebar from './Sidebar';
 import ApiKeyConfigModal from './ApiKeyConfigModal';
-import { useNodeStore, saveCanvasDraft, clearCanvasDraft } from '../store/nodes';
+import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
   fileUpload: FileUploadNode,
@@ -131,43 +131,77 @@ export default function Canvas() {
   }, [theme]);
 
   // ─────── 画布自动保存到 localStorage ───────
-  // 工作中草稿：下次打开自动恢复，不用每次都手动「导出 JSON」。
-  // 用 debounce（800ms）避免每次拖动节点都写一次磁盘。
-  // 同时维护一个 'saved' / 'saving' / 'idle' 三态指示，让用户知道有没有保存上。
+  // 工作中草稿：下次打开自动恢复，不用每次都手动「画布导出」。
+  // 行为：按用户配置的间隔（分钟）周期性保存；间隔为 0 表示关闭自动保存。
+  // 配置持久化在 localStorage 的 'plotmesh-autosave-min'，默认 5 分钟。
+  // 关闭页面前仍会强制刷盘一次，避免未保存的修改丢失。
+  const [autosaveMin, setAutosaveMin] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('plotmesh-autosave-min');
+      const v = saved !== null ? parseInt(saved, 10) : 5;
+      // 0 = 关闭；1-15 分钟有效
+      if (Number.isFinite(v) && v >= 0 && v <= 15) return v;
+    } catch {}
+    return 5;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('plotmesh-autosave-min', String(autosaveMin)); } catch {}
+  }, [autosaveMin]);
+
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'idle'>('idle');
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
-  const saveTimerRef = useRef<number | null>(null);
+  const dirtyRef = useRef(false); // 标记自上次保存以来是否有变化
   const isFirstSaveRef = useRef(true);
+
+  // 每次 nodes/edges 变化都把 dirty 置 true；定时器 tick 时如果 dirty 才写盘
   useEffect(() => {
-    // 首次挂载时如果画布刚从草稿恢复，不要立即写一次
     if (isFirstSaveRef.current) {
       isFirstSaveRef.current = false;
-      // 但仍然要把当前状态标记为"已保存"
       if (nodes.length > 0 || edges.length > 0) setSaveStatus('saved');
       return;
     }
-    setSaveStatus('saving');
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveCanvasDraft(nodes, edges);
-      setSaveStatus('saved');
-      setLastSavedAt(Date.now());
-    }, 800);
-    return () => {
-      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    };
+    dirtyRef.current = true;
   }, [nodes, edges]);
+
+  useEffect(() => {
+    if (autosaveMin <= 0) {
+      // 关闭自动保存
+      return;
+    }
+    const intervalMs = autosaveMin * 60 * 1000;
+    const t = window.setInterval(() => {
+      if (!dirtyRef.current) return;
+      setSaveStatus('saving');
+      // 用一个微小延时让 UI 看到 saving，然后写盘
+      window.setTimeout(() => {
+        saveCanvasDraft(useNodeStore.getState().nodes, useNodeStore.getState().edges);
+        dirtyRef.current = false;
+        setSaveStatus('saved');
+        setLastSavedAt(Date.now());
+      }, 60);
+    }, intervalMs);
+    return () => window.clearInterval(t);
+  }, [autosaveMin]);
 
   // 关闭/刷新页面前，强制把最新状态刷盘
   useEffect(() => {
     const handler = () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
+      if (dirtyRef.current) {
         saveCanvasDraft(useNodeStore.getState().nodes, useNodeStore.getState().edges);
+        dirtyRef.current = false;
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
+  }, []);
+
+  // 手动触发保存（按下 Ctrl/Cmd+S 已被预设占用，这里给一个程序化入口供其它地方调用）
+  const flushCanvasNow = useCallback(() => {
+    setSaveStatus('saving');
+    saveCanvasDraft(useNodeStore.getState().nodes, useNodeStore.getState().edges);
+    dirtyRef.current = false;
+    setSaveStatus('saved');
+    setLastSavedAt(Date.now());
   }, []);
 
   // ✅ 节点变化直接由 store 处理（包括选中状态）
@@ -550,11 +584,16 @@ export default function Canvas() {
     const a = document.createElement('a');
     a.href = url;
     const timestamp = new Date().toISOString().replace(/[:T.]/g, '-').substring(0, 19);
-    a.download = `workflow-${timestamp}.json`;
+    const filename = `workflow-${timestamp}.json`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    // 顺手把这个版本快照存进"最近画布"
+    pushRecentCanvas(`导出 · ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`,
+      useNodeStore.getState().nodes, useNodeStore.getState().edges);
+    setRecentCanvasesVersion((v) => v + 1);
   };
 
   // 导入工作流：从 .json 文件读取
@@ -562,16 +601,55 @@ export default function Canvas() {
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // 如果当前画布非空，先把它存进"最近画布"再载入新画布
+    const cur = useNodeStore.getState();
+    const fileName = file.name.replace(/\.json$/i, '');
+    if (cur.nodes.length > 0) {
+      const ok = window.confirm('当前画布有内容。导入将替换它（当前画布会被存到「最近画布」，可随时找回）。要继续吗？');
+      if (!ok) { e.target.value = ''; return; }
+      pushRecentCanvas(`导入前 · ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`,
+        cur.nodes, cur.edges);
+    }
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
       const ok = storeImportWorkflow(text);
-      if (ok) alert('✅ 工作流导入成功');
+      if (ok) {
+        alert('✅ 画布导入成功');
+        // 也把刚导入的版本存一份，方便回退
+        pushRecentCanvas(`导入 · ${fileName}`,
+          useNodeStore.getState().nodes, useNodeStore.getState().edges);
+        setRecentCanvasesVersion((v) => v + 1);
+      }
     };
     reader.readAsText(file);
     // 清空 input 以便重复选择同一文件
     e.target.value = '';
   };
+
+  // 加载某个最近画布：先询问是否保存当前画布，再用它替换 store 里的 nodes/edges
+  const [recentCanvasesVersion, setRecentCanvasesVersion] = useState(0);
+  // 监听 Sidebar 里删除最近画布时派发的事件，刷新自己的版本号
+  useEffect(() => {
+    const onChange = () => setRecentCanvasesVersion((v) => v + 1);
+    window.addEventListener('plotmesh-recent-changed', onChange);
+    return () => window.removeEventListener('plotmesh-recent-changed', onChange);
+  }, []);
+
+  const handleLoadRecentCanvas = useCallback((item: RecentCanvas) => {
+    const cur = useNodeStore.getState();
+    if (cur.nodes.length > 0) {
+      const ans = window.confirm(
+        `当前画布有内容，加载「${item.name}」会替换它。\n是否先把当前画布保存到「最近画布」再继续？\n点「确定」= 先保存再加载；「取消」= 放弃，不加载`
+      );
+      if (!ans) return;
+      pushRecentCanvas(`覆盖前 · ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`,
+        cur.nodes, cur.edges);
+    }
+    storePushHistory();
+    useNodeStore.setState({ nodes: item.nodes, edges: item.edges });
+    setRecentCanvasesVersion((v) => v + 1);
+  }, [storePushHistory]);
 
   // 当前正在执行的 group id（若是局部运行）。None 表示全图运行 / 空闲。
   // 用来在 GroupNode UI 上显示"运行中"高亮。
@@ -1190,6 +1268,8 @@ export default function Canvas() {
         onLoadPackage={storeLoadPackage}
         onDeletePackage={storeDeletePackage}
         onSavePackage={() => openSaveDialog()}
+        recentCanvasesVersion={recentCanvasesVersion}
+        onLoadRecentCanvas={handleLoadRecentCanvas}
       />
 
       <div
@@ -1426,8 +1506,8 @@ export default function Canvas() {
           <button className="toolbar-btn" onClick={() => storeRedo()} title="重做 (Cmd+Shift+Z)">↷ 重做</button>
           <button className="toolbar-btn" onClick={() => setShowApiConfig(true)} title="配置大模型 API Key">🔑 API 配置</button>
           <button className="toolbar-btn" onClick={() => openSaveDialog()} title="将选中节点（或整个画布）存为常用功能">📦 存常用功能</button>
-          <button className="toolbar-btn" onClick={handleExport} title="导出当前工作流为 JSON 文件">⬇️ 导出</button>
-          <button className="toolbar-btn" onClick={handleImportClick} title="从 JSON 文件导入工作流">⬆️ 导入</button>
+          <button className="toolbar-btn" onClick={handleExport} title="把当前画布导出为 .json 文件（同时保存到最近画布）">⬇️ 画布导出</button>
+          <button className="toolbar-btn" onClick={handleImportClick} title="从 .json 文件导入画布；若当前画布非空，会先存到最近画布">⬆️ 画布导入</button>
           <input
             ref={importInputRef}
             type="file"
@@ -1453,34 +1533,58 @@ export default function Canvas() {
             🗑️ 清空
           </button>
 
-          {/* 自动保存指示器 */}
-          {(() => {
-            const text =
-              saveStatus === 'saving'
-                ? '💾 保存中…'
-                : saveStatus === 'saved'
-                  ? lastSavedAt
-                    ? `✅ 已保存 ${new Date(lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
-                    : '✅ 已保存'
-                  : '';
-            if (!text) return null;
-            return (
-              <span
-                title="画布会自动保存到本浏览器；下次打开 PlotMesh 自动恢复。导出 JSON 才能跨设备/分享。"
-                style={{
-                  fontSize: 11,
-                  color: 'var(--text-muted, #94a3b8)',
-                  padding: '4px 10px',
-                  marginLeft: 'auto',
-                  whiteSpace: 'nowrap',
-                  opacity: saveStatus === 'saving' ? 0.7 : 1,
-                  transition: 'opacity 0.2s',
-                }}
+          {/* 自动保存间隔选择器 + 状态指示器 */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginLeft: 'auto',
+              fontSize: 11,
+              color: 'var(--text-muted, #94a3b8)',
+            }}
+          >
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title="设置画布自动保存的间隔；选择「关闭」可完全停掉自动保存（页面关闭前仍会刷盘一次）">
+              自动保存
+              <select
+                value={autosaveMin}
+                onChange={(e) => setAutosaveMin(parseInt(e.target.value, 10))}
+                style={{ fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border, #d1d5db)', background: 'transparent', color: 'inherit' }}
               >
-                {text}
-              </span>
-            );
-          })()}
+                <option value="0">关闭</option>
+                {[1, 2, 3, 5, 10, 15].map((m) => (
+                  <option key={m} value={m}>{m} 分钟</option>
+                ))}
+              </select>
+            </label>
+            {(() => {
+              const text =
+                autosaveMin === 0
+                  ? '⏸ 自动保存已关闭'
+                  : saveStatus === 'saving'
+                    ? '💾 保存中…'
+                    : saveStatus === 'saved'
+                      ? lastSavedAt
+                        ? `✅ 已保存 ${new Date(lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                        : '✅ 已保存'
+                      : '';
+              if (!text) return null;
+              return (
+                <span
+                  title="画布自动保存到本浏览器；下次打开 PlotMesh 自动恢复。「画布导出」才能跨设备/分享。"
+                  onClick={() => flushCanvasNow()}
+                  style={{
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                    opacity: saveStatus === 'saving' ? 0.7 : 1,
+                    transition: 'opacity 0.2s',
+                  }}
+                >
+                  {text}
+                </span>
+              );
+            })()}
+          </div>
         </div>
 
         {/* 提示 */}

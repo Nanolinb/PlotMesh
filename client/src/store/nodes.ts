@@ -129,6 +129,63 @@ export function clearCanvasDraft() {
   try { localStorage.removeItem(CANVAS_KEY); } catch {}
 }
 
+// ─────── 最近画布列表 ───────
+const RECENT_CANVASES_KEY = 'plotmesh-recent-canvases';
+const RECENT_CANVASES_MAX = 8;
+
+export type RecentCanvas = {
+  id: string;
+  name: string;
+  savedAt: number;
+  nodes: any[];
+  edges: any[];
+};
+
+export function listRecentCanvases(): RecentCanvas[] {
+  try {
+    const raw = localStorage.getItem(RECENT_CANVASES_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+export function pushRecentCanvas(name: string, nodes: any[], edges: any[]) {
+  // 保存的快照剥掉运行时状态，与 saveCanvasDraft 行为一致
+  const cleanNodes = nodes.map((n) => {
+    if (!n.data) return n;
+    const cleanedData: any = { ...n.data };
+    if ('output' in cleanedData) cleanedData.output = '';
+    if ('streamOutput' in cleanedData) cleanedData.streamOutput = '';
+    if ('error' in cleanedData) cleanedData.error = undefined;
+    cleanedData.status = 'idle';
+    return { ...n, data: cleanedData };
+  });
+  const item: RecentCanvas = {
+    id: `recent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: name || `画布 ${new Date().toLocaleString('zh-CN')}`,
+    savedAt: Date.now(),
+    nodes: cleanNodes,
+    edges,
+  };
+  const list = [item, ...listRecentCanvases()].slice(0, RECENT_CANVASES_MAX);
+  try {
+    localStorage.setItem(RECENT_CANVASES_KEY, JSON.stringify(list));
+  } catch (e) {
+    // 容量不够时去掉最老的几条再尝试
+    try {
+      localStorage.setItem(RECENT_CANVASES_KEY, JSON.stringify(list.slice(0, 4)));
+    } catch {}
+  }
+}
+
+export function deleteRecentCanvas(id: string) {
+  const next = listRecentCanvases().filter((r) => r.id !== id);
+  try { localStorage.setItem(RECENT_CANVASES_KEY, JSON.stringify(next)); } catch {}
+}
+
 /**
  * 首次打开 PlotMesh 时往 localStorage 里注入预制示例。
  * 用 PRESETS_INJECTED_KEY 标记，注入过一次就不会再覆盖用户数据。

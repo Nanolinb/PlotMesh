@@ -68,6 +68,14 @@ function GroupNode({ id, data, selected }: Props) {
     [id, toggleCollapse, rf]
   );
 
+  // ⚠️ 所有 hooks 必须在任何 early return 之前调用，否则切换 collapsed 时
+  // 渲染分支不同会导致 hook 数量不一致 → "Rendered fewer hooks than expected" 白屏。
+  const handleRunGroup = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    const fn = (window as any).__pmRunGroup;
+    if (typeof fn === 'function') fn(id);
+  }, [id]);
+
   /* ===== 折叠态：渲染为单一节点 ===== */
   if (collapsed) {
     const inputs = ports.filter((p) => p.role === 'input' && p.exposed);
@@ -152,11 +160,6 @@ function GroupNode({ id, data, selected }: Props) {
     status === 'running' ? 'linear-gradient(135deg, #f59e0b, #fbbf24)'
       : status === 'error' ? 'linear-gradient(135deg, #ef4444, #f87171)'
         : 'linear-gradient(135deg, #6366f1, #818cf8)';
-  const handleRunGroup = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    const fn = (window as any).__pmRunGroup;
-    if (typeof fn === 'function') fn(id);
-  }, [id]);
 
   return (
     <div className={`group-node ${selected ? 'selected' : ''}`} data-status={status || 'idle'}>

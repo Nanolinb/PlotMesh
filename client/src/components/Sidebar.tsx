@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { NodePackage, PackageGroup } from '../types/nodes';
-import { useNodeStore } from '../store/nodes';
+import { useNodeStore, listRecentCanvases, deleteRecentCanvas, type RecentCanvas } from '../store/nodes';
 
 interface SidebarProps {
   packages: NodePackage[];
@@ -8,6 +8,9 @@ interface SidebarProps {
   onLoadPackage: (id: string) => void;
   onDeletePackage: (id: string) => void;
   onSavePackage: () => void;
+  /** 最近画布列表的版本号，每变化一次促使本组件重新读取 localStorage */
+  recentCanvasesVersion?: number;
+  onLoadRecentCanvas?: (item: RecentCanvas) => void;
 }
 
 const NODE_TYPES = [
@@ -19,7 +22,7 @@ const NODE_TYPES = [
   { type: 'output', label: '📤 输出', description: '预览/下载/复制' },
 ];
 
-export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage }: SidebarProps) {
+export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showGroupMenu, setShowGroupMenu] = useState<string | null>(null); // 哪个 pkgId 正在弹"移动到分组"
   const createGroup = useNodeStore((s) => s.createPackageGroup);
@@ -301,6 +304,59 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
           )}
         </div>
       </div>
+
+      {/* 最近画布：每次画布导入/导出时会推一份快照到这里，方便快速回到旧画布 */}
+      {(() => {
+        // 通过 recentCanvasesVersion 强制重读 localStorage
+        void recentCanvasesVersion;
+        const recents = listRecentCanvases();
+        if (recents.length === 0) return null;
+        return (
+          <div className="sidebar-section" style={{ borderTop: '1px solid var(--border, #e2e8f0)', marginTop: 'auto' }}>
+            <div className="sidebar-section-header">
+              <h3>🕘 最近画布</h3>
+            </div>
+            <div className="package-list" style={{ maxHeight: 200, overflowY: 'auto' }}>
+              {recents.map((r) => (
+                <div
+                  key={r.id}
+                  className="package-item"
+                  title={`${r.nodes.length} 个节点 · ${new Date(r.savedAt).toLocaleString('zh-CN')}`}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+                  onClick={() => onLoadRecentCanvas?.(r)}
+                >
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted, #94a3b8)' }}>
+                      {r.nodes.length} 节点 · {new Date(r.savedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+                  <button
+                    className="save-pkg-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`从最近画布列表中删除「${r.name}」？`)) {
+                        deleteRecentCanvas(r.id);
+                        onLoadRecentCanvas && (() => {})(); // 触发外层重渲染
+                        // 简单做法：刷新自己 — 只能依赖外层调用 setRecentCanvasesVersion
+                        // 这里直接触发一次假调用让 React 重新比较
+                        const evt = new CustomEvent('plotmesh-recent-changed');
+                        window.dispatchEvent(evt);
+                      }
+                    }}
+                    style={{ marginLeft: 4, fontSize: 11 }}
+                    title="从列表删除"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
