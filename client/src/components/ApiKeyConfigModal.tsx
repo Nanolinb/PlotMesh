@@ -1,3 +1,16 @@
+/**
+ * ApiKeyConfigModal · 大模型 API Key 配置弹窗
+ * ---------------------------------------------------------------
+ * 让用户在前端可视化地填入 5 家厂商的 API Key（DeepSeek / GPT / Claude / GLM / 混元）。
+ *
+ * 重要：Key 不会留在浏览器，而是 POST 到 /api/llm/config 由后端写入 server/.env
+ * 文件 — 这样既避免泄露，又能让后端在调用 LLM 时直接读取。
+ *
+ * 行为细节：
+ *  - 加载弹窗时从 GET /api/llm/config 拉一次现有配置，仅显示是否已配置（****）
+ *  - 用户每改一个输入框 → debounce 后写回；不显式"保存"按钮，少一次操作
+ *  - 后端为安全起见返回时不会把真实 Key 回传，只回 has_xxx 布尔状态
+ */
 import { useEffect, useState } from 'react';
 
 type ModelInfo = {

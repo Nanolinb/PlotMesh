@@ -1,3 +1,13 @@
+/**
+ * ConditionNode · 条件分支节点
+ * ---------------------------------------------------------------
+ * 把上游文本按规则分流到「匹配」与「未匹配」两个出口。
+ *
+ * 关键点：
+ *  - 节点有 1 个 target（左）+ 2 个 source（右上/右下），分别对应 true / false 出口
+ *  - mode 支持：contains（包含子串）/ regex（正则匹配）/ equals（完全相等）
+ *  - 执行器在判断后只把结果放进匹配的一支下游，另一支跳过整条链路
+ */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';

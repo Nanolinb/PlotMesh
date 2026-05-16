@@ -1,3 +1,21 @@
+/**
+ * FileUploadNode · 文件上传节点
+ * ---------------------------------------------------------------
+ * 工作流的"原料投料口"：上传一个或多个文件，后端解析成纯文本提供给下游。
+ *
+ * 支持的解析格式（在 server/routes/upload.js 中处理）：
+ *   .txt / .md / .json / .csv / .log（直读）
+ *   .docx（mammoth）
+ *   .xlsx / .xls（xlsx 库）
+ *   .pdf（pdf-parse）
+ *   图片或不识别的二进制 → 给下游一个占位说明，不抛错
+ *
+ * 关键设计：
+ *  - **没有 target handle**：是工作流的源节点，自身不消费上游输入
+ *    （这样设计是为了保证 LLM 的 prompt 隔离机制可靠：文件块永远来自这里）
+ *  - 输出会被自动包进 `<documents>` 标签 + `__PM_FILE__` 前缀，让 LLM 节点识别
+ *  - 支持拖拽上传、点 + 上传按钮上传、双击文件名重命名节点
+ */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';

@@ -1,3 +1,19 @@
+/**
+ * server/src/routes/llm.js · LLM 网关路由
+ * ---------------------------------------------------------------
+ * 统一接管 5 家厂商的 OpenAI 风格 chat 接口，对前端只暴露 /api/llm/chat。
+ * 这样做的好处：
+ *   1. API Key 只放在服务端 .env，前端永远拿不到
+ *   2. 前端只关心 model/messages/temperature，不必关心 baseURL / 鉴权方式
+ *   3. 切换/新增厂商时只需改后端，画布不变
+ *
+ * 端点列表：
+ *   GET  /api/llm/config          返回每个厂商是否已配置 Key（不返回 Key 本身）
+ *   POST /api/llm/config          写入 / 更新某个厂商的 Key（持久化到 server/.env）
+ *   POST /api/llm/chat            统一调用：{ model, messages, temperature, stream }
+ *
+ * 流式：前端目前用 stream:false，等以后做"打字机效果"再开启 SSE。
+ */
 import { Router } from 'express';
 import axios from 'axios';
 import fs from 'fs';

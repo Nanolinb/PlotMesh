@@ -1,3 +1,20 @@
+/**
+ * TextTransformNode · 文本处理节点
+ * ---------------------------------------------------------------
+ * 在不调用 LLM 的前提下做轻量文本变换：大小写、去空格、替换、截取、JSON 抽取等。
+ *
+ * 支持的 transform 取值（共 9 种）：
+ *   upper / lower      — 全部大小写
+ *   trim               — 首尾去空格
+ *   replace            — 用 param → param2 替换
+ *   regex              — param 正则 → param2 替换
+ *   slice              — param/param2 起止切片
+ *   extractJson        — 从输出里抽取首个合法 JSON 对象
+ *   count              — 字符数
+ *   reverse            — 倒序
+ *
+ * 设计目的：避免每个小变换都消耗一次大模型调用（省 API 费用 + 提速）
+ */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';

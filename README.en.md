@@ -3,8 +3,9 @@
 > **A visual canvas where humans and AI co-create.**
 > Stitch human intuition and AI reasoning into a single graph of nodes.
 
-🌐 **Languages**: [中文](README.md) · [English](README.en.md)
+🌐 **Languages**: [中文](README.md) · [English](README.en.md)　|　📜 [Changelog](CHANGELOG.md)
 
+[![version](https://img.shields.io/badge/version-1.1.0-6366f1)](CHANGELOG.md)
 [![Made with React](https://img.shields.io/badge/React-18-61DAFB?logo=react)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)]()
 [![React Flow](https://img.shields.io/badge/React%20Flow-v12-FF0072)]()

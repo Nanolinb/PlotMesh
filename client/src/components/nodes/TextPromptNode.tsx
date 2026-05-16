@@ -1,3 +1,15 @@
+/**
+ * TextPromptNode · 文本提示词节点
+ * ---------------------------------------------------------------
+ * 工作流中最常用的"指令"源节点：用户在这里写一段任务描述（提示词），
+ * 输出会被下游 LLM 节点当作 <instructions> 段执行。
+ *
+ * 关键点：
+ *  - 自带 target / source 两个 handle，既能当中间节点也能当起点
+ *  - 双击节点正文进入编辑态；ESC 取消、点空白处提交
+ *  - 节点标题（label）双击重命名，便于在画布上识别用途
+ *  - promptNumber 由 store 自动维护，多个提示词节点会按顺序拼接到 LLM 输入
+ */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';
@@ -11,15 +23,20 @@ type Props = {
 };
 
 function TextPromptNode({ id, data, selected }: Props) {
+  // 是否正在编辑提示词正文（双击切换）
   const [isEditing, setIsEditing] = useState(false);
+  // 是否正在编辑节点标题（双击切换）
   const [editingTitle, setEditingTitle] = useState(false);
+  // 标题/正文的本地副本：避免每键击都直接落 store，编辑结束才提交
   const [localTitle, setLocalTitle] = useState(data.label || '提示词');
   const [localText, setLocalText] = useState(data.text || '');
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
 
+  // 外部 data 变化（如撤销/重做、加载预设）时同步本地副本
   useEffect(() => { setLocalText(data.text || ''); }, [data.text]);
   useEffect(() => { setLocalTitle(data.label || '提示词'); }, [data.label]);
 
+  /** 输入时实时回写（store 内有 selector，不会重渲染整个画布） */
   const handleChange = useCallback((value: string) => {
     setLocalText(value);
     updateNodeData(id, { text: value });

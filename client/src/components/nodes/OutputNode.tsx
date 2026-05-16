@@ -1,3 +1,16 @@
+/**
+ * OutputNode · 输出节点（终点）
+ * ---------------------------------------------------------------
+ * 工作流的最终落地：把上游文本以指定格式渲染并允许下载/复制。
+ *
+ * 支持格式（OUTPUT_FORMAT_OPTIONS）：
+ *   text / markdown / json / docx / xlsx / pdf / png
+ *
+ * 实现要点：
+ *  - 文本类格式直接 Blob 触发下载
+ *  - docx / xlsx / pdf / png 走 utils/exporters.ts 的真实格式生成（不是改后缀）
+ *  - 内置预览 + 一键复制纯文本
+ */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';

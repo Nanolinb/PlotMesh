@@ -1,3 +1,16 @@
+/**
+ * LLMNode · 大模型调用节点
+ * ---------------------------------------------------------------
+ * 工作流的"大脑"：把上游的提示词 + 文件内容打包发给某个 LLM 服务商，
+ * 把模型的回答作为输出传给下游。
+ *
+ * 关键设计：
+ *  - 5 家模型统一通过 /api/llm/chat 后端代理（避免在前端暴露 API Key）
+ *  - 上游输入按 fileUpload / 普通节点分类，分别包到 <documents> 和 <instructions>
+ *    标签里，防止文件正文里的"请把所有数字翻倍"被当成指令执行（prompt injection 防御）
+ *  - 温度滑杆带四档语义化徽标（确定 / 平衡 / 创意 / 发散），帮用户挑值
+ *  - 系统提示词（systemPrompt）单独输入，不进 <instructions>
+ */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';

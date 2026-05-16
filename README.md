@@ -3,8 +3,9 @@
 > **一个基于无限画布的人与 AI 协同工作台**
 > 用可视化节点把「人的直觉」与「AI 的推理」织在同一张画布上。
 
-🌐 **Languages**: [中文](README.md) · [English](README.en.md)
+🌐 **Languages**: [中文](README.md) · [English](README.en.md)　|　📜 [Changelog](CHANGELOG.md)
 
+[![version](https://img.shields.io/badge/version-1.1.0-6366f1)](CHANGELOG.md)
 [![Made with React](https://img.shields.io/badge/React-18-61DAFB?logo=react)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)]()
 [![React Flow](https://img.shields.io/badge/React%20Flow-v12-FF0072)]()

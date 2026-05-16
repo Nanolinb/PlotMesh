@@ -1,3 +1,21 @@
+/**
+ * server/src/routes/upload.js · 文件上传 + 解析路由
+ * ---------------------------------------------------------------
+ * 接收前端 fileUpload 节点上传的文件，按扩展名解析成纯文本回传，
+ * 让画布上的 LLM / 文本处理节点能直接消费。
+ *
+ * 支持的解析（其它二进制原样存盘，content 留空 + parseError 说明）：
+ *   .txt / .md / .json / .csv / .log    UTF-8 直读
+ *   .docx                               mammoth 抽纯文本
+ *   .xlsx / .xls                        xlsx 库按 sheet 拼接 CSV
+ *   .pdf                                pdf-parse 抽文本（保留段落）
+ *
+ * 关键修复：
+ *   - multer 默认会把中文/日文/繁体文件名搞乱码，这里用 latin1 → utf-8 还原
+ *   - 解析失败时不抛 500，而是返回 parseError，让前端能给出友好提示
+ *
+ * 文件存放：server/uploads/，不入库；上线如果需要持久化建议挂对象存储。
+ */
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';

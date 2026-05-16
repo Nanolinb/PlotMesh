@@ -1,3 +1,15 @@
+/**
+ * server/src/index.js · 后端入口（Express）
+ * ---------------------------------------------------------------
+ * 提供两件事：
+ *   1) /api/llm/*    LLM 网关：统一代理 5 家厂商 + 管理 .env 中的 API Key
+ *   2) /api/upload/* 文件上传：接收前端 fileUpload 节点的文件，解析为纯文本回传
+ *
+ * 端口：默认 3001（可通过环境变量 PORT 覆盖）
+ * 启动：cd server && npm start    （nodemon 开发：npm run dev）
+ *
+ * 跨域：app.use(cors()) 默认全开；上线时建议改成白名单（读 ALLOWED_ORIGINS）。
+ */
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';

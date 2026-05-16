@@ -1,3 +1,25 @@
+/**
+ * store/nodes.ts · 全局工作流状态（zustand）
+ * ---------------------------------------------------------------
+ * 这是整个 PlotMesh 前端的"单一真相源"。负责：
+ *
+ *   1. nodes / edges      — 当前画布数据（与 React Flow 双向绑定）
+ *   2. packages / groups   — 用户保存的"常用功能"（package）和它们的分组
+ *   3. history / future   — 撤销 / 重做栈（最多 MAX_HISTORY 条）
+ *
+ * 持久化策略（localStorage）：
+ *   - 'plotmesh-canvas-draft'      画布工作中草稿（含 nodes / edges，会清掉运行时状态）
+ *   - 'node-editor-packages'       常用功能列表
+ *   - 'node-editor-package-groups' 常用功能的分组
+ *   - 'plotmesh-recent-canvases'   最近 8 张画布快照
+ *   - 'plotmesh-autosave-min'      自动保存间隔（分钟，0=关闭）
+ *   - 'ui-theme' / 'plotmesh-pan-button' 等其它偏好（在 Canvas 组件管理）
+ *
+ * 重要约束：
+ *   - group 节点必须排在它的 children 之前（React Flow v12 要求）
+ *   - 节点的 data 字段不能塞 Date / 函数 等非 JSON 值（会破坏导出/草稿）
+ *   - 任何会改变 nodes/edges 的 setter 应当在动作前先 pushHistory()
+ */
 import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
@@ -8,6 +30,7 @@ import { SAMPLE_PACKAGES, SAMPLE_GROUPS } from '../data/presets';
 export type CustomNode = Node<CustomNodeData>;
 export type CustomEdge = Edge;
 
+/** 撤销/重做栈中的一帧快照（仅画布数据，不含包/历史本身） */
 interface HistorySnapshot {
   nodes: CustomNode[];
   edges: CustomEdge[];

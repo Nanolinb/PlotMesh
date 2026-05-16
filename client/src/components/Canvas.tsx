@@ -1,3 +1,20 @@
+/**
+ * Canvas.tsx · 主画布（应用入口）
+ * ---------------------------------------------------------------
+ * 这个组件是 PlotMesh 前端的"指挥中心"，集中管理：
+ *
+ *   • 画布数据 ↔ React Flow 双向绑定（通过 useNodeStore）
+ *   • 工具栏：运行 / 日志 / 撤销重做 / API 配置 / 存常用功能 / 画布导入导出 / 主题等
+ *   • 拖拽：从 Sidebar 拖节点 / 拖常用功能 → 落到画布对应位置
+ *   • 键盘快捷键：Cmd-C/V/X/D 复制粘贴剪切副本 / Delete 删除 / Cmd-S 存常用功能 / Cmd-Z 撤销
+ *   • 右键菜单：新建节点 / Group / Ungroup（覆盖画布任何区域）
+ *   • 工作流执行器 executeFlow()：拓扑排序、prompt 隔离、流式渲染、condition 分支跳过
+ *   • 局部运行 runGroupOnly(groupId)：仅跑某个 group 内的子图（暴露给 GroupNode 的 ▶ 按钮）
+ *   • 自动保存：按分钟为粒度的 dirty-flag 周期性保存到 localStorage（plotmesh-canvas-draft）
+ *   • 最近画布：导出/导入/覆盖前的快照保留为 8 条供回退
+ *
+ * 文件比较长（>1700 行），各个区域用注释分隔，可以按 "─────── ─" 搜索定位。
+ */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   ReactFlow,

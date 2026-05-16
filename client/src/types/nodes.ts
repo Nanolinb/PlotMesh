@@ -1,3 +1,11 @@
+/**
+ * types/nodes.ts · 全局节点 / 边 / 包 / 模型 类型定义
+ * ---------------------------------------------------------------
+ * 这里定义工作流的"形状"，store/nodes.ts、components/nodes/* 都依赖它。
+ * 所有节点的 data 字段最终会序列化到 localStorage 和导出 JSON 里，所以
+ * 字段尽量保持稳定；新增字段都做成 optional 以兼容历史画布。
+ */
+
 // 节点类型枚举
 export enum NodeType {
   FILE_UPLOAD = 'fileUpload',

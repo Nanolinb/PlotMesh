@@ -1,3 +1,14 @@
+/**
+ * Sidebar · 左侧节点 / 常用功能 / 最近画布 面板
+ * ---------------------------------------------------------------
+ * 三个区域，从上到下：
+ *   1. 节点类型列表 — 拖到画布即创建对应节点
+ *   2. 常用功能（package）— 把选中节点保存为可复用的预设，支持分组、搜索、重命名、移动到分组
+ *   3. 最近画布 — 最多 8 张导入/导出/被覆盖的画布快照，一键回到旧版本
+ *
+ * 所有数据都持久化在 localStorage（key 见 store/nodes.ts）。
+ * 拖拽用 dataTransfer.setData('application/reactflow', type) 触发 Canvas 的 onDrop。
+ */
 import { useState } from 'react';
 import type { NodePackage, PackageGroup } from '../types/nodes';
 import { useNodeStore, listRecentCanvases, deleteRecentCanvas, type RecentCanvas } from '../store/nodes';
