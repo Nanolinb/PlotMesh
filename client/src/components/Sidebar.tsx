@@ -31,6 +31,7 @@ const NODE_TYPES = [
   { type: 'textTransform', label: '🔤 文本处理', description: '大小写/替换/提取' },
   { type: 'condition', label: '🔀 条件分支', description: '按关键词分流' },
   { type: 'output', label: '📤 输出', description: '预览/下载/复制' },
+  { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
 ];
 
 export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {

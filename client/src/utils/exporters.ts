@@ -20,10 +20,14 @@ function triggerDownload(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** 按 Markdown 风格把纯文本切成 docx 段落 */
+/** 按 Markdown 风格把纯文本切成 docx 段落
+ *  额外支持中文常见的"标题：v1、v2、v3"——会渲染成 H3 标题 + 每个值一行项目符号
+ */
 function textToDocxParagraphs(text: string): Paragraph[] {
   const lines = text.split(/\r?\n/);
   const paragraphs: Paragraph[] = [];
+  const colonRe = /^([^:：]+)[:：]\s*(.+)$/;
+  const itemSepRe = /[、，,；;｜|\t]+/;
   for (const line of lines) {
     if (line.startsWith('# ')) {
       paragraphs.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1 }));
@@ -33,6 +37,19 @@ function textToDocxParagraphs(text: string): Paragraph[] {
       paragraphs.push(new Paragraph({ text: line.slice(4), heading: HeadingLevel.HEADING_3 }));
     } else if (line.trim() === '') {
       paragraphs.push(new Paragraph({ text: '' }));
+    } else if (colonRe.test(line) && itemSepRe.test(line)) {
+      // 中文分类：把 "标题：v1、v2、v3" 拆成 H3 + 子项
+      const m = line.match(colonRe)!;
+      const title = m[1].trim();
+      const items = m[2].split(itemSepRe).map((s) => s.trim()).filter(Boolean);
+      if (items.length >= 2 && title.length <= 16) {
+        paragraphs.push(new Paragraph({ text: title, heading: HeadingLevel.HEADING_3 }));
+        for (const it of items) {
+          paragraphs.push(new Paragraph({ text: `• ${it}` }));
+        }
+        continue;
+      }
+      paragraphs.push(new Paragraph({ children: [new TextRun(line)] }));
     } else {
       paragraphs.push(new Paragraph({ children: [new TextRun(line)] }));
     }
@@ -49,12 +66,20 @@ export async function exportAsDocx(text: string, { filename }: BaseOpts): Promis
   triggerDownload(blob, filename);
 }
 
-/** 把字符串解析成"二维数组"以便写入 xlsx。支持 CSV / TSV / Markdown 表格 / 按空白分列 */
+/** 把字符串解析成"二维数组"以便写入 xlsx。
+ *  支持（按优先级）：JSON 对象数组、JSON 二维数组、Markdown 表格、CSV/TSV、
+ *  以及中文常见的"标题：值1、值2、值3" 行式分类（支持全/半角冒号、顿号、逗号、分号、空格）。
+ *  最后兜底每行一个单元格。
+ */
 function parseToTable(text: string): string[][] {
-  const trimmed = text.trim();
+  let trimmed = text.trim();
   if (!trimmed) return [['']];
 
-  // 尝试 JSON 对象数组 → 表格
+  // 0) 剥 markdown 代码块包装：```json ... ``` 或 ``` ... ```
+  const fenceMatch = trimmed.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n```$/);
+  if (fenceMatch) trimmed = fenceMatch[1].trim();
+
+  // 1) JSON 对象数组 [{a:1, b:2}, ...] → 表头 + 行
   try {
     const data = JSON.parse(trimmed);
     if (Array.isArray(data) && data.length && typeof data[0] === 'object' && data[0] !== null) {
@@ -62,8 +87,24 @@ function parseToTable(text: string): string[][] {
       const rows = data.map((r: any) => keys.map((k) => (r[k] ?? '')));
       return [keys, ...rows.map((row) => row.map((v: any) => String(v)))];
     }
+    // 2) JSON 二维数组 [[..],[..]]
     if (Array.isArray(data) && Array.isArray(data[0])) {
       return data.map((row: any[]) => row.map((v) => String(v)));
+    }
+    // 3) JSON 单层对象 {key: [v1, v2, ...]} → 每行一组（关键字 + 值列表）
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const rows: string[][] = [];
+      for (const k of Object.keys(data)) {
+        const v = (data as any)[k];
+        if (Array.isArray(v)) {
+          rows.push([k, ...v.map((x) => String(x))]);
+        } else if (v && typeof v === 'object') {
+          rows.push([k, JSON.stringify(v)]);
+        } else {
+          rows.push([k, String(v)]);
+        }
+      }
+      if (rows.length) return rows;
     }
   } catch {
     /* not json */
@@ -71,7 +112,7 @@ function parseToTable(text: string): string[][] {
 
   const lines = trimmed.split(/\r?\n/).filter((l) => l.length > 0);
 
-  // Markdown 表格（| col1 | col2 |）
+  // 4) Markdown 表格（| col1 | col2 |）
   if (lines[0]?.trim().startsWith('|') && lines[1]?.trim().match(/^\|\s*:?-+:?\s*\|/)) {
     const rows = lines
       .filter((l, i) => i !== 1) // 跳过对齐行
@@ -79,7 +120,7 @@ function parseToTable(text: string): string[][] {
     return rows;
   }
 
-  // CSV / TSV（逗号、分号、tab 列数一致时认为是表格）
+  // 5) CSV / TSV（逗号、分号、tab 列数一致时认为是表格）
   const seps = [',', '\t', ';'];
   for (const sep of seps) {
     const rows = lines.map((l) => l.split(sep).map((c) => c.trim()));
@@ -88,7 +129,30 @@ function parseToTable(text: string): string[][] {
     }
   }
 
-  // 兜底：每行一个单元格
+  // 6) 中文"分类 + 多值"格式：每一行形如 "标题：v1、v2、v3"
+  //    冒号支持半角/全角；分隔符支持 顿号、半/全角逗号、分号、中竖线、tab
+  //    如果至少 2 行命中这个模式，就认为是这种结构
+  {
+    const colonRe = /[:：]\s*/;
+    const itemSepRe = /[、，,；;｜|\t]+/;
+    const matches: string[][] = [];
+    for (const line of lines) {
+      const m = line.split(colonRe);
+      if (m.length >= 2) {
+        const title = m[0].trim();
+        const rest = m.slice(1).join('：').trim();
+        const items = rest.split(itemSepRe).map((s) => s.trim()).filter(Boolean);
+        if (title && items.length >= 1) {
+          matches.push([title, ...items]);
+        }
+      }
+    }
+    if (matches.length >= 2) {
+      return matches;
+    }
+  }
+
+  // 7) 兜底：每行一个单元格
   return lines.map((l) => [l]);
 }
 

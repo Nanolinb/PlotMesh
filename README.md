@@ -5,7 +5,7 @@
 
 🌐 **Languages**: [中文](README.md) · [English](README.en.md)　|　📜 [Changelog](CHANGELOG.md)
 
-[![version](https://img.shields.io/badge/version-1.1.0-6366f1)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.2.0-6366f1)](CHANGELOG.md)
 [![Made with React](https://img.shields.io/badge/React-18-61DAFB?logo=react)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)]()
 [![React Flow](https://img.shields.io/badge/React%20Flow-v12-FF0072)]()
@@ -38,6 +38,7 @@
 | 🔀 | 条件分支 | 按关键词/正则分流，**双出口**（上=匹配，下=未匹配） |
 | 📤 | 输出 | 导出为 **真正的** txt/md/docx/xlsx/pdf/png 文件 |
 | 📦 | 分组 | 自动包围选中节点，可保存为常用功能复用。**展开态 group 标签栏自带 ▶ 按钮**，可仅运行本组内的节点（运行中橙色脉冲、成功绿色、失败红色） |
+| ⏱ | 时间轴 | 横向可拖拽时间轴，配置 fps（60/30/24/12/自定义）和时间显示（秒/帧/SMPTE 时间码）；从上游文本自动解析时间标记生成镜头切换点；右侧每个切换点对应一个 source 端口 |
 
 ## 🎨 工具栏
 
