@@ -23,7 +23,7 @@
  *   - 下游：N 个 source handle，id 形如 "out__<idx>"，竖排均匀分布
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import { useNodeStore } from '../../store/nodes';
 
 type Props = {
@@ -129,6 +129,8 @@ export function splitText(
 
 function SplitterNode({ id, data, selected }: Props) {
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
+  // 当端子数变化时通知 React Flow 重新计算 handle 位置（否则连线会连到旧位置）
+  const updateNodeInternals = useUpdateNodeInternals();
 
   const splitMode: SplitMode = (data.splitMode as SplitMode) || 'auto';
   const portMode: 'auto' | 'manual' = data.portMode || 'auto';
@@ -250,6 +252,12 @@ function SplitterNode({ id, data, selected }: Props) {
     ? manualCount
     : (autoCommittedCount && autoCommittedCount > 0 ? autoCommittedCount : 1);
 
+  // 端子数变化 → 通知 React Flow 重新读取 handle DOM 位置。
+  // 不加这一步的话，刚增/减出来的 handle 会有"视觉位置 ≠ 真实连线锚点"的错位。
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, portCount, updateNodeInternals]);
+
   // auto 模式下：当前切出的段数和已生成的端子数不一致 → 提示用户点 ↻ 重新生成
   const autoNeedsRegen = portMode === 'auto'
     && segments.length > 0
@@ -362,59 +370,61 @@ function SplitterNode({ id, data, selected }: Props) {
           </div>
         )}
 
-        {/* 端子数量 */}
-        <div className="field" style={{ marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <label style={{ fontSize: 11, color: 'var(--text-muted, #64748b)' }}>端子数量</label>
-          <select
-            className="nodrag"
-            value={portMode}
-            onChange={(e) => updateNodeData(id, { portMode: e.target.value } as any)}
-            style={{ flex: 1, padding: '3px 6px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
-          >
-            <option value="auto">自动（按段数）</option>
-            <option value="manual">手动（固定 N）</option>
-          </select>
-          {portMode === 'manual' ? (
-            <input
+        {/* 输出端子数量 — 排版与"切分模式"一致：label 在上，模式选择 + 数字/按钮在下一行 */}
+        <div className="field" style={{ marginBottom: 6 }}>
+          <label style={{ fontSize: 11, color: 'var(--text-muted, #64748b)', display: 'block', marginBottom: 3 }}>输出端子数量</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <select
               className="nodrag"
-              type="number"
-              min={1}
-              max={20}
-              value={manualCount}
-              onChange={(e) => updateNodeData(id, { manualCount: parseInt(e.target.value || '3', 10) } as any)}
-              onKeyDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              style={{ width: 50, padding: '3px 6px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
-            />
-          ) : (
-            <button
-              className="nodrag"
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                // 主动抓取一次上游内容并用当前段数刷新端子数。
-                // 不需要触发画布全量运行——直接读 store 里上游节点已有的 output / text。
-                pullUpstream();
-              }}
-              title={
-                autoNeedsRegen
-                  ? `切出 ${segments.length} 段，但当前是 ${autoCommittedCount ?? 0} 个端子。点击重新抓取上游并生成。`
-                  : `主动抓取上游内容并按段数生成端子（当前 ${segments.length} 段）`
-              }
-              style={{
-                fontSize: 11,
-                padding: '3px 8px',
-                borderRadius: 6,
-                border: '1px solid ' + (autoNeedsRegen ? '#f59e0b' : '#d1d5db'),
-                background: autoNeedsRegen ? '#fef3c7' : 'var(--bg-card-body, #fff)',
-                color: autoNeedsRegen ? '#92400e' : 'var(--text-primary, #1f2937)',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
+              value={portMode}
+              onChange={(e) => updateNodeData(id, { portMode: e.target.value } as any)}
+              style={{ flex: 1, padding: '3px 6px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
             >
-              {autoNeedsRegen ? `↻ 重新抓取 (${segments.length})` : `▶ 抓取并生成 (${segments.length || 0})`}
-            </button>
-          )}
+              <option value="auto">自动（按段数）</option>
+              <option value="manual">手动（固定 N）</option>
+            </select>
+            {portMode === 'manual' ? (
+              <input
+                className="nodrag"
+                type="number"
+                min={1}
+                max={20}
+                value={manualCount}
+                onChange={(e) => updateNodeData(id, { manualCount: parseInt(e.target.value || '3', 10) } as any)}
+                onKeyDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{ width: 56, padding: '3px 6px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
+              />
+            ) : (
+              <button
+                className="nodrag"
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // 主动抓取一次上游内容并用当前段数刷新端子数。
+                  // 不需要触发画布全量运行——直接读 store 里上游节点已有的 output / text。
+                  pullUpstream();
+                }}
+                title={
+                  autoNeedsRegen
+                    ? `切出 ${segments.length} 段，但当前是 ${autoCommittedCount ?? 0} 个端子。点击重新抓取上游并生成。`
+                    : `主动抓取上游内容并按段数生成端子（当前 ${segments.length} 段）`
+                }
+                style={{
+                  fontSize: 11,
+                  padding: '3px 8px',
+                  borderRadius: 6,
+                  border: '1px solid ' + (autoNeedsRegen ? '#f59e0b' : '#d1d5db'),
+                  background: autoNeedsRegen ? '#fef3c7' : 'var(--bg-card-body, #fff)',
+                  color: autoNeedsRegen ? '#92400e' : 'var(--text-primary, #1f2937)',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {autoNeedsRegen ? `↻ 重新抓取 (${segments.length})` : `▶ 抓取并生成 (${segments.length || 0})`}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* 预览 + 警告（外层 div 支持垂直拖拽 resize；高度持久化到 data.previewHeight） */}
