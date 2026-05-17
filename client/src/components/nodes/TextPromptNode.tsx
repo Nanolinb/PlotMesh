@@ -11,7 +11,7 @@
  *  - promptNumber 由 store 自动维护，多个提示词节点会按顺序拼接到 LLM 输入
  */
 import { Handle, Position } from '@xyflow/react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNodeStore } from '../../store/nodes';
 import type { TextPromptNodeData } from '../../types/nodes';
 
@@ -32,9 +32,22 @@ function TextPromptNode({ id, data, selected }: Props) {
   const [localText, setLocalText] = useState(data.text || '');
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
 
+  // 预览态 / 编辑态 共用的"输入框尺寸记忆"。
+  // 进入编辑态时，textarea 不再回到默认 80px：
+  //  1) 优先用 data.editorHeight（用户上一次手动调整后的高度，跨编辑会话保留）
+  //  2) 否则用退出编辑前预览 div 的实际高度（视觉上无跳变）
+  // 默认值 80 仅作兜底。
+  const previewRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [editorHeight, setEditorHeight] = useState<number>((data as any).editorHeight || 80);
+
   // 外部 data 变化（如撤销/重做、加载预设）时同步本地副本
   useEffect(() => { setLocalText(data.text || ''); }, [data.text]);
   useEffect(() => { setLocalTitle(data.label || '提示词'); }, [data.label]);
+  useEffect(() => {
+    const h = (data as any).editorHeight;
+    if (typeof h === 'number' && h > 0) setEditorHeight(h);
+  }, [(data as any).editorHeight]);
 
   /** 输入时实时回写（store 内有 selector，不会重渲染整个画布） */
   const handleChange = useCallback((value: string) => {
@@ -53,6 +66,35 @@ function TextPromptNode({ id, data, selected }: Props) {
   const bumpOrder = useCallback((delta: number) => {
     (useNodeStore.getState() as any).swapPromptOrder?.(id, delta < 0 ? 'up' : 'down');
   }, [id]);
+
+  /** 进入编辑态：高度的优先级
+   *   1) 用户上一次拉伸过的高度（data.editorHeight）→ 跨编辑会话保留
+   *   2) 否则用退出预览前 div 的实际高度（视觉无跳变）
+   *   3) 兜底 80px
+   */
+  const enterEditing = useCallback(() => {
+    const stored = (useNodeStore.getState().nodes as any[])
+      .find((n) => n.id === id)?.data?.editorHeight;
+    if (typeof stored === 'number' && stored > 0) {
+      setEditorHeight(stored);
+    } else if (previewRef.current) {
+      const h = previewRef.current.offsetHeight;
+      if (h > 0) setEditorHeight(Math.max(80, Math.min(800, h)));
+    }
+    setIsEditing(true);
+  }, [id]);
+
+  /** 退出编辑态：把 textarea 当前高度记到 store，下次再编辑时直接用同样的高度 */
+  const exitEditing = useCallback(() => {
+    if (textareaRef.current) {
+      const h = textareaRef.current.offsetHeight;
+      if (h > 0 && Math.abs(h - editorHeight) > 1) {
+        setEditorHeight(h);
+        updateNodeData(id, { editorHeight: h } as any);
+      }
+    }
+    setIsEditing(false);
+  }, [id, editorHeight, updateNodeData]);
 
   return (
     <div className={`node-card text-prompt-node ${selected ? 'selected' : ''}`} data-status={data.status || 'idle'}>
@@ -146,19 +188,32 @@ function TextPromptNode({ id, data, selected }: Props) {
       <div className="node-body">
         {isEditing ? (
           <textarea
+            ref={textareaRef}
             autoFocus
             className="prompt-textarea nodrag"
             value={localText}
             onChange={(e) => handleChange(e.target.value)}
-            onBlur={() => setIsEditing(false)}
+            onBlur={exitEditing}
+            // 鼠标松开（包括拉伸 resize 手柄）后立即把当前尺寸记下来
+            onMouseUp={() => {
+              if (textareaRef.current) {
+                const h = textareaRef.current.offsetHeight;
+                if (h > 0 && Math.abs(h - editorHeight) > 1) {
+                  setEditorHeight(h);
+                  updateNodeData(id, { editorHeight: h } as any);
+                }
+              }
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Escape') setIsEditing(false);
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) setIsEditing(false);
+              if (e.key === 'Escape') exitEditing();
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) exitEditing();
               e.stopPropagation();
             }}
             placeholder="输入提示词内容..."
             style={{
               width: '100%',
+              // 进入编辑态时使用记住的高度，不再回到默认 80px
+              height: `${editorHeight}px`,
               minHeight: '80px',
               border: '1px solid #d1d5db',
               borderRadius: '6px',
@@ -166,12 +221,14 @@ function TextPromptNode({ id, data, selected }: Props) {
               fontSize: '13px',
               resize: 'vertical',
               fontFamily: 'inherit',
+              boxSizing: 'border-box',
             }}
           />
         ) : (
           <div
+            ref={previewRef}
             className="node-body-placeholder"
-            onDoubleClick={(e) => { e.stopPropagation(); setIsEditing(true); }}
+            onDoubleClick={(e) => { e.stopPropagation(); enterEditing(); }}
             style={{
               minHeight: '40px',
               padding: '6px',
