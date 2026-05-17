@@ -5,6 +5,16 @@
 
 ---
 
+## [1.4.1] — 2026-05-17
+
+### Changed · 优化
+- **多层 Group 现在可以保存为常用功能**：v1.4.0 已经支持画布上嵌套 group，但当时保存为常用功能时嵌套结构会被摊平为单层（只剩叶子节点）。本版改造 `savePackage` / `loadPackage`，让多层 group 完整保留嵌套层级，加载后可以层层展开/折叠。
+  - 保存：递归收集所有后代（含嵌套 group），区分"顶层"与"嵌套"节点的坐标基准；每层嵌套 group 的对外端口（exposedPorts）都重新推断一遍，避免引用 stale 数据。
+  - 加载：所有节点（含嵌套 group）生成新 id，`parentId` 与嵌套 group 的 `exposedPorts.childNodeId` 都跟着 idMap 重映射；嵌套 group 默认折叠为黑盒，与单层 group 语义一致。
+  - 节点按"父在前"的拓扑顺序输出，符合 React Flow v12 约束。
+
+---
+
 ## [1.4.0] — 2026-05-17
 
 ### Changed · 优化

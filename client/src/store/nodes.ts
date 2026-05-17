@@ -367,29 +367,35 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     const targetGroup = options?.group || '';
     const { nodes, edges, packages: existingPackages } = get();
 
-    // 选中 group 时，自动把它的所有子节点纳入打包范围
-    // （场景：用户拖一个折叠的常用功能到画布想"再存一份/覆盖"——直接选中 group 就够了）
+    // 递归收集：把"被选中节点 + 其所有后代节点（含嵌套 group）"全部纳入
+    // 关键改进：保留 group 节点本身，从而支持多层 group 的打包/还原。
     const expandedIds = new Set<string>(nodeIds);
+    const collectDescendants = (parentId: string) => {
+      nodes.forEach((c: any) => {
+        if (c.parentId === parentId && !expandedIds.has(c.id)) {
+          expandedIds.add(c.id);
+          if (c.type === 'group') collectDescendants(c.id);
+        }
+      });
+    };
     nodeIds.forEach((id) => {
       const n = nodes.find((x: any) => x.id === id);
-      if (n && n.type === 'group') {
-        nodes.forEach((c: any) => {
-          if (c.parentId === id) expandedIds.add(c.id);
-        });
-      }
+      if (n && n.type === 'group') collectDescendants(id);
     });
 
-    // 只处理真实节点（排除 group 节点，避免嵌套打包出错）
-    const pkgNodes = nodes.filter((n: any) => expandedIds.has(n.id) && n.type !== 'group');
-    if (pkgNodes.length === 0) {
+    // 全部节点（含嵌套 group）；外层 savePackage 包装时还会再裹一层新 group
+    const pkgNodesAll = nodes.filter((n: any) => expandedIds.has(n.id));
+    // 仅"叶子节点"用于推断对外端口、估算包围盒
+    const pkgLeafNodes = pkgNodesAll.filter((n: any) => n.type !== 'group');
+    if (pkgLeafNodes.length === 0) {
       return { ok: false, action: 'created', message: '没有可保存的节点' };
     }
 
     const pkgEdges = edges.filter(
-      (e) => pkgNodes.some((n: any) => n.id === e.source) && pkgNodes.some((n: any) => n.id === e.target)
+      (e) => pkgNodesAll.some((n: any) => n.id === e.source) && pkgNodesAll.some((n: any) => n.id === e.target)
     );
 
-    // 计算所有选中节点的绝对坐标（考虑父 group）
+    // 计算节点的绝对坐标（考虑父 group 的偏移链）
     const getAbsPos = (n: any) => {
       let x = n.position?.x || 0;
       let y = n.position?.y || 0;
@@ -404,20 +410,65 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       return { x, y };
     };
 
-    // 存储时：以最左上角节点为原点 (0,0) 保存相对坐标，方便加载
+    // 顶层节点（在选中集合中、parent 不在集合中的节点）作为坐标归一化基准
+    // 叶子坐标基准只看叶子最左上的绝对坐标
     let minXAbs = Infinity, minYAbs = Infinity;
-    pkgNodes.forEach((n: any) => {
+    pkgLeafNodes.forEach((n: any) => {
       const abs = getAbsPos(n);
       minXAbs = Math.min(minXAbs, abs.x);
       minYAbs = Math.min(minYAbs, abs.y);
     });
-    const pkgNodesNormalized = pkgNodes.map((n: any) => {
-      const abs = getAbsPos(n);
-      // 剥离 parentId 和 extent，保存的是"独立"节点
-      const { parentId, extent, ...rest } = n;
+
+    // 序列化保存：
+    //  - 顶层节点（parent 不在 expandedIds 内）转绝对坐标，剥离 parentId/extent
+    //  - 嵌套节点（parent 在 expandedIds 内）保留 parentId/extent + 原相对坐标
+    //  - 嵌套 group 节点：用其后代叶子 + 内部边重新推断 exposedPorts（保证加载后折叠态端口正确）
+    const collectAllDescendants = (gid: string): any[] => {
+      const result: any[] = [];
+      const stack = [gid];
+      while (stack.length) {
+        const cur = stack.pop()!;
+        nodes.forEach((c: any) => {
+          if (c.parentId === cur) {
+            result.push(c);
+            if (c.type === 'group') stack.push(c.id);
+          }
+        });
+      }
+      return result;
+    };
+    const pkgNodesNormalized = pkgNodesAll.map((n: any) => {
+      // 嵌套 group：补 exposedPorts
+      let nWithPorts = n;
+      if (n.type === 'group') {
+        const descendants = collectAllDescendants(n.id);
+        const innerLeaves = descendants.filter((c) => c.type !== 'group');
+        const innerEdges = edges.filter(
+          (e) => descendants.some((c) => c.id === e.source) && descendants.some((c) => c.id === e.target)
+        );
+        nWithPorts = {
+          ...n,
+          data: {
+            ...n.data,
+            exposedPorts: inferExposedPorts(innerLeaves, innerEdges),
+            childCount: innerLeaves.length,
+          },
+        };
+      }
+
+      const isTopLevel = !nWithPorts.parentId || !expandedIds.has(nWithPorts.parentId);
+      if (isTopLevel) {
+        const abs = getAbsPos(nWithPorts);
+        const { parentId, extent, ...rest } = nWithPorts;
+        return {
+          ...rest,
+          position: { x: abs.x - minXAbs, y: abs.y - minYAbs },
+          selected: false,
+        };
+      }
+      // 嵌套：保留原 parentId/extent 与相对位置；落地后由 loadPackage 重新映射 id
       return {
-        ...rest,
-        position: { x: abs.x - minXAbs, y: abs.y - minYAbs },
+        ...nWithPorts,
         selected: false,
       };
     });
@@ -479,7 +530,8 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     const padding = 40;
     const headerPad = 30;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    pkgNodes.forEach((n: any) => {
+    // 用叶子节点计算包围盒（叶子有固定的默认尺寸；嵌套 group 的范围由其子节点决定）
+    pkgLeafNodes.forEach((n: any) => {
       const abs = getAbsPos(n);
       const size = getSize(n.type);
       minX = Math.min(minX, abs.x);
@@ -509,35 +561,74 @@ export const useNodeStore = create<NodeStore>((set, get) => {
         label: pkg.name || '功能组',
         packageId: pkg.id,
         collapsed: false,
-        exposedPorts: inferExposedPorts(pkgNodes, pkgEdges),
-        childCount: pkgNodes.length,
+        // 端口推断只看叶子节点（嵌套 group 内部边都算"内部"，所以推断仍正确）
+        exposedPorts: inferExposedPorts(pkgLeafNodes, pkgEdges),
+        childCount: pkgLeafNodes.length,
       },
       zIndex: -1,
       selectable: true,
       draggable: true,
     };
 
-    // 转子节点为相对于新 group 的坐标
-    // 要从画布移除：所有原始 nodeIds（含原 group） + 自动展开的子节点
+    // 把所有节点（含嵌套 group 与叶子）一并迁入新外层 group：
+    //   - 顶层节点（parent 不在 expandedIds 内）→ 重新挂到 groupId，坐标转为相对新 group
+    //   - 嵌套节点（parent 在 expandedIds 内）→ 维持原 parentId 与相对位置
+    // 要从画布移除：所有原始 nodeIds（含原 group） + 自动展开的后代
     const removeIdSet = new Set<string>([...nodeIds, ...expandedIds]);
     const others = nodes.filter((n: any) => !removeIdSet.has(n.id));
-    const newChildren = pkgNodes.map((n: any) => {
-      const abs = getAbsPos(n);
-      return {
-        ...n,
-        parentId: groupId,
-        extent: 'parent' as const,
-        position: {
-          x: abs.x - groupPosition.x,
-          y: abs.y - groupPosition.y,
-        },
-        selected: false,
-      };
+    const newChildren = pkgNodesAll.map((n: any) => {
+      const isTopLevel = !n.parentId || !expandedIds.has(n.parentId);
+      if (isTopLevel) {
+        const abs = getAbsPos(n);
+        return {
+          ...n,
+          parentId: groupId,
+          extent: 'parent' as const,
+          position: {
+            x: abs.x - groupPosition.x,
+            y: abs.y - groupPosition.y,
+          },
+          selected: false,
+        };
+      }
+      // 嵌套：parentId 仍指向原内部 group（同样在 newChildren 里），位置保持相对父级
+      return { ...n, selected: false };
     });
 
-    // group 节点必须在子节点之前（React Flow 要求）
+    // group 节点必须在它所有子节点之前（React Flow 要求）。
+    // 我们这里有一个外层新 group + 若干嵌套老 group + 叶子，
+    // 必须按"父在前"的拓扑顺序输出。
+    const ordered: any[] = [groupNode];
+    const idToNode = new Map<string, any>();
+    newChildren.forEach((n) => idToNode.set(n.id, n));
+    const placed = new Set<string>([groupId]);
+    // 反复扫描直到所有节点入列：parent 已 placed 才能 place
+    let safety = newChildren.length + 10;
+    let remaining = [...newChildren];
+    while (remaining.length && safety-- > 0) {
+      const next: any[] = [];
+      remaining.forEach((n) => {
+        if (placed.has(n.parentId)) {
+          ordered.push(n);
+          placed.add(n.id);
+        } else {
+          next.push(n);
+        }
+      });
+      if (next.length === remaining.length) {
+        // 出现孤儿（parent 不在集合内）—— 直接接到外层 group
+        next.forEach((n) => {
+          ordered.push({ ...n, parentId: groupId });
+          placed.add(n.id);
+        });
+        remaining = [];
+        break;
+      }
+      remaining = next;
+    }
+
     set({
-      nodes: [...others, groupNode, ...newChildren],
+      nodes: [...others, ...ordered],
       packages,
     });
 
@@ -699,15 +790,40 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     const offsetX = 20 + (existingNodes.length * 8);
     const offsetY = 20 + (existingNodes.length * 8);
 
+    // 1) 给所有节点（含嵌套 group）生成新 id
     const idMap = new Map<string, string>();
     const suffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
-    const newNodes = pkg.nodes.map((n: any, i: number) => {
+    const allPkgNodes = (pkg.nodes || []).map((n: any, i: number) => {
       const newId = `${n.type}-${suffix}-${i}`;
       idMap.set(n.id, newId);
       return { ...n, id: newId, selected: false };
     });
 
-    const newEdges = pkg.edges.map((e: any, i: number) => ({
+    // 2) parentId 也要映射到新 id（嵌套 group 的关键）
+    //    嵌套 group 的 exposedPorts.childNodeId 也要映射，否则折叠态找不到对应子节点
+    const remappedPkgNodes = allPkgNodes.map((n: any) => {
+      let nMapped = n;
+      if (n.type === 'group' && Array.isArray(n.data?.exposedPorts)) {
+        nMapped = {
+          ...n,
+          data: {
+            ...n.data,
+            exposedPorts: n.data.exposedPorts.map((p: any) => ({
+              ...p,
+              childNodeId: idMap.get(p.childNodeId) || p.childNodeId,
+            })),
+          },
+        };
+      }
+      if (nMapped.parentId && idMap.has(nMapped.parentId)) {
+        return { ...nMapped, parentId: idMap.get(nMapped.parentId), extent: 'parent' as const };
+      }
+      // 没 parent 或 parent 不在包内 → 视为顶层
+      const { parentId, extent, ...rest } = nMapped;
+      return rest;
+    });
+
+    const newEdges = (pkg.edges || []).map((e: any, i: number) => ({
       ...e,
       id: `edge-${suffix}-${i}`,
       source: idMap.get(e.source) || e.source,
@@ -715,39 +831,63 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       selected: false,
     }));
 
-    // 计算包围框
+    // 3) 顶层节点 = 没有 parentId 的；只有顶层节点的坐标参与外层包围盒计算
+    const topLevel = remappedPkgNodes.filter((n: any) => !n.parentId);
+    const leafTopLevel = topLevel.filter((n: any) => n.type !== 'group');
+
+    // 估算尺寸：叶子节点用预设；嵌套 group 节点用自身保存的 width/height
+    const sizeOf = (n: any): { w: number; h: number } => {
+      if (n.type === 'group') {
+        return {
+          w: n.style?.width || n.width || 240,
+          h: n.style?.height || n.height || 160,
+        };
+      }
+      return nodeSizes[n.type] || { w: 200, h: 130 };
+    };
+
     const padding = 40;
     const headerPad = 30;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    newNodes.forEach((n: any) => {
-      const size = nodeSizes[n.type] || { w: 300, h: 200 };
+    // 把"叶子顶层 + 嵌套 group 顶层"都纳入包围盒
+    topLevel.forEach((n: any) => {
+      const sz = sizeOf(n);
       const x = (n.position?.x || 0) + offsetX;
       const y = (n.position?.y || 0) + offsetY;
       minX = Math.min(minX, x);
       minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + size.w);
-      maxY = Math.max(maxY, y + size.h);
+      maxX = Math.max(maxX, x + sz.w);
+      maxY = Math.max(maxY, y + sz.h);
     });
+    if (!Number.isFinite(minX)) {
+      // 包内连一个节点都没有 —— 异常路径，直接跳过
+      return;
+    }
 
     const groupId = `group-${suffix}-loaded`;
     const groupPosition = { x: minX - padding, y: minY - padding - headerPad };
     const groupWidth = Math.max(240, (maxX - minX) + padding * 2);
     const groupHeight = Math.max(140, (maxY - minY) + padding * 2 + headerPad);
 
+    // 4) 推断对外端口：只看叶子节点（深层 group 内的边都视为内部边）
+    const leafForPorts = remappedPkgNodes.filter((n: any) => n.type !== 'group');
+    const exposed = inferExposedPorts(leafForPorts, newEdges);
+    const collapsedH = Math.max(90, ((exposed.length || 1) * 16) + 70);
+
     const groupNode: any = {
       id: groupId,
       type: 'group',
       position: groupPosition,
-      style: { width: 200, height: Math.max(90, ((inferExposedPorts(newNodes, newEdges).length || 1) * 16) + 70) },
+      style: { width: 200, height: collapsedH },
       width: 200,
-      height: Math.max(90, ((inferExposedPorts(newNodes, newEdges).length || 1) * 16) + 70),
+      height: collapsedH,
       data: {
         type: 'group',
         label: pkg.name || '功能组',
         packageId: pkg.id,
         collapsed: true,            // 拖出时默认折叠
-        exposedPorts: inferExposedPorts(newNodes, newEdges),
-        childCount: newNodes.length,
+        exposedPorts: exposed,
+        childCount: leafForPorts.length,
         expandedSize: { w: groupWidth, h: groupHeight }, // 双击展开后还原此尺寸
       },
       zIndex: -1,
@@ -755,20 +895,84 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       draggable: true,
     };
 
-    // 子节点转为相对 group 的坐标，默认隐藏（折叠态）
-    const newChildren = newNodes.map((n: any) => ({
-      ...n,
-      parentId: groupId,
-      extent: 'parent' as const,
-      hidden: true,
-      position: {
-        x: (n.position?.x || 0) + offsetX - groupPosition.x,
-        y: (n.position?.y || 0) + offsetY - groupPosition.y,
-      },
-    }));
+    // 5) 顶层节点 → 重新挂到外层 groupId（坐标 + offset 后转为相对外层 group 的坐标）；
+    //    嵌套节点 → 保留 parentId 与原相对位置即可。
+    //    所有子节点折叠态默认 hidden=true。
+    //    嵌套的 group 节点也强制 collapsed=true（折叠为黑盒），让用户看到的是层层包装的盒子，
+    //    与单层 group 的折叠语义保持一致。
+    const newChildrenMapped = remappedPkgNodes.map((n: any) => {
+      const isInnerGroup = n.type === 'group';
+      const baseData = isInnerGroup
+        ? {
+            ...n.data,
+            collapsed: true,
+            // 端口推断：只对该 group 内部直接子节点（一层）做推断 —— 这里简单沿用已保存的 exposedPorts
+            // 若包内未保存 exposedPorts，留空，由用户后续展开时再操作
+            expandedSize: n.data?.expandedSize || { w: n.style?.width || 240, h: n.style?.height || 160 },
+          }
+        : n.data;
+      // 嵌套 group 折叠态尺寸用统一的 200×collapsedH 风格
+      const innerCollapsedH = isInnerGroup
+        ? Math.max(90, ((n.data?.exposedPorts?.length || 1) * 16) + 70)
+        : null;
+
+      if (!n.parentId) {
+        const out: any = {
+          ...n,
+          parentId: groupId,
+          extent: 'parent' as const,
+          hidden: true,
+          position: {
+            x: (n.position?.x || 0) + offsetX - groupPosition.x,
+            y: (n.position?.y || 0) + offsetY - groupPosition.y,
+          },
+          data: baseData,
+        };
+        if (isInnerGroup) {
+          out.width = 200;
+          out.height = innerCollapsedH;
+          out.style = { ...(n.style || {}), width: 200, height: innerCollapsedH };
+        }
+        return out;
+      }
+      // 嵌套节点：跟随父级折叠隐藏；嵌套 group 也变为折叠态
+      const out: any = { ...n, hidden: true, data: baseData };
+      if (isInnerGroup) {
+        out.width = 200;
+        out.height = innerCollapsedH;
+        out.style = { ...(n.style || {}), width: 200, height: innerCollapsedH };
+      }
+      return out;
+    });
+
+    // 6) 按 "父在前" 拓扑顺序输出（React Flow 要求）
+    const ordered: any[] = [groupNode];
+    const placed = new Set<string>([groupId]);
+    let remaining = [...newChildrenMapped];
+    let safety = newChildrenMapped.length + 10;
+    while (remaining.length && safety-- > 0) {
+      const next: any[] = [];
+      remaining.forEach((n) => {
+        if (placed.has(n.parentId)) {
+          ordered.push(n);
+          placed.add(n.id);
+        } else {
+          next.push(n);
+        }
+      });
+      if (next.length === remaining.length) {
+        // 孤儿兜底
+        next.forEach((n) => {
+          ordered.push({ ...n, parentId: groupId });
+          placed.add(n.id);
+        });
+        break;
+      }
+      remaining = next;
+    }
 
     set({
-      nodes: [...existingNodes, groupNode, ...newChildren],
+      nodes: [...existingNodes, ...ordered],
       edges: [...get().edges, ...newEdges],
     });
     setTimeout(() => get().updatePromptNumbers(), 0);
