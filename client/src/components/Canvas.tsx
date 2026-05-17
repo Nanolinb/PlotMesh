@@ -35,6 +35,7 @@ import GroupNode from './nodes/GroupNode';
 import ConditionNode from './nodes/ConditionNode';
 import TextTransformNode from './nodes/TextTransformNode';
 import TimelineNode from './nodes/TimelineNode';
+import SplitterNode, { splitText as splitTextHelper } from './nodes/SplitterNode';
 import Sidebar from './Sidebar';
 import ApiKeyConfigModal from './ApiKeyConfigModal';
 import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, type RecentCanvas } from '../store/nodes';
@@ -48,6 +49,7 @@ const nodeTypes = {
   condition: ConditionNode,
   textTransform: TextTransformNode,
   timeline: TimelineNode,
+  splitter: SplitterNode,
 };
 
 let idCounter = 0;
@@ -74,6 +76,17 @@ function getDefaultData(type: string): any {
       resizeMode: 'stretch',
       timeMode: 'seconds',
       cuts: [],
+      status: 'idle',
+    };
+    case 'splitter': return {
+      type: 'splitter',
+      label: '分叉',
+      splitMode: 'auto',
+      portMode: 'auto',
+      manualCount: 3,
+      delimiter: '---',
+      regex: '\\n\\n',
+      upstreamText: '',
       status: 'idle',
     };
     default: return { type: 'textPrompt', label: '', text: '', promptNumber: 0, status: 'idle' };
@@ -815,6 +828,17 @@ export default function Canvas() {
         typeof s === 'string' && s.startsWith('__PM_FILE__\n') ? s.replace(/^__PM_FILE__\n/, '') : s;
 
       const results = new Map<string, string>();
+      // 读取一条上游边对应的结果。
+      // 对于 splitter / timeline 等"多输出端子"节点，会优先用 `${source}__${sourceHandle}` 取分段结果；
+      // 取不到时回退到节点自身的 results.get(source)。
+      const readResultForEdge = (e: any): string | undefined => {
+        if (e.sourceHandle) {
+          const k = `${e.source}__${e.sourceHandle}`;
+          const v = results.get(k);
+          if (v !== undefined) return v;
+        }
+        return results.get(e.source);
+      };
       let head = 0;
       while (head < queue.length) {
         const nodeId = queue[head];
@@ -861,7 +885,7 @@ export default function Canvas() {
           const instructionChunks: string[] = [];
           filteredEdges.forEach((e: any) => {
             if (e.target !== nodeId) return;
-            const v = results.get(e.source);
+            const v = readResultForEdge(e);
             if (!v) return;
             if (typeof v === 'string' && v.startsWith('__PM_FILE__\n')) {
               fileChunks.push(v.replace(/^__PM_FILE__\n/, ''));
@@ -946,7 +970,7 @@ export default function Canvas() {
         }
         if (data.type === 'output') {
           let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
           upstream = stripFilePrefix(upstream);
           results.set(nodeId, upstream);
           storeUpdateNodeData(nodeId, { status: 'success', output: upstream });
@@ -956,7 +980,7 @@ export default function Canvas() {
         // 输出每个 cut 的时间字符串（按当前显示模式），以备下游做镜头编排。
         if (data.type === 'timeline') {
           let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
           upstream = stripFilePrefix(upstream);
           // 写回 upstreamText，触发节点内部的 useEffect 解析 cuts
           storeUpdateNodeData(nodeId, { upstreamText: upstream, status: 'success' });
@@ -983,10 +1007,39 @@ export default function Canvas() {
           results.set(nodeId, lines);
         }
 
+        // 分叉节点：把上游一段文本切成 N 段，分别从 source handle out__0 / out__1 / ... 出去
+        if (data.type === 'splitter') {
+          let upstream = '';
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
+          upstream = stripFilePrefix(upstream);
+          const d = data as any;
+          // 把上游写到节点 data.upstreamText，让节点 UI 能预览切分结果
+          storeUpdateNodeData(nodeId, { upstreamText: upstream });
+          const segments = splitTextHelper(
+            upstream,
+            d.splitMode || 'auto',
+            d.delimiter || '---',
+            d.regex || '\\n\\n',
+          );
+          const portMode = d.portMode || 'auto';
+          const portCount = portMode === 'manual'
+            ? Math.max(1, Math.min(20, d.manualCount ?? 3))
+            : Math.max(1, segments.length || 1);
+          // 每个端子写一份分段结果到 results；下游边按 sourceHandle=out__<idx> 取
+          for (let i = 0; i < portCount; i++) {
+            const seg = segments[i] ?? '';
+            results.set(`${nodeId}__out__${i}`, seg);
+          }
+          // 节点自身的"默认输出"取第 0 段（兼容下游连了节点本身但没指定 handle 的情况）
+          results.set(nodeId, segments[0] ?? '');
+          storeUpdateNodeData(nodeId, { status: 'success' });
+          log(`  🔀 切成 ${segments.length} 段 / ${portCount} 个端子`);
+        }
+
         // 条件分支：根据 mode 和 keyword 判定 true/false 分支
         if (data.type === 'condition') {
           let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
           upstream = stripFilePrefix(upstream);
           const d = data as any;
           const kw = String(d.keyword || '');
@@ -1010,7 +1063,7 @@ export default function Canvas() {
         // 文本处理：各种字符串变换
         if (data.type === 'textTransform') {
           let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = results.get(e.source) || upstream; });
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
           upstream = stripFilePrefix(upstream);
           const d = data as any;
           const tf = d.transform || 'trim';
@@ -1426,6 +1479,7 @@ export default function Canvas() {
             { type: 'textTransform', label: '🔤 文本处理' },
             { type: 'condition', label: '🔀 条件分支' },
             { type: 'output', label: '📤 输出' },
+            { type: 'splitter', label: '🔀 分叉' },
             { type: 'timeline', label: '⏱ 时间轴' },
           ];
           const closeMenu = () => setCtxMenu(null);

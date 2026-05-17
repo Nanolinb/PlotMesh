@@ -5,7 +5,7 @@
 
 🌐 **Languages**: [中文](README.md) · [English](README.en.md)　|　📜 [Changelog](CHANGELOG.md)
 
-[![version](https://img.shields.io/badge/version-1.2.3-6366f1)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.3.0-6366f1)](CHANGELOG.md)
 [![Made with React](https://img.shields.io/badge/React-18-61DAFB?logo=react)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)]()
 [![React Flow](https://img.shields.io/badge/React%20Flow-v12-FF0072)]()
@@ -34,6 +34,7 @@ Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets y
 | 🤖 | LLM | Calls DeepSeek / GPT / Claude / GLM / Hunyuan. Auto-classifies upstream input as *reference material* vs *instruction* to prevent prompt injection. **Temperature** slider has *Stable / Balanced / Creative / Wild* tier badges. |
 | 🔤 | Text Transform | 9 transforms: case, trim, replace, JSON extract, count, etc. |
 | 🔀 | Condition | Route by keyword/regex. **Two outputs**: top = match, bottom = no match. |
+| 🔀 | Splitter | Split one upstream string into N segments, **one independent output port per segment**. Supports JSON array / numbered / bullet list / custom delimiter / regex; ports can auto-grow with segment count or be fixed manually. |
 | 📤 | Output | Export to **real** txt/md/docx/xlsx/pdf/png files, or pick **web** to open the rendered HTML directly in a new browser tab (built-in Markdown→HTML renderer with light/dark themes). |
 | 📦 | Group | Auto-frames selected nodes; save as a reusable preset. **The expanded group label has a ▶ button** to run only the nodes inside (orange pulse while running, green on success, red on error). |
 | ⏱ | Timeline | Horizontal resizable timeline. Choose fps (60/30/24/12/custom) and time display (seconds / frames / SMPTE timecode). Auto-parses time markers from upstream text to generate cut points; each cut becomes a source port on the right. |
