@@ -128,21 +128,6 @@ Either of:
 
 The File Upload node **has no input port** — its output is auto-wrapped in `<documents>` as reference material, while prompts are wrapped in `<instructions>`. So even if the file contains "please double every number", the model won't act on it.
 
-## 📦 Sharing it with others — deployment paths
-
-### Path A · Local handoff (10 min)
-Invite collaborators to the GitHub repo and let them follow the Quick Start. **Good for**: 1–3 technical users; **downside**: each person needs Node + their own API key.
-
-### Path B · Hosted (recommended, half a day)
-- **Frontend** → Vercel / Netlify / Cloudflare Pages: `cd client && npm run build`, push `dist/`, get HTTPS URL.
-- **Backend** → Railway / Render / Fly.io: deploy from GitHub, attach a persistent volume for `uploads/`, set API keys as env vars.
-- Use `VITE_API_BASE` in the frontend to point at the public backend URL.
-
-**Good for**: friends/coworkers visiting one URL, you pay for API. **Budget**: frontend free + backend ~$5/mo + LLM usage (DeepSeek is dirt cheap).
-
-### Path C · Productize (1–2 weeks)
-Add user auth (Clerk / Supabase Auth) + workflow persistence in a DB + per-user quota / billing. Only worth doing once Path B has confirmed someone actually wants it.
-
 ## 🏗 Architecture
 
 - **Frontend**: Vite + React 18 + TypeScript + [React Flow](https://reactflow.dev/) v12 + [Zustand](https://github.com/pmndrs/zustand)
