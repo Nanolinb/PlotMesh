@@ -140,6 +140,8 @@ function SplitterNode({ id, data, selected }: Props) {
   // 不跟着 segments.length 实时变，避免 LLM 输出抖动时下游边乱接。
   // segments.length 与它不一致时按钮显示 ↻ 提示重新生成。
   const autoCommittedCount: number | undefined = data.autoCommittedCount;
+  // 预览框高度（用户拉伸后的持久化值）
+  const previewHeight: number = data.previewHeight || 120;
 
   // 标题编辑
   const [editingTitle, setEditingTitle] = useState(false);
@@ -153,6 +155,93 @@ function SplitterNode({ id, data, selected }: Props) {
 
   // 当前预览到的切分结果（用上游最近一次的文本算）
   const segments = useMemo(() => splitText(upstreamText, splitMode, delimiter, regex), [upstreamText, splitMode, delimiter, regex]);
+
+  /**
+   * 主动从上游"抓取"一次内容并刷新 upstreamText / autoCommittedCount。
+   * 不触发整画布执行 —— 直接读 store 里上游节点已有的输出/文本。
+   * 适用场景：上游 textPrompt 被改过、或 LLM 节点之前已经跑过有 output，
+   * 用户只想刷新分叉节点端子数，不愿意再跑一遍整个流程。
+   *
+   * 读取规则（按节点类型）：
+   *   textPrompt   → data.text
+   *   llm          → data.output 或 data.streamOutput
+   *   textTransform → data.output
+   *   splitter     → 若边有 sourceHandle=out__<i>，按段索引取该段；否则取 segments[0]
+   *   timeline     → 节点已渲染的 lines 没保存，回退取 data.upstreamText
+   *   condition    → data.upstreamText（透传）
+   *   fileUpload   → 把 data.files[].content 拼起来（带 <documents> 包装）
+   *   group/output → 不直接抓（取它们的 data.output 兜底）
+   *
+   * 多条上游边：取最后一条非空的（与执行器行为一致）。
+   */
+  const pullUpstream = useCallback(() => {
+    const state = useNodeStore.getState();
+    const allNodes = state.nodes as any[];
+    const allEdges = state.edges as any[];
+    // 找所有指向本节点的边
+    const incoming = allEdges.filter((e) => e.target === id);
+    let combined = '';
+    incoming.forEach((e: any) => {
+      const src = allNodes.find((n: any) => n.id === e.source);
+      if (!src) return;
+      const sd: any = src.data || {};
+      let val = '';
+      switch (sd.type) {
+        case 'textPrompt':
+          val = sd.text || '';
+          break;
+        case 'llm':
+          val = sd.output || sd.streamOutput || '';
+          break;
+        case 'textTransform':
+          val = sd.output || '';
+          break;
+        case 'splitter': {
+          // 如果边指定了 sourceHandle out__<i>，取该段；否则用整段 upstreamText 的第 0 段
+          const segs = splitText(
+            sd.upstreamText || '',
+            (sd.splitMode as SplitMode) || 'auto',
+            sd.delimiter || '---',
+            sd.regex || '\\n\\n'
+          );
+          if (e.sourceHandle && /^out__\d+$/.test(e.sourceHandle)) {
+            const idx = parseInt(e.sourceHandle.replace('out__', ''), 10);
+            val = segs[idx] || '';
+          } else {
+            val = segs[0] || '';
+          }
+          break;
+        }
+        case 'condition':
+        case 'timeline':
+          val = sd.upstreamText || '';
+          break;
+        case 'fileUpload': {
+          const files = (sd.files || []).filter((f: any) => !f.error && !f.uploading);
+          if (files.length) {
+            const parts = files.map((f: any) => {
+              const filenameAttr = (f.name || f.originalName || '').replace(/"/g, '&quot;');
+              const body = f.content || '[文件内容暂未解析]';
+              return `<document filename="${filenameAttr}">\n${body}\n</document>`;
+            });
+            val = `<documents>\n${parts.join('\n')}\n</documents>`;
+          }
+          break;
+        }
+        default:
+          val = sd.output || sd.text || sd.upstreamText || '';
+      }
+      if (val) combined = combined ? `${combined}\n${val}` : val;
+    });
+
+    // 写回 upstreamText 并固化端子数（按当前切出的段数）
+    const segs = splitText(combined, splitMode, delimiter, regex);
+    const next = Math.max(1, Math.min(20, segs.length || 1));
+    updateNodeData(id, {
+      upstreamText: combined,
+      autoCommittedCount: next,
+    } as any);
+  }, [id, updateNodeData, splitMode, delimiter, regex]);
 
   // 实际渲染的端子数：
   //   manual → 用户固定 N
@@ -303,18 +392,15 @@ function SplitterNode({ id, data, selected }: Props) {
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                // 把当前切出的段数固化为端子数（至少 1）
-                const next = Math.max(1, Math.min(20, segments.length || 1));
-                updateNodeData(id, { autoCommittedCount: next } as any);
+                // 主动抓取一次上游内容并用当前段数刷新端子数。
+                // 不需要触发画布全量运行——直接读 store 里上游节点已有的 output / text。
+                pullUpstream();
               }}
               title={
                 autoNeedsRegen
-                  ? `切出 ${segments.length} 段，但当前是 ${autoCommittedCount ?? 0} 个端子。点击重新生成。`
-                  : segments.length > 0
-                    ? `把当前 ${segments.length} 段固化为端子`
-                    : '等上游有内容后再点'
+                  ? `切出 ${segments.length} 段，但当前是 ${autoCommittedCount ?? 0} 个端子。点击重新抓取上游并生成。`
+                  : `主动抓取上游内容并按段数生成端子（当前 ${segments.length} 段）`
               }
-              disabled={segments.length === 0}
               style={{
                 fontSize: 11,
                 padding: '3px 8px',
@@ -322,25 +408,41 @@ function SplitterNode({ id, data, selected }: Props) {
                 border: '1px solid ' + (autoNeedsRegen ? '#f59e0b' : '#d1d5db'),
                 background: autoNeedsRegen ? '#fef3c7' : 'var(--bg-card-body, #fff)',
                 color: autoNeedsRegen ? '#92400e' : 'var(--text-primary, #1f2937)',
-                cursor: segments.length === 0 ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
                 whiteSpace: 'nowrap',
-                opacity: segments.length === 0 ? 0.5 : 1,
               }}
             >
-              {autoNeedsRegen ? `↻ 重新生成 (${segments.length})` : `▶ 生成 (${segments.length || 0})`}
+              {autoNeedsRegen ? `↻ 重新抓取 (${segments.length})` : `▶ 抓取并生成 (${segments.length || 0})`}
             </button>
           )}
         </div>
 
-        {/* 预览 + 警告 */}
-        <div style={{
-          background: '#fdf2f8',
-          borderRadius: 6,
-          padding: '6px 8px',
-          fontSize: 11,
-          color: '#9d174d',
-          marginTop: 4,
-        }}>
+        {/* 预览 + 警告（外层 div 支持垂直拖拽 resize；高度持久化到 data.previewHeight） */}
+        <div
+          className="nodrag nowheel"
+          style={{
+            background: '#fdf2f8',
+            borderRadius: 6,
+            padding: '6px 8px',
+            fontSize: 11,
+            color: '#9d174d',
+            marginTop: 4,
+            height: previewHeight,
+            minHeight: 60,
+            maxHeight: 600,
+            resize: 'vertical',
+            overflow: 'auto',
+            // 用户停止拖拽（mouseup）时把高度写回 store
+          }}
+          onMouseUp={(e) => {
+            // offsetHeight 不受 React Flow viewport 的 transform 缩放影响（getBoundingClientRect 会受影响）
+            const h = (e.currentTarget as HTMLDivElement).offsetHeight;
+            const rounded = Math.max(60, Math.min(600, Math.round(h)));
+            if (rounded !== previewHeight) {
+              updateNodeData(id, { previewHeight: rounded } as any);
+            }
+          }}
+        >
           {segments.length === 0 ? (
             <em style={{ color: '#94a3b8' }}>等待上游输入…</em>
           ) : (
@@ -349,17 +451,21 @@ function SplitterNode({ id, data, selected }: Props) {
                 共 {segments.length} 段 · {portCount} 个端子
                 {warning && <span style={{ color: '#dc2626', marginLeft: 6 }}>⚠ {warning}</span>}
               </div>
-              {segments.slice(0, 5).map((seg, i) => (
-                <div key={i} style={{ marginTop: 2, lineHeight: 1.3, display: 'flex', gap: 4 }}>
+              {segments.map((seg, i) => (
+                <div key={i} style={{ marginTop: 2, lineHeight: 1.4, display: 'flex', gap: 4 }}>
                   <span style={{ color: '#be185d', fontWeight: 600, minWidth: 16 }}>{i + 1}.</span>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
-                    {seg.slice(0, 60)}{seg.length > 60 ? '…' : ''}
+                  <span
+                    style={{
+                      // 拉高时显示完整内容（保留换行）；只在单行时省略
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      flex: 1,
+                    }}
+                  >
+                    {seg}
                   </span>
                 </div>
               ))}
-              {segments.length > 5 && (
-                <div style={{ color: '#9ca3af', marginTop: 2 }}>… 还有 {segments.length - 5} 段</div>
-              )}
             </>
           )}
         </div>

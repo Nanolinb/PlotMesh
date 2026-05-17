@@ -5,6 +5,15 @@
 
 ---
 
+## [1.4.3] — 2026-05-17
+
+### Changed · 优化（分叉节点）
+- **预览框可手动拉长**：原来只显示前 5 段且单行省略，现在底部预览容器支持垂直 resize（最小 60px / 最大 600px），高度持久化到 `data.previewHeight`。拉高后会显示完整段落内容（保留换行 + 自动换行），方便审阅长段。
+- **画布/Group 运行时，auto 模式自动按当前段数刷新端子**：以前 auto 模式取已固化的 `autoCommittedCount`，运行时不会变（导致用户必须再点一次"生成"才能让端子数 = 段数）。现在执行器在 auto 模式会把 `autoCommittedCount` 同步为当前 `segments.length`，运行后立刻看到正确端子数 + 按钮回到 ▶ 状态。
+- **生成按钮独立运行**：按钮文案从 `▶ 生成` 改为 `▶ 抓取并生成`。点击时**不再触发整画布运行**，而是主动从 store 里读取所有上游节点已有的输出（textPrompt 读 `data.text`、LLM 读 `data.output / streamOutput`、textTransform 读 `data.output`、splitter 按 `sourceHandle=out__N` 取对应段、fileUpload 读已解析的文件内容），然后 `splitText` 再算一次段数并固化。这样在上游 textPrompt 被改过、但 LLM 已有缓存输出的情况下，可以**秒级刷新端子数**而不必重跑整个流程。
+
+---
+
 ## [1.4.2] — 2026-05-17
 
 ### Changed · 优化

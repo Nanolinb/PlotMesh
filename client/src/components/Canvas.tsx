@@ -1051,13 +1051,19 @@ export default function Canvas() {
             d.regex || '\\n\\n',
           );
           const portMode = d.portMode || 'auto';
-          // auto 模式取已固化的 autoCommittedCount；用户没点过"生成"则按当前段数兜底
-          // （这样首次跑也能立刻看到结果，下次再点"生成"才精确定下端子数）
-          const portCount = portMode === 'manual'
-            ? Math.max(1, Math.min(20, d.manualCount ?? 3))
-            : (d.autoCommittedCount && d.autoCommittedCount > 0
-                ? Math.max(1, Math.min(20, d.autoCommittedCount))
-                : Math.max(1, segments.length || 1));
+          // auto 模式：跑流程时端子数=当前段数（最少 1），同时把 autoCommittedCount 同步刷新
+          //   → 让 UI 立刻反映"运行后的实际段数"，按钮回到 ▶ 生成 不再显示 ↻
+          //   manual 模式：永远固定 N。
+          let portCount: number;
+          if (portMode === 'manual') {
+            portCount = Math.max(1, Math.min(20, d.manualCount ?? 3));
+          } else {
+            portCount = Math.max(1, Math.min(20, segments.length || 1));
+            // 同步 autoCommittedCount，让节点 UI 知道端子数已经被本次运行刷新
+            if (d.autoCommittedCount !== portCount) {
+              storeUpdateNodeData(nodeId, { autoCommittedCount: portCount });
+            }
+          }
           // 每个端子写一份分段结果到 results；下游边按 sourceHandle=out__<idx> 取
           for (let i = 0; i < portCount; i++) {
             const seg = segments[i] ?? '';
