@@ -84,6 +84,7 @@ function getDefaultData(type: string): any {
       splitMode: 'auto',
       portMode: 'auto',
       manualCount: 3,
+      autoCommittedCount: 0, // 自动模式下用户没点过"生成"前为 0
       delimiter: '---',
       regex: '\\n\\n',
       upstreamText: '',
@@ -285,16 +286,23 @@ export default function Canvas() {
     event.dataTransfer.dropEffect = 'move';
   };
 
-  // 把当前选中的节点框成一个新的画布 group（不写入常用功能）。
-  // 与 savePackage 类似的几何计算：找选中节点的包围盒，外扩 padding，再把节点改成 group 的 children。
-  // 跳过本身就是 group 的节点（避免 group 套 group），也跳过已经有 parentId 的子节点。
+  // 把当前选中的节点框成一个新的画布 group（不写入常用功能）。支持多层嵌套：
+  //   - 候选必须是「顶层节点」（没在任何 group 里，即 !parentId）；
+  //   - 候选既可以是普通节点，也可以是已有的 group 节点（嵌套封装）。
+  //   - 选中已经在某个 group 里的子节点不算候选（不允许把一个 group 内的部分内容
+  //     拉出来重新分组——会破坏原 group 边界）。
   const groupSelectedOnCanvas = useCallback((label?: string): { ok: boolean; reason?: string } => {
     const all = useNodeStore.getState().nodes as any[];
     const selected = all.filter((n: any) => n.selected);
-    // 只对"顶层裸节点"分组：排除 group 本身、以及已经在某个 group 里的子节点
-    const candidates = selected.filter((n: any) => n.type !== 'group' && !n.parentId);
+    // 只对「顶层节点」分组：包含 group 节点本身（用于嵌套封装），但排除已经在某个 group 里的子节点
+    const candidates = selected.filter((n: any) => !n.parentId);
     if (candidates.length < 2) {
       return { ok: false, reason: '至少选 2 个顶层节点才能 Group' };
+    }
+    // 检查是否有"在 group 内的子节点"被选中——禁止
+    const hasNestedSelected = selected.some((n: any) => n.parentId);
+    if (hasNestedSelected) {
+      return { ok: false, reason: '不能把已在 group 内的子节点单独拿出来分组' };
     }
 
     // 节点估算尺寸（与 savePackage 保持一致）
@@ -305,8 +313,19 @@ export default function Canvas() {
       textTransform: { w: 220, h: 150 },
       condition: { w: 220, h: 150 },
       output: { w: 150, h: 110 },
+      timeline: { w: 1100, h: 130 },
+      splitter: { w: 240, h: 220 },
     };
-    const getSize = (t: string) => nodeSizes[t] || { w: 150, h: 110 };
+    const getSize = (n: any): { w: number; h: number } => {
+      // group 节点用自己的 width/height/style，避免被默认尺寸算错
+      if (n.type === 'group') {
+        return {
+          w: n.width || n.style?.width || 240,
+          h: n.height || n.style?.height || 140,
+        };
+      }
+      return nodeSizes[n.type] || { w: 150, h: 110 };
+    };
 
     const padding = 40;
     const headerPad = 30;
@@ -314,7 +333,7 @@ export default function Canvas() {
     candidates.forEach((n: any) => {
       const x = n.position?.x || 0;
       const y = n.position?.y || 0;
-      const sz = getSize(n.type);
+      const sz = getSize(n);
       minX = Math.min(minX, x);
       minY = Math.min(minY, y);
       maxX = Math.max(maxX, x + sz.w);
@@ -347,7 +366,9 @@ export default function Canvas() {
       selected: true,
     };
 
-    // 把候选节点改成 group 的 children（坐标改为相对父）
+    // 把候选节点改成新 group 的 children（位置改为相对新 group）。
+    // 关键：被嵌套的旧 group 仍然保留它自己的 children——它们的 parentId 还指向旧 group，
+    // 不动；React Flow 会自动按嵌套坐标系渲染（孙节点位置相对父，父位置相对新 group）。
     const childIdSet = new Set(candidates.map((n: any) => n.id));
     const newNodes = all.map((n: any) => {
       if (childIdSet.has(n.id)) {
@@ -365,7 +386,9 @@ export default function Canvas() {
       return { ...n, selected: false };
     });
 
-    // group 节点必须排在它的子节点之前（React Flow 要求）
+    // 重要排序：父必须在子之前（React Flow v12 要求）。
+    // 新的外层 group 现在是所有 candidates 的父，所以放最前面。
+    // 原本的子节点（被嵌套的旧 group + 它们的孩子）顺序不需要改——它们之间的父子关系仍然成立。
     storePushHistory();
     useNodeStore.setState({ nodes: [groupNode, ...newNodes] });
     return { ok: true };
@@ -1022,9 +1045,13 @@ export default function Canvas() {
             d.regex || '\\n\\n',
           );
           const portMode = d.portMode || 'auto';
+          // auto 模式取已固化的 autoCommittedCount；用户没点过"生成"则按当前段数兜底
+          // （这样首次跑也能立刻看到结果，下次再点"生成"才精确定下端子数）
           const portCount = portMode === 'manual'
             ? Math.max(1, Math.min(20, d.manualCount ?? 3))
-            : Math.max(1, segments.length || 1);
+            : (d.autoCommittedCount && d.autoCommittedCount > 0
+                ? Math.max(1, Math.min(20, d.autoCommittedCount))
+                : Math.max(1, segments.length || 1));
           // 每个端子写一份分段结果到 results；下游边按 sourceHandle=out__<idx> 取
           for (let i = 0; i < portCount; i++) {
             const seg = segments[i] ?? '';
@@ -1467,10 +1494,14 @@ export default function Canvas() {
 
         {/* 右键菜单：在画布或节点上右键时弹出 */}
         {ctxMenu && (() => {
-          // 计算"Group"是否可激活：≥2 个顶层裸节点（排除 group 本身、子节点）
+          // 计算"Group"是否可激活：
+          //   ≥2 个顶层节点（不在任何 group 内）选中；可以包含 group 本身（用于嵌套）
+          //   且不能有任何"已经在 group 里的子节点"被选中（避免破坏原 group 边界）
           const all = useNodeStore.getState().nodes as any[];
-          const groupable = all.filter((n: any) => n.selected && n.type !== 'group' && !n.parentId);
-          const canGroup = groupable.length >= 2;
+          const selectedAll = all.filter((n: any) => n.selected);
+          const groupable = selectedAll.filter((n: any) => !n.parentId);
+          const hasNestedSelected = selectedAll.some((n: any) => n.parentId);
+          const canGroup = groupable.length >= 2 && !hasNestedSelected;
           // 7 类节点（与 Sidebar 保持一致；group 通过本菜单的"Group"项创建，不出现在新建列表里）
           const NODE_OPTIONS = [
             { type: 'textPrompt', label: '✏️ 文本提示词' },
@@ -1580,7 +1611,11 @@ export default function Canvas() {
                     }
                     closeMenu();
                   }}
-                  title={canGroup ? '将选中的 ≥2 个节点框成画布内 Group（不会写入常用功能）' : '至少选中 2 个未在 Group 内的节点才能使用'}
+                  title={canGroup
+                    ? '把选中的 ≥2 个顶层节点（可含已有 group）封装成更大的画布内 Group'
+                    : (hasNestedSelected
+                        ? '不能把已在 group 内的子节点单独再分组'
+                        : '至少选中 2 个顶层节点才能 Group')}
                   style={{
                     padding: '8px 14px',
                     cursor: canGroup ? 'pointer' : 'not-allowed',

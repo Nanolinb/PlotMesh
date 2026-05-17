@@ -136,6 +136,10 @@ function SplitterNode({ id, data, selected }: Props) {
   const delimiter: string = data.delimiter ?? '---';
   const regex: string = data.regex ?? '\\n\\n';
   const upstreamText: string = data.upstreamText || '';
+  // 「自动模式」下用户点过"生成"按钮后定下来的端子数。
+  // 不跟着 segments.length 实时变，避免 LLM 输出抖动时下游边乱接。
+  // segments.length 与它不一致时按钮显示 ↻ 提示重新生成。
+  const autoCommittedCount: number | undefined = data.autoCommittedCount;
 
   // 标题编辑
   const [editingTitle, setEditingTitle] = useState(false);
@@ -150,10 +154,17 @@ function SplitterNode({ id, data, selected }: Props) {
   // 当前预览到的切分结果（用上游最近一次的文本算）
   const segments = useMemo(() => splitText(upstreamText, splitMode, delimiter, regex), [upstreamText, splitMode, delimiter, regex]);
 
-  // 实际渲染的端子数：portMode='auto' 跟段数走，'manual' 固定 manualCount
-  const portCount = portMode === 'auto'
-    ? Math.max(1, segments.length || 1)
-    : manualCount;
+  // 实际渲染的端子数：
+  //   manual → 用户固定 N
+  //   auto   → 用户点过"生成"按钮的 autoCommittedCount；没点过时给 1（占位）
+  const portCount = portMode === 'manual'
+    ? manualCount
+    : (autoCommittedCount && autoCommittedCount > 0 ? autoCommittedCount : 1);
+
+  // auto 模式下：当前切出的段数和已生成的端子数不一致 → 提示用户点 ↻ 重新生成
+  const autoNeedsRegen = portMode === 'auto'
+    && segments.length > 0
+    && segments.length !== autoCommittedCount;
 
   // 警告：手动模式下段数 ≠ 端子数
   const warning = portMode === 'manual' && segments.length > 0 && segments.length !== manualCount
@@ -262,9 +273,9 @@ function SplitterNode({ id, data, selected }: Props) {
           </div>
         )}
 
-        {/* 端子模式 */}
+        {/* 端子数量 */}
         <div className="field" style={{ marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <label style={{ fontSize: 11, color: 'var(--text-muted, #64748b)' }}>端子</label>
+          <label style={{ fontSize: 11, color: 'var(--text-muted, #64748b)' }}>端子数量</label>
           <select
             className="nodrag"
             value={portMode}
@@ -274,7 +285,7 @@ function SplitterNode({ id, data, selected }: Props) {
             <option value="auto">自动（按段数）</option>
             <option value="manual">手动（固定 N）</option>
           </select>
-          {portMode === 'manual' && (
+          {portMode === 'manual' ? (
             <input
               className="nodrag"
               type="number"
@@ -286,6 +297,38 @@ function SplitterNode({ id, data, selected }: Props) {
               onClick={(e) => e.stopPropagation()}
               style={{ width: 50, padding: '3px 6px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
             />
+          ) : (
+            <button
+              className="nodrag"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                // 把当前切出的段数固化为端子数（至少 1）
+                const next = Math.max(1, Math.min(20, segments.length || 1));
+                updateNodeData(id, { autoCommittedCount: next } as any);
+              }}
+              title={
+                autoNeedsRegen
+                  ? `切出 ${segments.length} 段，但当前是 ${autoCommittedCount ?? 0} 个端子。点击重新生成。`
+                  : segments.length > 0
+                    ? `把当前 ${segments.length} 段固化为端子`
+                    : '等上游有内容后再点'
+              }
+              disabled={segments.length === 0}
+              style={{
+                fontSize: 11,
+                padding: '3px 8px',
+                borderRadius: 6,
+                border: '1px solid ' + (autoNeedsRegen ? '#f59e0b' : '#d1d5db'),
+                background: autoNeedsRegen ? '#fef3c7' : 'var(--bg-card-body, #fff)',
+                color: autoNeedsRegen ? '#92400e' : 'var(--text-primary, #1f2937)',
+                cursor: segments.length === 0 ? 'not-allowed' : 'pointer',
+                whiteSpace: 'nowrap',
+                opacity: segments.length === 0 ? 0.5 : 1,
+              }}
+            >
+              {autoNeedsRegen ? `↻ 重新生成 (${segments.length})` : `▶ 生成 (${segments.length || 0})`}
+            </button>
           )}
         </div>
 

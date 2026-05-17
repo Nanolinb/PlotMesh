@@ -5,7 +5,7 @@
 
 🌐 **Languages**: [中文](README.md) · [English](README.en.md)　|　📜 [Changelog](CHANGELOG.md)
 
-[![version](https://img.shields.io/badge/version-1.3.0-6366f1)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.4.0-6366f1)](CHANGELOG.md)
 [![Made with React](https://img.shields.io/badge/React-18-61DAFB?logo=react)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)]()
 [![React Flow](https://img.shields.io/badge/React%20Flow-v12-FF0072)]()
