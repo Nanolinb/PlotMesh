@@ -62,6 +62,12 @@ function OutputNode({ id, data, selected }: Props) {
     const ts = new Date().toISOString().replace(/[:T.]/g, '-').substring(0, 19);
     const filename = `${data.label || 'output'}-${ts}.${ext}`;
     try {
+      if (localFormat === 'web') {
+        // web 格式不下载，直接在新标签页打开
+        const { openAsWeb } = await import('../../utils/exporters');
+        openAsWeb(data.output, { title: data.label || '网页输出' });
+        return;
+      }
       if (localFormat === 'docx') {
         const { exportAsDocx } = await import('../../utils/exporters');
         await exportAsDocx(data.output, { filename });
@@ -88,7 +94,7 @@ function OutputNode({ id, data, selected }: Props) {
         URL.revokeObjectURL(url);
       }
     } catch (e: any) {
-      alert('导出失败：' + (e?.message || '未知错误'));
+      alert((localFormat === 'web' ? '打开失败：' : '导出失败：') + (e?.message || '未知错误'));
     }
   }, [data.output, data.label, localFormat]);
 
@@ -168,8 +174,8 @@ function OutputNode({ id, data, selected }: Props) {
                 className="nodrag"
                 onClick={(e) => { e.stopPropagation(); handleDownload(); }}
                 style={{ flex: 1, padding: '3px 6px', fontSize: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-card-body)', color: 'var(--text-primary)', borderRadius: '4px', cursor: 'pointer' }}
-                title="下载为文件"
-              >⬇️ 下载</button>
+                title={localFormat === 'web' ? '在浏览器新标签页打开渲染后的网页' : '下载为文件'}
+              >{localFormat === 'web' ? '🌐 浏览器打开' : '⬇️ 下载'}</button>
               <button
                 className="nodrag"
                 onClick={(e) => { e.stopPropagation(); handleCopy(); }}

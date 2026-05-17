@@ -26,7 +26,7 @@ export const MODEL_OPTIONS: { value: ModelType; label: string }[] = [
 ];
 
 // 输出格式类型
-export type OutputFormat = 'text' | 'markdown' | 'docx' | 'xlsx' | 'pdf' | 'image';
+export type OutputFormat = 'text' | 'markdown' | 'docx' | 'xlsx' | 'pdf' | 'image' | 'web';
 
 export const OUTPUT_FORMAT_OPTIONS: { value: OutputFormat; label: string }[] = [
   { value: 'text', label: '纯文本 (.txt)' },
@@ -35,6 +35,7 @@ export const OUTPUT_FORMAT_OPTIONS: { value: OutputFormat; label: string }[] = [
   { value: 'xlsx', label: 'Excel 表格 (.xlsx)' },
   { value: 'pdf', label: 'PDF 文档 (.pdf)' },
   { value: 'image', label: '图片 (.png)' },
+  { value: 'web', label: '网页 (浏览器打开)' },
 ];
 
 // 节点执行状态

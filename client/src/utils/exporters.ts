@@ -271,3 +271,238 @@ export async function exportAsImage(text: string, { filename }: BaseOpts): Promi
   const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), 'image/png')!);
   triggerDownload(blob, filename);
 }
+
+/**
+ * 把上游文本作为网页在浏览器新标签页中打开。
+ *
+ * 智能识别 3 种内容：
+ *   1) 完整 HTML（含 <html> 或 <!doctype>）→ 直接渲染
+ *   2) Markdown / 类 markdown 文本 → 简易 md→html 转换后渲染
+ *   3) 纯文本 → 用 <pre> 包裹保留换行
+ *
+ * 不依赖第三方 markdown 库（保持 bundle 小）；支持基础语法：
+ *   # 一级 / ## 二级 / ### 三级 标题
+ *   **粗体** *斜体* `代码`
+ *   ``` 代码块 ```
+ *   - 列表 / 1. 有序列表
+ *   > 引用
+ *   [文字](http) 链接
+ *   ![alt](src) 图片
+ *   --- 分割线
+ *   | 表格 |
+ *
+ * 输出会被自动包成完整 HTML 文档（含 viewport、合理排版样式 + 中文字体兜底）。
+ */
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 极简 Markdown → HTML 转换（不依赖第三方库） */
+function markdownToHtml(md: string): string {
+  // 1) 先剥代码块，避免里面的内容被 inline 规则改写
+  const codeBlocks: string[] = [];
+  md = md.replace(/```([a-zA-Z]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    codeBlocks.push(`<pre><code data-lang="${escapeHtml(lang || '')}">${escapeHtml(code)}</code></pre>`);
+    return `\u0000CODEBLOCK${codeBlocks.length - 1}\u0000`;
+  });
+
+  // 2) 行级处理
+  const lines = md.split(/\r?\n/);
+  const out: string[] = [];
+  let inList: false | 'ul' | 'ol' = false;
+  let inTable = false;
+
+  const closeList = () => { if (inList) { out.push(`</${inList}>`); inList = false; } };
+  const closeTable = () => { if (inTable) { out.push('</tbody></table>'); inTable = false; } };
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = raw.trim();
+
+    // 表格：第一行 |a|b| 后跟 |---|---|
+    if (line.startsWith('|') && line.endsWith('|') && lines[i + 1]?.trim().match(/^\|\s*:?-+:?\s*\|/)) {
+      closeList();
+      const headers = line.slice(1, -1).split('|').map((c) => c.trim());
+      out.push('<table><thead><tr>' + headers.map((h) => `<th>${inlineMd(escapeHtml(h))}</th>`).join('') + '</tr></thead><tbody>');
+      inTable = true;
+      i++; // 跳过对齐行
+      continue;
+    }
+    if (inTable && line.startsWith('|') && line.endsWith('|')) {
+      const cells = line.slice(1, -1).split('|').map((c) => c.trim());
+      out.push('<tr>' + cells.map((c) => `<td>${inlineMd(escapeHtml(c))}</td>`).join('') + '</tr>');
+      continue;
+    }
+    if (inTable) closeTable();
+
+    // 标题
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+      closeList();
+      const level = m[1].length;
+      out.push(`<h${level}>${inlineMd(escapeHtml(m[2]))}</h${level}>`);
+      continue;
+    }
+    // 引用
+    if (line.startsWith('> ')) {
+      closeList();
+      out.push(`<blockquote>${inlineMd(escapeHtml(line.slice(2)))}</blockquote>`);
+      continue;
+    }
+    // 分割线
+    if (/^-{3,}$|^\*{3,}$/.test(line)) {
+      closeList();
+      out.push('<hr/>');
+      continue;
+    }
+    // 无序列表
+    if ((m = line.match(/^[-*]\s+(.*)$/))) {
+      if (inList !== 'ul') { closeList(); out.push('<ul>'); inList = 'ul'; }
+      out.push(`<li>${inlineMd(escapeHtml(m[1]))}</li>`);
+      continue;
+    }
+    // 有序列表
+    if ((m = line.match(/^\d+\.\s+(.*)$/))) {
+      if (inList !== 'ol') { closeList(); out.push('<ol>'); inList = 'ol'; }
+      out.push(`<li>${inlineMd(escapeHtml(m[1]))}</li>`);
+      continue;
+    }
+    // 空行
+    if (line === '') {
+      closeList();
+      out.push('');
+      continue;
+    }
+    // 中文「分类：v1、v2」格式 → H3 + ul
+    const colonM = line.match(/^([^:：]{1,16})[:：]\s*(.+)$/);
+    const itemSepRe = /[、，,；;｜|\t]+/;
+    if (colonM && itemSepRe.test(colonM[2])) {
+      const items = colonM[2].split(itemSepRe).map((s) => s.trim()).filter(Boolean);
+      if (items.length >= 2) {
+        closeList();
+        out.push(`<h3>${inlineMd(escapeHtml(colonM[1]))}</h3>`);
+        out.push('<ul>' + items.map((it) => `<li>${inlineMd(escapeHtml(it))}</li>`).join('') + '</ul>');
+        continue;
+      }
+    }
+    // 普通段落
+    closeList();
+    out.push(`<p>${inlineMd(escapeHtml(raw))}</p>`);
+  }
+  closeList();
+  closeTable();
+
+  let html = out.join('\n');
+  // 还原代码块占位
+  html = html.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_m, n) => codeBlocks[+n] || '');
+  return html;
+}
+
+/** 内联 markdown：粗体 / 斜体 / 代码 / 链接 / 图片 */
+function inlineMd(s: string): string {
+  // 顺序很重要：图片 → 链接 → 代码 → 粗体 → 斜体
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt, src) => `<img alt="${alt}" src="${src}" style="max-width:100%"/>`);
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`);
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  return s;
+}
+
+/** 用一个干净的 HTML 文档把内容包起来，注入排版 CSS */
+function wrapHtmlDocument(bodyHtml: string, title: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font: 16px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+      color: #1f2937;
+      background: #ffffff;
+      padding: 32px max(16px, calc((100vw - 760px) / 2));
+    }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e5e7eb; background: #0f172a; }
+      blockquote { color: #94a3b8; border-color: #334155; }
+      pre, code { background: #1e293b; color: #e2e8f0; }
+      table th { background: #1e293b; }
+      table td, table th { border-color: #334155; }
+      hr { border-color: #334155; }
+      a { color: #60a5fa; }
+    }
+    h1 { font-size: 1.9em; margin: 0.6em 0 0.4em; line-height: 1.3; }
+    h2 { font-size: 1.5em; margin: 1.2em 0 0.5em; line-height: 1.3; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.2em; }
+    h3 { font-size: 1.2em; margin: 1em 0 0.4em; }
+    h4, h5, h6 { font-size: 1em; margin: 0.9em 0 0.4em; }
+    p { margin: 0.6em 0; }
+    ul, ol { padding-left: 1.6em; }
+    li { margin: 0.3em 0; }
+    blockquote { color: #6b7280; border-left: 4px solid #d1d5db; margin: 0.8em 0; padding: 0.2em 0.9em; }
+    code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; font-size: 0.92em; font-family: "SF Mono", Menlo, Consolas, monospace; }
+    pre { background: #f3f4f6; padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
+    pre code { background: transparent; padding: 0; }
+    table { border-collapse: collapse; margin: 0.8em 0; width: 100%; font-size: 0.95em; }
+    table th, table td { border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
+    table th { background: #f9fafb; font-weight: 600; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    hr { border: none; border-top: 1px solid #e5e7eb; margin: 1.6em 0; }
+    img { max-width: 100%; height: auto; border-radius: 6px; }
+  </style>
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>`;
+}
+
+/** 把内容渲染成网页并在浏览器新标签页打开 */
+export function openAsWeb(text: string, opts?: { title?: string }): void {
+  const trimmed = (text || '').trim();
+  let html: string;
+  if (/^<!doctype/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
+    // 已是完整 HTML 文档
+    html = text;
+  } else if (/<\w+[^>]*>[\s\S]*<\/\w+>/.test(trimmed) && (trimmed.includes('<div') || trimmed.includes('<section') || trimmed.includes('<article') || trimmed.includes('<table') || trimmed.includes('<h1') || trimmed.includes('<p>'))) {
+    // 含 HTML 片段：直接拿来作为 body
+    html = wrapHtmlDocument(text, opts?.title || '网页输出');
+  } else if (/^[#>\-*\d]|`{3}|\*\*|^\|/.test(trimmed) || /\n\s*[-*]\s+/.test(trimmed) || /\n#{1,6}\s+/.test(trimmed)) {
+    // 看起来像 markdown
+    html = wrapHtmlDocument(markdownToHtml(text), opts?.title || '网页输出');
+  } else {
+    // 纯文本兜底：包 <pre>，也跑一次 md 让中文「分类：值1、值2」也能识别
+    html = wrapHtmlDocument(markdownToHtml(text), opts?.title || '网页输出');
+  }
+
+  // 打开新标签页：用 Blob URL（不污染 history、刷新仍然在），失败时兜底用 about:blank+document.write
+  try {
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank', 'noopener');
+    if (!win) {
+      // 弹窗被拦截：退而求其次，下载 .html 让用户自己打开
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(opts?.title || 'output').replace(/[/\\?%*:|"<>]/g, '-')}.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+    // 不立即 revokeObjectURL，让新标签页有时间加载（30s 后清理）
+    setTimeout(() => URL.revokeObjectURL(url), 30 * 1000);
+  } catch {
+    const win = window.open('', '_blank', 'noopener');
+    if (win) {
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+    }
+  }
+}
