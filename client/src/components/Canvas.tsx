@@ -904,7 +904,7 @@ export default function Canvas() {
             if (xlsxDownstream) {
               formatHint = '\n\n下游有 Excel 输出，请严格用 JSON 数组返回（不要加 markdown 代码块），形如 [{"列1":"v","列2":"v"}, ...] 或 {"分类A":["v1","v2"], "分类B":["v3"]}。每个对象代表一行，每个 key 代表一列。不要在 JSON 之外写任何解释。';
             } else if (webDownstream) {
-              formatHint = '\n\n下游是网页输出，请用 Markdown 格式返回（标题用 #/##/###、列表用 - 或 1.、强调用 **、表格用 |），让浏览器渲染时排版美观。可以使用表格、图片链接、代码块。';
+              formatHint = '\n\n下游是网页输出，请用 Markdown 格式返回（标题用 #/##/###、列表用 - 或 1.、强调用 **、表格用 |），让浏览器渲染时排版美观。可以使用表格、图片链接，以及内嵌的代码块。**重要：不要把整篇内容用 ```html 或 ```markdown 这样的代码块包裹**，直接输出 markdown 文本即可。';
             }
             const finalSystem = (systemPrompt.trim()
               ? `${guardSystem}\n\n${systemPrompt}`

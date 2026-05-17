@@ -463,22 +463,47 @@ ${bodyHtml}
 </html>`;
 }
 
+/** 剥掉外层 markdown 代码块包装（如果整段内容恰好就是一个代码块）。
+ *  例如 LLM 经常返回 ```html\n<...>\n``` 或 ```markdown\n# 标题\n```，
+ *  此时应把内层内容拿出来作为真正的渲染目标。
+ *  注意：仅当整段去除首尾空白后形如 ```lang? \n ... \n``` 时剥；
+ *  内容里间夹的代码块要保留（让 markdown 渲染成 <pre>）。
+ */
+function stripOuterFence(text: string): { content: string; lang: string | null } {
+  const trimmed = text.trim();
+  // 用非贪婪 + 多行：开头 ```[lang]\n  ...  \n```（结尾后面可能还有零碎空白）
+  const m = trimmed.match(/^```([a-zA-Z0-9_+\-.]*)\s*\n([\s\S]*?)\n```\s*$/);
+  if (!m) return { content: text, lang: null };
+  return { content: m[2], lang: (m[1] || '').toLowerCase() || null };
+}
+
 /** 把内容渲染成网页并在浏览器新标签页打开 */
 export function openAsWeb(text: string, opts?: { title?: string }): void {
-  const trimmed = (text || '').trim();
+  // 0) LLM 经常把整段输出用 ```html ... ``` / ```markdown ... ``` 包裹。
+  //    如果整段就是一个代码块，直接拆出内层内容；同时记下语言提示，
+  //    用于后面决定是按 HTML 还是 Markdown 渲染。
+  const { content: unwrapped, lang } = stripOuterFence(text);
+  const trimmed = unwrapped.trim();
   let html: string;
-  if (/^<!doctype/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
+
+  // 显式声明 html 的代码块 → 直接当 HTML 渲染
+  if (lang === 'html' || lang === 'htm' || lang === 'xhtml') {
+    if (/^<!doctype/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
+      html = unwrapped; // 完整 HTML 文档
+    } else {
+      html = wrapHtmlDocument(unwrapped, opts?.title || '网页输出');
+    }
+  } else if (lang === 'markdown' || lang === 'md') {
+    html = wrapHtmlDocument(markdownToHtml(unwrapped), opts?.title || '网页输出');
+  } else if (/^<!doctype/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
     // 已是完整 HTML 文档
-    html = text;
-  } else if (/<\w+[^>]*>[\s\S]*<\/\w+>/.test(trimmed) && (trimmed.includes('<div') || trimmed.includes('<section') || trimmed.includes('<article') || trimmed.includes('<table') || trimmed.includes('<h1') || trimmed.includes('<p>'))) {
-    // 含 HTML 片段：直接拿来作为 body
-    html = wrapHtmlDocument(text, opts?.title || '网页输出');
-  } else if (/^[#>\-*\d]|`{3}|\*\*|^\|/.test(trimmed) || /\n\s*[-*]\s+/.test(trimmed) || /\n#{1,6}\s+/.test(trimmed)) {
-    // 看起来像 markdown
-    html = wrapHtmlDocument(markdownToHtml(text), opts?.title || '网页输出');
+    html = unwrapped;
+  } else if (/<\w+[^>]*>[\s\S]*<\/\w+>/.test(trimmed) && (trimmed.includes('<div') || trimmed.includes('<section') || trimmed.includes('<article') || trimmed.includes('<table') || trimmed.includes('<h1') || trimmed.includes('<p>') || trimmed.includes('<body'))) {
+    // 含明显的 HTML 片段：直接拿来作为 body
+    html = wrapHtmlDocument(unwrapped, opts?.title || '网页输出');
   } else {
-    // 纯文本兜底：包 <pre>，也跑一次 md 让中文「分类：值1、值2」也能识别
-    html = wrapHtmlDocument(markdownToHtml(text), opts?.title || '网页输出');
+    // markdown / 纯文本：统一走 mini md→html
+    html = wrapHtmlDocument(markdownToHtml(unwrapped), opts?.title || '网页输出');
   }
 
   // 打开新标签页：用 Blob URL（不污染 history、刷新仍然在），失败时兜底用 about:blank+document.write
