@@ -518,6 +518,37 @@ export const useNodeStore = create<NodeStore>((set, get) => {
 
     savePackages(packages);
 
+    // 检测"顶层只有 1 个 group"的特殊情况：用户选中的就是一个完整 group
+    // → 不再额外包一层 wrapper，直接给原 group 写上 packageId 标记，保留它在画布上的原状
+    const topLevelSelected = nodeIds
+      .map((id) => nodes.find((n: any) => n.id === id))
+      .filter((n: any) => n);
+    const isSingleGroupSelected =
+      topLevelSelected.length === 1 && topLevelSelected[0].type === 'group';
+
+    if (isSingleGroupSelected) {
+      const orig = topLevelSelected[0];
+      // 仅更新原 group 的 data（绑定 packageId + 同步 exposedPorts/childCount），其它节点不动
+      const updatedNodes = nodes.map((n: any) => {
+        if (n.id === orig.id) {
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              label: pkg.name || n.data?.label || '功能组',
+              packageId: pkg.id,
+              exposedPorts: inferExposedPorts(pkgLeafNodes, pkgEdges),
+              childCount: pkgLeafNodes.length,
+            },
+            selected: false,
+          };
+        }
+        return n;
+      });
+      set({ nodes: updatedNodes, packages });
+      return { ok: true, action, pkgId: pkg.id };
+    }
+
     // 节点类型对应的默认尺寸（极简紧凑版）
     const nodeSizes: Record<string, { w: number; h: number }> = {
       fileUpload: { w: 150, h: 90 },
@@ -715,14 +746,28 @@ export const useNodeStore = create<NodeStore>((set, get) => {
 
   /**
    * 复合节点折叠 / 展开
-   * 折叠时：把内部子节点 hidden=true，width/height 收缩到单节点尺寸
-   * 展开时：恢复 hidden=false 和原 width/height
+   * 折叠时：把内部子节点 hidden=true，width/height 收缩到单节点尺寸；
+   *         同时把所有嵌套子 group 也设为 collapsed=true（递归折叠到底）。
+   * 展开时：恢复 hidden=false 和原 width/height（嵌套子 group 保持各自状态）。
    */
   toggleGroupCollapsed: (groupId: string) => {
     const nodes = get().nodes as any[];
     const group = nodes.find((n) => n.id === groupId && n.type === 'group');
     if (!group) return;
     const collapsed = !group.data?.collapsed;
+
+    // 收集所有后代（递归）
+    const descendantIds = new Set<string>();
+    const stack = [groupId];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      nodes.forEach((c: any) => {
+        if (c.parentId === cur && !descendantIds.has(c.id)) {
+          descendantIds.add(c.id);
+          if (c.type === 'group') stack.push(c.id);
+        }
+      });
+    }
 
     const COLLAPSED_W = 200;
     const COLLAPSED_H = Math.max(
@@ -761,10 +806,49 @@ export const useNodeStore = create<NodeStore>((set, get) => {
           };
         }
       }
-      // 子节点：折叠时隐藏，展开时显示
-      if (n.parentId === groupId) {
-        return { ...n, hidden: collapsed };
+
+      // 后代节点处理
+      if (descendantIds.has(n.id)) {
+        if (collapsed) {
+          // 折叠：所有后代隐藏；嵌套 group 也强制折叠（保存其展开尺寸方便后续恢复）
+          if (n.type === 'group') {
+            const prevW = n.style?.width || n.width || 240;
+            const prevH = n.style?.height || n.height || 160;
+            const innerH = Math.max(
+              90,
+              ((n.data?.exposedPorts?.length || 1) * 16) + 70
+            );
+            return {
+              ...n,
+              hidden: true,
+              width: COLLAPSED_W,
+              height: innerH,
+              style: { ...(n.style || {}), width: COLLAPSED_W, height: innerH },
+              data: {
+                ...n.data,
+                collapsed: true,
+                // 只在第一次折叠时保存原尺寸；如果已经有 expandedSize 就不动
+                expandedSize: n.data?.expandedSize || { w: prevW, h: prevH },
+              },
+            };
+          }
+          return { ...n, hidden: true };
+        } else {
+          // 展开：只放出"直接子节点"（取消 hidden）；嵌套 group 保持各自折叠状态，
+          // 它们里面的孙节点是否可见由它们自己的 collapsed 决定。
+          if (n.parentId === groupId) {
+            return { ...n, hidden: false };
+          }
+          // 间接后代：根据其父 group 是否折叠决定
+          // 找其父 group
+          const parent = nodes.find((p: any) => p.id === n.parentId);
+          if (parent && parent.type === 'group' && parent.data?.collapsed) {
+            return { ...n, hidden: true };
+          }
+          return { ...n, hidden: false };
+        }
       }
+
       return n;
     });
 

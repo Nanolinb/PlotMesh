@@ -5,6 +5,20 @@
 
 ---
 
+## [1.4.2] — 2026-05-17
+
+### Changed · 优化
+- **左键按住节点即选中**：把 `selectNodesOnDrag` 从 `false` 改为 `true`。以前用户能直接拖动节点但需要再点一次才出现高亮选中外框（导致 Delete 等操作必须二次点击），现在按住即选中，行为符合直觉。
+
+### Fixed · 修复
+- **展开状态的 group 现在也能被再嵌套**：以前 `groupSelectedOnCanvas` 检查到任何"已在 group 内的子节点被选中"就会拒绝，导致框选展开 group 时连带选中其内部节点 → Group 菜单灰掉。现在改为：被选中 group 的子节点会**自动忽略**；只有当存在"父 group 没被选中"的孤儿子节点才禁止。
+- **Group 虚线边界恢复可调**：`.group-node { pointer-events: none }` 把 NodeResizer 的把手也屏蔽了。新增 `.group-node .react-flow__resize-control { pointer-events: auto }`，让 resize 把手重新可点 → 嵌套 group 展开时空间不够可手动拉大。
+- **保存单个 group 为常用功能不再多套一层**：以前 `savePackage` 不区分输入是不是已经是 group，永远再加一层 wrapper。现在检测到"顶层只选中 1 个 group"时直接给原 group 写 `packageId` 标记，画布上节点结构保持不变。
+- **常用功能拖到画布右端不再跳到中间**：`handleDrop` 之前用 `[...allNodes].reverse().find(type==='group')` 找刚加载的 group，但嵌套包加载后最后一个 group 是**深层子 group**，不是 wrapper。改为：用"加载前 id 集合"的差集精确定位最外层新 wrapper，再把它的位置对齐到鼠标释放点。
+- **最外层 group 折叠时级联折叠所有内部 group**：以前外层折叠只 hide 直接子节点，嵌套子 group 自身仍是 `collapsed=false`，再次展开时看到的是空虚线框。现在改为：外层折叠 → 递归把所有后代 group 也设为 `collapsed=true`（保留 expandedSize），等于恢复到刚拖出常用功能时的"层层黑盒"状态。
+
+---
+
 ## [1.4.1] — 2026-05-17
 
 ### Changed · 优化

@@ -289,20 +289,24 @@ export default function Canvas() {
   // 把当前选中的节点框成一个新的画布 group（不写入常用功能）。支持多层嵌套：
   //   - 候选必须是「顶层节点」（没在任何 group 里，即 !parentId）；
   //   - 候选既可以是普通节点，也可以是已有的 group 节点（嵌套封装）。
-  //   - 选中已经在某个 group 里的子节点不算候选（不允许把一个 group 内的部分内容
-  //     拉出来重新分组——会破坏原 group 边界）。
+  //   - 如果框选连带选中了"已被选中 group 的子节点"，**自动忽略**这些子节点
+  //     （它们会跟随父 group 一起进入新的外层 group，不需要单独处理）。
+  //   - 仅当存在"父 group 没被选中"的孤儿子节点才禁止（避免拆碎别人的 group）。
   const groupSelectedOnCanvas = useCallback((label?: string): { ok: boolean; reason?: string } => {
     const all = useNodeStore.getState().nodes as any[];
     const selected = all.filter((n: any) => n.selected);
-    // 只对「顶层节点」分组：包含 group 节点本身（用于嵌套封装），但排除已经在某个 group 里的子节点
     const candidates = selected.filter((n: any) => !n.parentId);
     if (candidates.length < 2) {
       return { ok: false, reason: '至少选 2 个顶层节点才能 Group' };
     }
-    // 检查是否有"在 group 内的子节点"被选中——禁止
-    const hasNestedSelected = selected.some((n: any) => n.parentId);
-    if (hasNestedSelected) {
-      return { ok: false, reason: '不能把已在 group 内的子节点单独拿出来分组' };
+    // 已被选中的 group 集合
+    const selectedGroupIds = new Set<string>(
+      candidates.filter((n: any) => n.type === 'group').map((n: any) => n.id)
+    );
+    // 检查"父 group 没被选中"的孤儿子节点 → 禁止
+    const orphanNested = selected.find((n: any) => n.parentId && !selectedGroupIds.has(n.parentId));
+    if (orphanNested) {
+      return { ok: false, reason: '不能把已在 group 内的子节点单独拿出来分组（请连同其父 group 一起选中）' };
     }
 
     // 节点估算尺寸（与 savePackage 保持一致）
@@ -476,24 +480,26 @@ export default function Canvas() {
         ? rfInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
         : { x: event.clientX, y: event.clientY };
       storePushHistory();
-      // 用 store 内的 loadPackage，但加载完成后把整组移动到鼠标位置
+      // 记录加载前已经存在的节点 id，便于精确找到"刚加载的最外层 group"
+      const beforeIds = new Set<string>(
+        (useNodeStore.getState().nodes as any[]).map((n: any) => n.id)
+      );
       useNodeStore.getState().loadPackage(pkgId);
-      // 找出最后一个 group 节点（刚加载的），整体平移到鼠标
       const allNodes = useNodeStore.getState().nodes as any[];
-      const lastGroup = [...allNodes].reverse().find((n: any) => n.type === 'group');
-      if (lastGroup) {
-        const dx = dropPos.x - (lastGroup.position?.x || 0);
-        const dy = dropPos.y - (lastGroup.position?.y || 0);
+      // 新加入的节点中，第一个"没有 parentId 的 group" = 最外层 wrapper
+      // （loadPackage 是按"父在前"拓扑顺序追加的，wrapper 永远是新增节点里的第 1 个 group）
+      const wrapper = allNodes.find(
+        (n: any) => !beforeIds.has(n.id) && n.type === 'group' && !n.parentId
+      );
+      if (wrapper) {
+        // 精确把 wrapper 的左上角对齐到鼠标释放点（嵌套子节点用相对父坐标，自动跟随）
         const moved = allNodes.map((n: any) => {
-          if (n.id === lastGroup.id) {
+          if (n.id === wrapper.id) {
             return { ...n, position: { x: dropPos.x, y: dropPos.y } };
           }
-          // 子节点用 parent 相对坐标，不需要再动
           return n;
         });
         useNodeStore.setState({ nodes: moved });
-        // 不修改子节点：它们用 parentId + 相对 position，跟随 group 移动
-        void dx; void dy;
       }
       return;
     }
@@ -1467,7 +1473,7 @@ export default function Canvas() {
           panOnDrag={panButton === 'middle' ? [1] : [2]}  /* middle=中键(1) / right=右键(2) */
           selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
-          selectNodesOnDrag={false}
+          selectNodesOnDrag={true}
           elementsSelectable={true}
           onPaneContextMenu={(e: any) => {
             // 在画布空白处右键 → 弹自定义菜单
@@ -1496,12 +1502,19 @@ export default function Canvas() {
         {ctxMenu && (() => {
           // 计算"Group"是否可激活：
           //   ≥2 个顶层节点（不在任何 group 内）选中；可以包含 group 本身（用于嵌套）
-          //   且不能有任何"已经在 group 里的子节点"被选中（避免破坏原 group 边界）
+          //   只在存在"父 group 没被选中"的孤儿子节点时才禁止（避免拆碎别人的 group）。
+          //   被选中 group 的子节点会被自动忽略。
           const all = useNodeStore.getState().nodes as any[];
           const selectedAll = all.filter((n: any) => n.selected);
           const groupable = selectedAll.filter((n: any) => !n.parentId);
-          const hasNestedSelected = selectedAll.some((n: any) => n.parentId);
-          const canGroup = groupable.length >= 2 && !hasNestedSelected;
+          const selectedGroupIds = new Set<string>(
+            groupable.filter((n: any) => n.type === 'group').map((n: any) => n.id)
+          );
+          const hasOrphanNested = selectedAll.some(
+            (n: any) => n.parentId && !selectedGroupIds.has(n.parentId)
+          );
+          const canGroup = groupable.length >= 2 && !hasOrphanNested;
+          const hasNestedSelected = hasOrphanNested; // 旧变量名兼容
           // 7 类节点（与 Sidebar 保持一致；group 通过本菜单的"Group"项创建，不出现在新建列表里）
           const NODE_OPTIONS = [
             { type: 'textPrompt', label: '✏️ 文本提示词' },

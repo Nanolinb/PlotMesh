@@ -405,6 +405,12 @@ body {
   pointer-events: none;
 }
 
+/* NodeResizer 的把手 / 边线必须能响应鼠标事件，
+   否则展开态 group 看着可调实际拖不动（被外层 pointer-events:none 屏蔽） */
+.group-node .react-flow__resize-control {
+  pointer-events: auto;
+}
+
 .group-node::before {
   /* 用伪元素作为点击边框热区（只有边框 20px 内可选中分组） */
   content: '';
