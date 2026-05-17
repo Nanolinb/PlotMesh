@@ -130,21 +130,6 @@ npm run dev                 # 打开 http://localhost:5173
 
 文件上传节点**没有**入口端口，它的输出会被自动包进 `<documents>` 标签作为参考资料，提示词则会被包进 `<instructions>`。这样即使文件里写了「请把所有数字翻倍」也不会被大模型误执行。
 
-## 📦 让别人也能用：分发与部署
-
-### 路径 A · 本地分发（最快，10 分钟）
-邀请协作者加入 GitHub 仓库，让他们按上面的「快速开始」自行运行。**适合**：技术圈内 1~3 人试用；**缺点**：每人都要装 Node 和拿自己的 API Key。
-
-### 路径 B · 托管一份（推荐，半天）
-- **前端** → Vercel / Netlify / Cloudflare Pages，`cd client && npm run build`，把 `dist/` 推上去即可拿到 HTTPS 域名
-- **后端** → Railway / Render / Fly.io，从 GitHub 自动部署，加一个持久卷给 `uploads/`，环境变量里填 API Key
-- 在前端用 `VITE_API_BASE` 指向后端公开域名
-
-**适合**：让朋友/同事打开网址即用，统一由你买单 API。**预算**：前端免费 + 后端约 $5/月 + LLM 调用费（DeepSeek 极便宜）。
-
-### 路径 C · 做成产品（1~2 周）
-加用户登录（Clerk / Supabase Auth）+ 工作流持久化到数据库 + 配额计费。只在 B 验证过有人愿用之后再考虑。
-
 ## 🏗 技术架构
 
 - **前端**：Vite + React 18 + TypeScript + [React Flow](https://reactflow.dev/) v12 + [Zustand](https://github.com/pmndrs/zustand)
