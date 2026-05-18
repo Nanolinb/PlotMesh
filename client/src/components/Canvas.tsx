@@ -38,6 +38,7 @@ import TimelineNode from './nodes/TimelineNode';
 import SplitterNode, { splitText as splitTextHelper } from './nodes/SplitterNode';
 import Sidebar from './Sidebar';
 import ApiKeyConfigModal from './ApiKeyConfigModal';
+import CanvasManager from './CanvasManager';
 import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
@@ -116,6 +117,14 @@ export default function Canvas() {
   const storePushHistory = useNodeStore((s) => s.pushHistory);
   const storeExportWorkflow = useNodeStore((s) => s.exportWorkflow);
   const storeImportWorkflow = useNodeStore((s) => s.importWorkflow);
+
+  // ─── v1.5 D3 多画布管理 ───
+  const activeCanvasName = useNodeStore((s) => s.activeCanvasName);
+  const renameActiveCanvas = useNodeStore((s) => s.renameActiveCanvas);
+  const createNewCanvas = useNodeStore((s) => s.createNewCanvas);
+  const [showCanvasManager, setShowCanvasManager] = useState(false);
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
 
   const [showSave, setShowSave] = useState(false);
   const [showApiConfig, setShowApiConfig] = useState(false);
@@ -1681,6 +1690,87 @@ export default function Canvas() {
 
         {/* 工具栏 */}
         <div className="canvas-toolbar">
+          {/* ─── v1.5 D3：画布管理入口 + 当前画布名 ─── */}
+          <button
+            className="toolbar-btn"
+            onClick={() => setShowCanvasManager(true)}
+            title="打开画布管理器"
+            style={{ fontSize: 14 }}
+          >
+            ≡
+          </button>
+          {renamingTitle ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={async () => {
+                setRenamingTitle(false);
+                const v = titleDraft.trim();
+                if (v && v !== activeCanvasName) {
+                  await renameActiveCanvas(v);
+                }
+              }}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter') {
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === 'Escape') {
+                  setRenamingTitle(false);
+                }
+              }}
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                padding: '4px 8px',
+                border: '1px solid var(--accent, #6366f1)',
+                borderRadius: 4,
+                background: 'var(--bg-1, #fff)',
+                color: 'var(--text, #1e293b)',
+                minWidth: 120,
+                maxWidth: 240,
+              }}
+            />
+          ) : (
+            <span
+              onDoubleClick={() => {
+                setTitleDraft(activeCanvasName);
+                setRenamingTitle(true);
+              }}
+              title="双击重命名当前画布"
+              data-testid="active-canvas-name"
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                padding: '4px 8px',
+                color: 'var(--text, #1e293b)',
+                cursor: 'text',
+                maxWidth: 240,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {activeCanvasName || '未命名画布'}
+            </span>
+          )}
+          <button
+            className="toolbar-btn"
+            onClick={async () => {
+              await createNewCanvas();
+            }}
+            title="新建一张画布"
+          >
+            ＋ 新画布
+          </button>
+          <span
+            style={{
+              width: 1,
+              alignSelf: 'stretch',
+              background: 'var(--border-color, #e2e8f0)',
+              margin: '0 4px',
+            }}
+          />
+
           <button className="toolbar-btn primary" onClick={() => executeFlow()} disabled={isRunning}>
             {isRunning ? '⏳ 运行中...' : '▶️ 运行'}
           </button>
@@ -1800,6 +1890,9 @@ export default function Canvas() {
 
       {/* API Key 配置对话框 */}
       <ApiKeyConfigModal open={showApiConfig} onClose={() => setShowApiConfig(false)} />
+
+      {/* v1.5 D3 画布管理抽屉 */}
+      <CanvasManager open={showCanvasManager} onClose={() => setShowCanvasManager(false)} />
 
       {/* 「是否存储画布为常用功能？」确认框（点存常用功能但未选中节点时弹出） */}
       {showSaveAllConfirm && (

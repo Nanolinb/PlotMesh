@@ -11,7 +11,7 @@
  */
 import { useState } from 'react';
 import type { NodePackage, PackageGroup } from '../types/nodes';
-import { useNodeStore, listRecentCanvases, deleteRecentCanvas, type RecentCanvas } from '../store/nodes';
+import { useNodeStore, deleteRecentCanvas, type RecentCanvas } from '../store/nodes';
 
 interface SidebarProps {
   packages: NodePackage[];
@@ -44,6 +44,8 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
   const toggleCollapsed = useNodeStore((s) => s.togglePackageGroupCollapsed);
   const movePackageToGroup = useNodeStore((s) => s.movePackageToGroup);
   const renamePackage = useNodeStore((s) => s.renamePackage);
+  // 订阅最近画布列表（D2 起从 store 读，store 变化即重渲染）
+  const recentCanvases = useNodeStore((s) => s.recentCanvases);
 
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
@@ -320,9 +322,9 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
 
       {/* 最近画布：每次画布导入/导出时会推一份快照到这里，方便快速回到旧画布 */}
       {(() => {
-        // 通过 recentCanvasesVersion 强制重读 localStorage
+        // recentCanvasesVersion 仅作为外部触发刷新的兼容入参；实际数据来自 store 订阅
         void recentCanvasesVersion;
-        const recents = listRecentCanvases();
+        const recents = recentCanvases;
         if (recents.length === 0) return null;
         return (
           <div className="sidebar-section" style={{ borderTop: '1px solid var(--border, #e2e8f0)', marginTop: 'auto' }}>

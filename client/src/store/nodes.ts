@@ -1,23 +1,30 @@
 /**
- * store/nodes.ts · 全局工作流状态（zustand）
+ * store/nodes.ts · 全局工作流状态（zustand）· v1.5 D2 IDB 版
  * ---------------------------------------------------------------
- * 这是整个 PlotMesh 前端的"单一真相源"。负责：
+ * 单一真相源。负责：
  *
- *   1. nodes / edges      — 当前画布数据（与 React Flow 双向绑定）
- *   2. packages / groups   — 用户保存的"常用功能"（package）和它们的分组
- *   3. history / future   — 撤销 / 重做栈（最多 MAX_HISTORY 条）
+ *   1. nodes / edges          — 当前画布数据（与 React Flow 双向绑定）
+ *   2. packages / groups       — 用户保存的"常用功能"和它们的分组
+ *   3. recentCanvases          — 最近 8 张画布（store 内维护）
+ *   4. activeCanvasId          — 当前活动画布 id（用于 IDB 写盘）
+ *   5. hydrated                — 是否已从 IDB 加载完成（启动 gate 用）
+ *   6. history / future        — 撤销 / 重做栈（最多 MAX_HISTORY 条）
  *
- * 持久化策略（localStorage）：
- *   - 'plotmesh-canvas-draft'      画布工作中草稿（含 nodes / edges，会清掉运行时状态）
- *   - 'node-editor-packages'       常用功能列表
- *   - 'node-editor-package-groups' 常用功能的分组
- *   - 'plotmesh-recent-canvases'   最近 8 张画布快照
- *   - 'plotmesh-autosave-min'      自动保存间隔（分钟，0=关闭）
- *   - 'ui-theme' / 'plotmesh-pan-button' 等其它偏好（在 Canvas 组件管理）
+ * 持久化策略（v1.5 D2 起）：
+ *   - 主存：IndexedDB（store/db.ts + store/storage.ts）
+ *   - 兜底：LS key 'plotmesh-pending-flush' —— beforeunload 同步写最近一笔，
+ *           启动 hydrate 时回填到 IDB 后删除（防异步写盘丢数据，方案 A）
+ *   - UI 偏好（ui-theme / plotmesh-pan-button / plotmesh-autosave-min）
+ *     仍保留在 LS（在 Canvas 组件管理），不走 IDB
+ *
+ * 启动顺序（App.tsx）：
+ *   await migrateFromLocalStorageIfNeeded()  // D1 一次性迁移
+ *   await hydrateNodeStore()                 // 从 IDB 灌进 store
+ *   render <Canvas/>
  *
  * 重要约束：
  *   - group 节点必须排在它的 children 之前（React Flow v12 要求）
- *   - 节点的 data 字段不能塞 Date / 函数 等非 JSON 值（会破坏导出/草稿）
+ *   - 节点的 data 字段不能塞 Date / 函数 等非 JSON 值
  *   - 任何会改变 nodes/edges 的 setter 应当在动作前先 pushHistory()
  */
 import { create } from 'zustand';
@@ -26,6 +33,25 @@ import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
 import type { CustomNodeData, NodePackage, PackageGroup } from '../types/nodes';
 import { inferExposedPorts } from '../utils/composite';
 import { SAMPLE_PACKAGES, SAMPLE_GROUPS } from '../data/presets';
+import {
+  getMeta,
+  setMeta,
+  getCanvas,
+  putCanvas,
+  deleteCanvas,
+  listCanvases,
+  listRecentCanvases as listRecentCanvasesIDB,
+  listPackages,
+  listPackageGroups,
+  replaceAllPackages,
+  replaceAllPackageGroups,
+} from './storage';
+import {
+  META_KEYS,
+  type Canvas as CanvasRecord,
+  type PackageRecord,
+  type PackageGroupRecord,
+} from '../types/db';
 
 export type CustomNode = Node<CustomNodeData>;
 export type CustomEdge = Edge;
@@ -41,6 +67,15 @@ interface NodeStore {
   edges: CustomEdge[];
   packages: NodePackage[];
   packageGroups: PackageGroup[];
+
+  /** 最近画布快照（store 内维护，写盘交给 IDB） */
+  recentCanvases: RecentCanvas[];
+  /** 当前活动画布 id（决定写到 IDB 的哪条 canvases 记录） */
+  activeCanvasId: string | null;
+  /** 当前活动画布名称（顶栏 Tab Bar 显示用；与 IDB 中那条 Canvas.name 同步） */
+  activeCanvasName: string;
+  /** 是否已从 IDB hydrate 完成；false 时 UI 应显示 loading */
+  hydrated: boolean;
 
   // 历史记录（用于撤销/重做）
   history: HistorySnapshot[];
@@ -103,58 +138,29 @@ interface NodeStore {
   // 工作流导入 / 导出
   exportWorkflow: () => string;
   importWorkflow: (jsonText: string) => boolean;
+
+  // 多画布管理（v1.5 D3 起）
+  /** 切换 active 画布：先 flush 当前，再从 IDB 灌新画布到 store；同时清空 history。 */
+  switchActiveCanvas: (canvasId: string) => Promise<void>;
+  /** 创建一张新空白画布并切过去；返回新 canvasId。 */
+  createNewCanvas: (name?: string) => Promise<string>;
+  /** 重命名当前 active 画布。 */
+  renameActiveCanvas: (newName: string) => Promise<void>;
+  /** 重命名指定画布。 */
+  renameCanvasById: (canvasId: string, newName: string) => Promise<void>;
+  /** 删除某张画布；如果删的是 active，自动切到剩下的最近一张（或新建空白）。 */
+  deleteCanvasById: (canvasId: string) => Promise<void>;
+  /** 刷新 store.recentCanvases（从 IDB 读最新 8 条，排除当前 active）。 */
+  refreshRecentCanvases: () => Promise<void>;
 }
 
-const STORAGE_KEY = 'node-editor-packages';
-const GROUPS_KEY = 'node-editor-package-groups';
-const PRESETS_INJECTED_KEY = 'node-editor-presets-injected';
-const CANVAS_KEY = 'plotmesh-canvas-draft'; // 画布的"工作中草稿"，用于下次打开继续编辑
 const MAX_HISTORY = 50;
-
-/**
- * 把画布持久化到 localStorage。剥掉运行时状态，避免下次打开时显示过期的输出。
- */
-export function saveCanvasDraft(nodes: any[], edges: any[]) {
-  try {
-    const cleanNodes = nodes.map((n) => {
-      if (!n.data) return n;
-      const cleanedData: any = { ...n.data };
-      // 这些字段是运行时产物，不该在重启后保留
-      if ('output' in cleanedData) cleanedData.output = '';
-      if ('streamOutput' in cleanedData) cleanedData.streamOutput = '';
-      if ('error' in cleanedData) cleanedData.error = undefined;
-      cleanedData.status = 'idle';
-      return { ...n, data: cleanedData };
-    });
-    localStorage.setItem(
-      CANVAS_KEY,
-      JSON.stringify({ version: 1, savedAt: Date.now(), nodes: cleanNodes, edges })
-    );
-  } catch (e) {
-    // localStorage 可能写满或被禁用——尽力而为，不抛错
-    console.warn('画布草稿保存失败：', e);
-  }
-}
-
-export function loadCanvasDraft(): { nodes: any[]; edges: any[] } | null {
-  try {
-    const raw = localStorage.getItem(CANVAS_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.nodes)) return null;
-    return { nodes: data.nodes, edges: Array.isArray(data.edges) ? data.edges : [] };
-  } catch {
-    return null;
-  }
-}
-
-export function clearCanvasDraft() {
-  try { localStorage.removeItem(CANVAS_KEY); } catch {}
-}
-
-// ─────── 最近画布列表 ───────
-const RECENT_CANVASES_KEY = 'plotmesh-recent-canvases';
 const RECENT_CANVASES_MAX = 8;
+const DEFAULT_WORKSPACE_ID = 'workspace-default';
+const DEFAULT_PROJECT_ID = 'project-default';
+
+/** 兜底 LS key（方案 A）：beforeunload 同步写最近一笔，启动 hydrate 时回填到 IDB */
+const PENDING_FLUSH_KEY = 'plotmesh-pending-flush';
 
 export type RecentCanvas = {
   id: string;
@@ -164,20 +170,9 @@ export type RecentCanvas = {
   edges: any[];
 };
 
-export function listRecentCanvases(): RecentCanvas[] {
-  try {
-    const raw = localStorage.getItem(RECENT_CANVASES_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-export function pushRecentCanvas(name: string, nodes: any[], edges: any[]) {
-  // 保存的快照剥掉运行时状态，与 saveCanvasDraft 行为一致
-  const cleanNodes = nodes.map((n) => {
+/** 把当前画布节点的运行时输出剥掉，避免重启后看到旧输出 */
+function stripRuntimeFields(nodes: any[]): any[] {
+  return nodes.map((n) => {
     if (!n.data) return n;
     const cleanedData: any = { ...n.data };
     if ('output' in cleanedData) cleanedData.output = '';
@@ -186,95 +181,422 @@ export function pushRecentCanvas(name: string, nodes: any[], edges: any[]) {
     cleanedData.status = 'idle';
     return { ...n, data: cleanedData };
   });
+}
+
+/** 写"待 flush"兜底：同步 LS 写一份，启动时回填 IDB 后会被清掉 */
+function writePendingFlush(canvasId: string, nodes: any[], edges: any[]) {
+  try {
+    localStorage.setItem(
+      PENDING_FLUSH_KEY,
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        canvasId,
+        nodes,
+        edges,
+      })
+    );
+  } catch {
+    /* LS 满了就放弃，不挡主流程 */
+  }
+}
+
+function readPendingFlush(): {
+  canvasId: string;
+  nodes: any[];
+  edges: any[];
+  savedAt: number;
+} | null {
+  try {
+    const raw = localStorage.getItem(PENDING_FLUSH_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data.canvasId !== 'string' || !Array.isArray(data.nodes)) return null;
+    return {
+      canvasId: data.canvasId,
+      nodes: data.nodes,
+      edges: Array.isArray(data.edges) ? data.edges : [],
+      savedAt: typeof data.savedAt === 'number' ? data.savedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingFlush() {
+  try {
+    localStorage.removeItem(PENDING_FLUSH_KEY);
+  } catch {}
+}
+
+/** 往 IDB 写当前活动画布（fire-and-forget；失败只 console.warn） */
+function flushActiveCanvasToIDB(
+  canvasId: string,
+  nodes: any[],
+  edges: any[],
+  name?: string
+) {
+  // 先写兜底，再异步写 IDB；这样即使 IDB 还没写完关页面也不丢
+  const cleanNodes = stripRuntimeFields(nodes);
+  writePendingFlush(canvasId, cleanNodes, edges);
+  void (async () => {
+    try {
+      const existing = await getCanvas(canvasId);
+      const now = Date.now();
+      const rec: CanvasRecord = {
+        id: canvasId,
+        workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+        projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+        name: name ?? existing?.name ?? '未命名画布',
+        nodes: cleanNodes,
+        edges,
+        viewport: existing?.viewport,
+        thumbnail: existing?.thumbnail,
+        lastOpenedAt: existing?.lastOpenedAt ?? now,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      await putCanvas(rec);
+      // 写成功了才清 pending
+      clearPendingFlush();
+    } catch (e) {
+      console.warn('[plotmesh] 画布草稿写 IDB 失败：', e);
+    }
+  })();
+}
+
+/** RecentCanvas 在 IDB 中即一条 Canvas 记录（用 lastOpenedAt 排序） */
+function recordToRecent(c: CanvasRecord): RecentCanvas {
+  return {
+    id: c.id,
+    name: c.name,
+    savedAt: c.lastOpenedAt ?? c.updatedAt,
+    nodes: Array.isArray(c.nodes) ? (c.nodes as any[]) : [],
+    edges: Array.isArray(c.edges) ? (c.edges as any[]) : [],
+  };
+}
+
+/** PackageRecord ↔ NodePackage 适配（payload 里包着完整老 schema） */
+function packageRecordToNodePackage(r: PackageRecord): NodePackage | null {
+  const p = (r.payload || {}) as Partial<NodePackage> & Record<string, unknown>;
+  if (!p || !Array.isArray(p.nodes)) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    description: typeof p.description === 'string' ? p.description : '',
+    group: typeof p.group === 'string' ? p.group : '',
+    nodes: p.nodes as any[],
+    edges: Array.isArray(p.edges) ? (p.edges as any[]) : [],
+    createdAt:
+      typeof p.createdAt === 'string'
+        ? p.createdAt
+        : new Date(r.createdAt).toISOString(),
+    updatedAt:
+      typeof p.updatedAt === 'string'
+        ? p.updatedAt
+        : new Date(r.updatedAt).toISOString(),
+  };
+}
+
+function nodePackageToRecord(pkg: NodePackage): PackageRecord {
+  return {
+    id: pkg.id,
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    groupId: pkg.group || null,
+    name: pkg.name,
+    payload: pkg,
+    createdAt: Date.parse(pkg.createdAt) || Date.now(),
+    updatedAt: Date.parse(pkg.updatedAt) || Date.now(),
+  };
+}
+
+function packageGroupToRecord(g: PackageGroup): PackageGroupRecord {
+  return {
+    id: g.id,
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    name: g.name,
+    collapsed: g.collapsed,
+    createdAt: Date.parse(g.createdAt) || Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+function packageGroupRecordToNodeGroup(r: PackageGroupRecord): PackageGroup {
+  return {
+    id: r.id,
+    name: r.name,
+    collapsed: !!r.collapsed,
+    createdAt: new Date(r.createdAt).toISOString(),
+  };
+}
+
+/**
+ * 把画布持久化（D2 起走 IDB；旧函数签名保留，Canvas 组件不用改）
+ *
+ * 实际逻辑：
+ *   1. 写一份兜底到 LS（防异步写 IDB 没完成就刷新）
+ *   2. fire-and-forget 写 IDB；写成功后清兜底
+ *
+ * 注意：必须先有一个 activeCanvasId；否则就当 'canvas-active-default' 处理。
+ */
+export function saveCanvasDraft(nodes: any[], edges: any[]) {
+  try {
+    const state = useNodeStore.getState();
+    const canvasId = state.activeCanvasId || 'canvas-active-default';
+    flushActiveCanvasToIDB(canvasId, nodes, edges);
+  } catch (e) {
+    console.warn('画布草稿保存失败：', e);
+  }
+}
+
+/**
+ * 老接口保留（仅供测试 / 历史代码）。生产代码直接用 store.activeCanvasId 做 hydrate。
+ * 这里返回 null —— D2 起 hydrate 在 hydrateNodeStore() 中完成，不再走这个口。
+ */
+export function loadCanvasDraft(): { nodes: any[]; edges: any[] } | null {
+  return null;
+}
+
+export function clearCanvasDraft() {
+  // 清兜底 + 删 IDB 中活动画布
+  clearPendingFlush();
+  const state = useNodeStore.getState();
+  if (state.activeCanvasId) {
+    void deleteCanvas(state.activeCanvasId).catch(() => {});
+  }
+}
+
+/**
+ * @deprecated 改为 store.recentCanvases。保留同名导出供老代码不用改导入。
+ *             启动后请用 useNodeStore((s) => s.recentCanvases) 读。
+ *             同步调用时返回 store 中已 hydrate 的数据。
+ */
+export function listRecentCanvases(): RecentCanvas[] {
+  return useNodeStore.getState().recentCanvases;
+}
+
+/** 推一份"最近画布快照"。落 IDB 时是新增一条 Canvas 记录。 */
+export function pushRecentCanvas(name: string, nodes: any[], edges: any[]) {
+  const cleanNodes = stripRuntimeFields(nodes);
+  const id = `recent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const item: RecentCanvas = {
-    id: `recent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id,
     name: name || `画布 ${new Date().toLocaleString('zh-CN')}`,
     savedAt: Date.now(),
     nodes: cleanNodes,
     edges,
   };
-  const list = [item, ...listRecentCanvases()].slice(0, RECENT_CANVASES_MAX);
-  try {
-    localStorage.setItem(RECENT_CANVASES_KEY, JSON.stringify(list));
-  } catch (e) {
-    // 容量不够时去掉最老的几条再尝试
+  const list = [item, ...useNodeStore.getState().recentCanvases].slice(
+    0,
+    RECENT_CANVASES_MAX
+  );
+  useNodeStore.setState({ recentCanvases: list });
+
+  // fire-and-forget 写 IDB
+  void (async () => {
     try {
-      localStorage.setItem(RECENT_CANVASES_KEY, JSON.stringify(list.slice(0, 4)));
-    } catch {}
-  }
+      const now = Date.now();
+      const rec: CanvasRecord = {
+        id,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        projectId: DEFAULT_PROJECT_ID,
+        name: item.name,
+        nodes: cleanNodes,
+        edges,
+        lastOpenedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await putCanvas(rec);
+      // 超过上限的旧 recent 删掉，避免 IDB 越来越大
+      const all = await listRecentCanvasesIDB(64);
+      const recentIds = new Set(
+        all
+          .filter((c) => c.id.startsWith('recent-'))
+          .slice(0, RECENT_CANVASES_MAX)
+          .map((c) => c.id)
+      );
+      for (const c of all) {
+        if (c.id.startsWith('recent-') && !recentIds.has(c.id)) {
+          await deleteCanvas(c.id).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[plotmesh] pushRecentCanvas 写 IDB 失败：', e);
+    }
+  })();
 }
 
 export function deleteRecentCanvas(id: string) {
-  const next = listRecentCanvases().filter((r) => r.id !== id);
-  try { localStorage.setItem(RECENT_CANVASES_KEY, JSON.stringify(next)); } catch {}
+  const next = useNodeStore.getState().recentCanvases.filter((r) => r.id !== id);
+  useNodeStore.setState({ recentCanvases: next });
+  void deleteCanvas(id).catch(() => {});
 }
 
 /**
- * 首次打开 PlotMesh 时往 localStorage 里注入预制示例。
- * 用 PRESETS_INJECTED_KEY 标记，注入过一次就不会再覆盖用户数据。
- * 用户即使把示例都删了，下次启动也不会"复活"——这是有意为之，避免烦人。
+ * 启动时调用：从 IDB hydrate 整个 store。
+ * 必须在 migrateFromLocalStorageIfNeeded() 之后、render 之前 await。
+ *
+ * 步骤：
+ *   1) 读 meta:active-canvas-id，没有就生成一个空白 active 画布 id
+ *   2) 处理 LS 兜底 plotmesh-pending-flush —— 如果存在，比 IDB 中那条新就以兜底为准
+ *   3) 读取 active 画布的 nodes/edges → store
+ *   4) 读取所有 packages / packageGroups → store
+ *   5) 读最近画布列表 → store.recentCanvases
+ *   6) 注入预置（如果还没注过）
+ *   7) hydrated = true
  */
-function ensurePresetsInjected(): { packages: NodePackage[]; groups: PackageGroup[] } {
-  const alreadyInjected = localStorage.getItem(PRESETS_INJECTED_KEY) === '1';
-  let packages: NodePackage[] = [];
-  let groups: PackageGroup[] = [];
-  try {
-    const p = localStorage.getItem(STORAGE_KEY);
-    if (p) packages = JSON.parse(p);
-  } catch {}
-  try {
-    const g = localStorage.getItem(GROUPS_KEY);
-    if (g) groups = JSON.parse(g);
-  } catch {}
+export async function hydrateNodeStore(): Promise<void> {
+  // 1) active canvas id
+  let activeId = (await getMeta<string>(META_KEYS.ACTIVE_CANVAS_ID)) || null;
+  if (!activeId) {
+    activeId = `canvas-active-${Date.now().toString(36)}`;
+    await setMeta(META_KEYS.ACTIVE_CANVAS_ID, activeId);
+  }
 
-  if (!alreadyInjected) {
-    // 仅当用户未注入过且原本两个都为空时才注入，避免误覆盖
-    if (packages.length === 0 && groups.length === 0) {
-      packages = [...SAMPLE_PACKAGES];
-      groups = [...SAMPLE_GROUPS];
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(packages));
-      localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
+  // 2) 兜底 pending-flush
+  const pending = readPendingFlush();
+  let nodes: any[] = [];
+  let edges: any[] = [];
+  let activeName = '未命名画布';
+  let hydratedFromPending = false;
+
+  if (pending && pending.canvasId === activeId) {
+    // 兜底比 IDB 那条更可信（因为它是关页面前最后写的）
+    nodes = pending.nodes;
+    edges = pending.edges;
+    hydratedFromPending = true;
+    // 立刻把兜底的内容回写到 IDB 当前活动画布，然后清掉兜底
+    try {
+      const existing = await getCanvas(activeId);
+      activeName = existing?.name || activeName;
+      const now = Date.now();
+      await putCanvas({
+        id: activeId,
+        workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+        projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+        name: existing?.name || '未命名画布',
+        nodes,
+        edges,
+        viewport: existing?.viewport,
+        thumbnail: existing?.thumbnail,
+        lastOpenedAt: existing?.lastOpenedAt ?? now,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
+      clearPendingFlush();
+    } catch (e) {
+      console.warn('[plotmesh] hydrate: 回填 pending-flush 失败：', e);
     }
-    localStorage.setItem(PRESETS_INJECTED_KEY, '1');
+  } else {
+    const c = await getCanvas(activeId);
+    if (c) {
+      nodes = Array.isArray(c.nodes) ? (c.nodes as any[]) : [];
+      edges = Array.isArray(c.edges) ? (c.edges as any[]) : [];
+      activeName = c.name || activeName;
+    } else {
+      // active id 在 IDB 中没有对应记录 —— 第一次启动或被清掉了，写一条空白进去
+      const now = Date.now();
+      await putCanvas({
+        id: activeId,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        projectId: DEFAULT_PROJECT_ID,
+        name: activeName,
+        nodes: [],
+        edges: [],
+        lastOpenedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
   }
-  return { packages, groups };
-}
 
-function loadPackages(): NodePackage[] {
-  ensurePresetsInjected();
+  // 4) packages / groups
+  const pkgRecs = await listPackages(DEFAULT_WORKSPACE_ID);
+  const grpRecs = await listPackageGroups(DEFAULT_WORKSPACE_ID);
+  let packages: NodePackage[] = pkgRecs
+    .map(packageRecordToNodePackage)
+    .filter((p): p is NodePackage => !!p);
+  let packageGroups: PackageGroup[] = grpRecs.map(packageGroupRecordToNodeGroup);
+
+  // 6) 注入预置（仅当从未注入过且当前两个都为空时）
+  const presetsInjected = await getMeta<boolean>(META_KEYS.PRESETS_INJECTED);
+  if (!presetsInjected) {
+    if (packages.length === 0 && packageGroups.length === 0) {
+      packages = [...SAMPLE_PACKAGES];
+      packageGroups = [...SAMPLE_GROUPS];
+      await replaceAllPackages(
+        DEFAULT_WORKSPACE_ID,
+        packages.map(nodePackageToRecord)
+      );
+      await replaceAllPackageGroups(
+        DEFAULT_WORKSPACE_ID,
+        packageGroups.map(packageGroupToRecord)
+      );
+    }
+    await setMeta(META_KEYS.PRESETS_INJECTED, true);
+  }
+
+  // 5) recent canvases —— 从 IDB by-lastOpenedAt 倒序取 RECENT_CANVASES_MAX 条，
+  //    排除当前 active 那条
+  let recentCanvases: RecentCanvas[] = [];
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
+    const all = await listRecentCanvasesIDB(RECENT_CANVASES_MAX + 4);
+    recentCanvases = all
+      .filter((c) => c.id !== activeId)
+      .slice(0, RECENT_CANVASES_MAX)
+      .map(recordToRecent);
+  } catch (e) {
+    console.warn('[plotmesh] hydrate: 读最近画布失败：', e);
+  }
+
+  useNodeStore.setState({
+    nodes,
+    edges,
+    packages,
+    packageGroups,
+    recentCanvases,
+    activeCanvasId: activeId,
+    activeCanvasName: activeName,
+    hydrated: true,
+  });
+
+  if (hydratedFromPending) {
+    console.info('[plotmesh] hydrate: 已从 pending-flush 兜底回填画布');
   }
 }
 
-function savePackages(packages: NodePackage[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(packages));
+/** 全量重写 packages 到 IDB（fire-and-forget；失败 console.warn） */
+function persistPackages(packages: NodePackage[]) {
+  const records = packages.map(nodePackageToRecord);
+  void replaceAllPackages(DEFAULT_WORKSPACE_ID, records).catch((e) => {
+    console.warn('[plotmesh] 写 packages 失败：', e);
+  });
 }
 
-function loadPackageGroups(): PackageGroup[] {
-  try {
-    const data = localStorage.getItem(GROUPS_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
-  }
+/** 全量重写 packageGroups 到 IDB（fire-and-forget） */
+function persistPackageGroups(groups: PackageGroup[]) {
+  const records = groups.map(packageGroupToRecord);
+  void replaceAllPackageGroups(DEFAULT_WORKSPACE_ID, records).catch((e) => {
+    console.warn('[plotmesh] 写 packageGroups 失败：', e);
+  });
 }
 
-function savePackageGroups(groups: PackageGroup[]) {
-  localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
-}
+// 内部 alias，老代码沿用
+const savePackages = persistPackages;
+const savePackageGroups = persistPackageGroups;
 
 export const useNodeStore = create<NodeStore>((set, get) => {
-  // 启动时尝试从 localStorage 读出上次未完成的画布
-  const draft = loadCanvasDraft();
   return {
-  nodes: draft?.nodes || [],
-  edges: draft?.edges || [],
-  packages: loadPackages(),
-  packageGroups: loadPackageGroups(),
+  // 启动时全部置空；真实数据由 hydrateNodeStore() 在 App 启动 gate 中灌入
+  nodes: [],
+  edges: [],
+  packages: [],
+  packageGroups: [],
+  recentCanvases: [],
+  activeCanvasId: null,
+  activeCanvasName: '未命名画布',
+  hydrated: false,
   history: [],
   future: [],
 
@@ -1234,6 +1556,218 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     } catch (e: any) {
       alert('导入失败：' + (e.message || '未知错误'));
       return false;
+    }
+  },
+
+  // ─────── v1.5 D3 多画布管理 ───────
+
+  switchActiveCanvas: async (canvasId: string) => {
+    const cur = get();
+    if (cur.activeCanvasId === canvasId) return;
+
+    // 1) 同步 flush 当前画布到 IDB（强制 await，确保数据落定再切）
+    if (cur.activeCanvasId) {
+      try {
+        const cleanNodes = stripRuntimeFields(cur.nodes);
+        const existing = await getCanvas(cur.activeCanvasId);
+        const now = Date.now();
+        await putCanvas({
+          id: cur.activeCanvasId,
+          workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+          projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+          name: cur.activeCanvasName || existing?.name || '未命名画布',
+          nodes: cleanNodes,
+          edges: cur.edges,
+          viewport: existing?.viewport,
+          thumbnail: existing?.thumbnail,
+          lastOpenedAt: existing?.lastOpenedAt ?? now,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
+        clearPendingFlush();
+      } catch (e) {
+        console.warn('[plotmesh] switchActiveCanvas: flush 当前画布失败：', e);
+      }
+    }
+
+    // 2) 灌入目标画布
+    let target = await getCanvas(canvasId);
+    const now = Date.now();
+    if (!target) {
+      target = {
+        id: canvasId,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        projectId: DEFAULT_PROJECT_ID,
+        name: '未命名画布',
+        nodes: [],
+        edges: [],
+        lastOpenedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await putCanvas(target);
+    } else {
+      // 触碰 lastOpenedAt 让最近排序更新
+      await putCanvas({ ...target, lastOpenedAt: now });
+    }
+
+    await setMeta(META_KEYS.ACTIVE_CANVAS_ID, canvasId);
+
+    set({
+      activeCanvasId: canvasId,
+      activeCanvasName: target.name || '未命名画布',
+      nodes: Array.isArray(target.nodes) ? (target.nodes as any[]) : [],
+      edges: Array.isArray(target.edges) ? (target.edges as any[]) : [],
+      // history 与画布绑定，切换时清空
+      history: [],
+      future: [],
+    });
+
+    await get().refreshRecentCanvases();
+    setTimeout(() => get().updatePromptNumbers(), 0);
+  },
+
+  createNewCanvas: async (name?: string) => {
+    const cur = get();
+    // 先 flush 当前
+    if (cur.activeCanvasId) {
+      try {
+        const cleanNodes = stripRuntimeFields(cur.nodes);
+        const existing = await getCanvas(cur.activeCanvasId);
+        const now = Date.now();
+        await putCanvas({
+          id: cur.activeCanvasId,
+          workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+          projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+          name: cur.activeCanvasName || existing?.name || '未命名画布',
+          nodes: cleanNodes,
+          edges: cur.edges,
+          viewport: existing?.viewport,
+          thumbnail: existing?.thumbnail,
+          lastOpenedAt: existing?.lastOpenedAt ?? now,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
+        clearPendingFlush();
+      } catch (e) {
+        console.warn('[plotmesh] createNewCanvas: flush 失败：', e);
+      }
+    }
+
+    const id = `canvas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const finalName = (name || '').trim() || `画布 ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+    const now = Date.now();
+    await putCanvas({
+      id,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      projectId: DEFAULT_PROJECT_ID,
+      name: finalName,
+      nodes: [],
+      edges: [],
+      lastOpenedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await setMeta(META_KEYS.ACTIVE_CANVAS_ID, id);
+
+    set({
+      activeCanvasId: id,
+      activeCanvasName: finalName,
+      nodes: [],
+      edges: [],
+      history: [],
+      future: [],
+    });
+    await get().refreshRecentCanvases();
+    return id;
+  },
+
+  renameActiveCanvas: async (newName: string) => {
+    const trimmed = (newName || '').trim();
+    if (!trimmed) return;
+    const cur = get();
+    if (!cur.activeCanvasId) return;
+    set({ activeCanvasName: trimmed });
+    try {
+      const existing = await getCanvas(cur.activeCanvasId);
+      const now = Date.now();
+      // 重命名时 store 才是 source of truth：用当前 store 的 nodes/edges 写盘，
+      // 避免 IDB 中旧 nodes 把 store 里更新过的内容覆盖掉
+      await putCanvas({
+        id: cur.activeCanvasId,
+        workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+        projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+        name: trimmed,
+        nodes: stripRuntimeFields(cur.nodes),
+        edges: cur.edges,
+        viewport: existing?.viewport,
+        thumbnail: existing?.thumbnail,
+        lastOpenedAt: existing?.lastOpenedAt ?? now,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      });
+      clearPendingFlush();
+    } catch (e) {
+      console.warn('[plotmesh] renameActiveCanvas 写盘失败：', e);
+    }
+    await get().refreshRecentCanvases();
+  },
+
+  renameCanvasById: async (canvasId: string, newName: string) => {
+    const trimmed = (newName || '').trim();
+    if (!trimmed) return;
+    const cur = get();
+    if (cur.activeCanvasId === canvasId) {
+      await get().renameActiveCanvas(trimmed);
+      return;
+    }
+    try {
+      const existing = await getCanvas(canvasId);
+      if (!existing) return;
+      const now = Date.now();
+      await putCanvas({ ...existing, name: trimmed, updatedAt: now });
+    } catch (e) {
+      console.warn('[plotmesh] renameCanvasById 写盘失败：', e);
+    }
+    await get().refreshRecentCanvases();
+  },
+
+  deleteCanvasById: async (canvasId: string) => {
+    const cur = get();
+    const isActive = cur.activeCanvasId === canvasId;
+    try {
+      await deleteCanvas(canvasId);
+    } catch (e) {
+      console.warn('[plotmesh] deleteCanvasById 失败：', e);
+    }
+    if (isActive) {
+      // 删的是当前 active —— 找一张候补的最近画布切过去；都没有就开张空白
+      const all = await listCanvases({ workspaceId: DEFAULT_WORKSPACE_ID });
+      const sorted = all
+        .filter((c) => c.id !== canvasId)
+        .sort((a, b) => (b.lastOpenedAt ?? b.updatedAt) - (a.lastOpenedAt ?? a.updatedAt));
+      if (sorted.length > 0) {
+        await get().switchActiveCanvas(sorted[0].id);
+      } else {
+        await get().createNewCanvas();
+      }
+    } else {
+      // 不是 active，单独刷一下 recent 列表即可
+      await get().refreshRecentCanvases();
+    }
+  },
+
+  refreshRecentCanvases: async () => {
+    try {
+      const activeId = get().activeCanvasId;
+      const all = await listRecentCanvasesIDB(RECENT_CANVASES_MAX + 4);
+      const recents = all
+        .filter((c) => c.id !== activeId)
+        .slice(0, RECENT_CANVASES_MAX)
+        .map(recordToRecent);
+      set({ recentCanvases: recents });
+    } catch (e) {
+      console.warn('[plotmesh] refreshRecentCanvases 失败：', e);
     }
   },
 };

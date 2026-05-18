@@ -5,6 +5,61 @@
 
 ---
 
+## [1.5.0] — 2026-05-18
+
+> 多画布管理（D1 + D2 + D3 三步合并发布）。把单画布 + LocalStorage 时代的 PlotMesh 升级为 IndexedDB 多画布工作台：可同时管理任意张画布、左侧抽屉里随时切换、顶栏显示并支持双击重命名当前画布。底层从 LS 完全迁移到 IDB，老用户首次启动会一次性把现有画布和常用功能搬迁过去。
+
+### Added · 新增
+
+- **IndexedDB 数据底座（D1）**：新建 `client/src/store/db.ts`、`storage.ts`、`migration.ts`、`types/db.ts`。
+  - 数据库 `plotmesh` 共 6 个 store：`workspaces / projects / canvases / packages / packageGroups / meta`。
+  - `canvases` 主键 `id`，含 `name / nodes / edges / createdAt / updatedAt / lastOpenedAt / projectId / workspaceId` 字段；按 `lastOpenedAt` 索引以支持"最近画布"查询。
+  - `meta` 表存 schema 版本、当前 `activeCanvasId / activeProjectId / activeWorkspaceId`、迁移完成标记等单值。
+  - 老 LocalStorage（`workflow-state` / `plotmesh-recent-canvases-v1` / `plotmesh-packages` / `plotmesh-package-groups`）启动时一次性搬入 IDB，写入 `meta.migration_done` 后不再回搬。
+- **启动 gate（D2）**：`App.tsx` 改为 `migrate → hydrateNodeStore → render`，在数据就绪前显示加载占位，避免 store 与 IDB 之间出现"先渲染后回填"的闪烁/丢节点问题。
+- **画布管理器抽屉（D3）**：新增 `components/CanvasManager.tsx`（左侧 320px 抽屉 + 遮罩层）。
+  - 列表按 `lastOpenedAt` 倒序展示所有画布，搜索框支持按名称过滤；自动排除带 `recent-` 前缀的快照型条目（与"最近画布"快照解耦）。
+  - 每行：● 当前 active 标记、画布名（行内可双击重命名进入编辑态）、节点数 + 最后打开时间 meta、行内 ✎ 重命名 / ✕ 删除按钮。
+  - Header 提供「＋ 新建画布」与「✕ 关闭」；Footer 显示总数。
+- **顶栏 Tab Bar（D3）**：在 `Canvas.tsx` 工具栏开头插入 ≡（打开抽屉）+ 受控的"当前画布名"标签 + ＋（创建新画布）+ 分隔条。
+  - 当前画布名支持**双击切换为 input 进入重命名**，Enter 提交、Escape 取消、blur 自动提交（带 `data-testid="active-canvas-name"`，方便自动化测试）。
+- **Store 新增 6 个 D3 actions**（`store/nodes.ts`）：
+  - `switchActiveCanvas(id)`：flush 当前画布 → 拉取目标画布（不存在则建空白）→ 更新 `lastOpenedAt` → 替换 store 的 `nodes/edges`，并清空 `history/future`。
+  - `createNewCanvas(name?)`：先 flush 当前 → 生成 `canvas-{ts36}-{rnd}` id → 默认名 `画布 MM/dd HH:mm` → putCanvas + setMeta，并把 store 切到空画布。
+  - `renameActiveCanvas(name)`：写库时使用 store 当前内容（`stripRuntimeFields(cur.nodes) + cur.edges`），避免误用 IDB 旧快照覆盖未刷盘的内存修改；同时 clearPendingFlush + 刷新最近列表。
+  - `renameCanvasById(id, name)`：active 画布走 `renameActiveCanvas`，其它画布直接读改写一次 IDB。
+  - `deleteCanvasById(id)`：删除指定画布；若是当前 active，自动按 `lastOpenedAt` 切到最近一张，没有则新建空白。
+  - `refreshRecentCanvases()`：读取 `listRecentCanvasesIDB`，排除当前 active，取前 8 张写入 store 的 `recentCanvases`。
+
+### Changed · 优化
+
+- **store/nodes.ts 全面异步化**：`saveStateToLS / loadStateFromLS / restoreCanvasFromLS / pushHistory` 等函数改走 `storage.ts`（IDB），所有保存动作改成 async + putCanvas。
+- **新增 `activeCanvasName` store 字段**：`hydrateNodeStore()` 启动时从 IDB Canvas 读取并同步到 store；新建空白 active 时也会同步写一份。
+- **pending-flush 兜底（沿用自 D2）**：把 store 内存里"未刷盘"的 nodes/edges 临时写入 LS，App 启动 hydrate 完成后再倒灌回 IDB，覆盖关闭浏览器/刷新等极端场景下的数据丢失风险。
+
+### Fixed · 修复
+
+- **重命名当前画布时丢节点**：`renameActiveCanvas` 早期实现是 `existing?.nodes || stripRuntimeFields(cur.nodes)`，会用 IDB 上一次刷盘的节点覆盖 store 内存里更新过但未刷盘的节点。改为始终用 store 当前 `cur.nodes / cur.edges` 写盘，并 `clearPendingFlush()`。
+
+### Internal · 内部
+
+- 抽屉组件订阅 `useNodeStore` 取 `activeCanvasId / activeCanvasName / recentCanvases`，对外通过 `open / onClose` 受控；切换/新建画布后自动 `onClose`，避免操作完后还要再点一次空白处。
+- 顶栏受控 input 的 React 受控特性导致 Playwright 直接 `fill` 难以触发 onChange，验证脚本改成直接调 store action（`renameActiveCanvas`）来跑功能测试，UI 层只校验 dblclick 后能切换到 input。
+- TypeScript `tsc --noEmit`：0 报错。
+
+### Verified · 验证（Playwright，6/6 通过）
+
+| # | 场景 | 期望 | 实际 |
+|---|---|---|---|
+| 1 | CRUD + 切换 + 隔离 | 画布 A/B 节点互不污染，删 B 后自动回 A | ✅ |
+| 2 | 刷新后 active 持久化 | reload 后 `activeCanvasId / Name / nodes` 完整还原 | ✅ |
+| 3 | 抽屉「＋ 新画布」 | 创建 + 自动 `onClose` + store 切到新画布 | ✅ |
+| 4 | 抽屉点击非 active 行 | 切换到目标画布 + 自动 `onClose` | ✅ |
+| 5 | `renameActiveCanvas` action | 同步更新 store + 顶栏 DOM 文本 | ✅ |
+| 6 | 二次 reload | 上一步重命名 + 节点完整保留 | ✅ |
+
+---
+
 ## [1.4.4] — 2026-05-17
 
 ### Fixed · 修复
