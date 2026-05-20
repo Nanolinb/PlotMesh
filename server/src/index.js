@@ -17,6 +17,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import llmRouter from './routes/llm.js';
 import uploadRouter from './routes/upload.js';
+import syncRouter from './routes/sync.js';
+import webFetchRouter from './routes/webFetch.js';
+import tencentDocsRouter from './routes/tencentDocs.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +39,9 @@ app.use('/uploads', express.static(uploadDir));
 // 路由
 app.use('/api/llm', llmRouter);
 app.use('/api/upload', uploadRouter);
+app.use('/api/sync', syncRouter);
+app.use('/api/web-fetch', webFetchRouter);
+app.use('/api/tencent-docs', tencentDocsRouter);
 
 // 健康检查
 app.get('/health', (_req, res) => {

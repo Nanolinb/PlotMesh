@@ -39,6 +39,7 @@ import {
   getCanvas,
   putCanvas,
   deleteCanvas,
+  softDeleteCanvas,
   listCanvases,
   listRecentCanvases as listRecentCanvasesIDB,
   listPackages,
@@ -259,10 +260,51 @@ function flushActiveCanvasToIDB(
       await putCanvas(rec);
       // 写成功了才清 pending
       clearPendingFlush();
+      // v1.5.1：IDB 写成功后排一次远端推送（防抖 2 秒，避免每次按键都打）
+      scheduleRemoteSync();
     } catch (e) {
       console.warn('[plotmesh] 画布草稿写 IDB 失败：', e);
     }
   })();
+}
+
+// v1.5.1：远端推送防抖
+let remoteSyncTimer: ReturnType<typeof setTimeout> | null = null;
+const REMOTE_SYNC_DEBOUNCE_MS = 2000;
+
+/** 排一次远端推送（防抖；用户连续编辑时只推最后一次） */
+function scheduleRemoteSync() {
+  if (remoteSyncTimer) clearTimeout(remoteSyncTimer);
+  remoteSyncTimer = setTimeout(() => {
+    void runRemoteSync();
+  }, REMOTE_SYNC_DEBOUNCE_MS);
+}
+
+/** 真正执行远端推送（fire-and-forget；失败只 console.warn） */
+async function runRemoteSync() {
+  try {
+    const { isSkipThisSession, getKnownRemoteVersion, setKnownRemoteVersion, computeLocalSummary, pushSnapshot } =
+      await import('./syncAdapter');
+    if (isSkipThisSession()) return; // 用户选了"本次不同步"
+    const { payload, summary } = await computeLocalSummary();
+    const result = await pushSnapshot(getKnownRemoteVersion(), payload, {
+      canvasCount: summary.canvasCount,
+      nodeCount: summary.nodeCount,
+      sizeBytes: summary.sizeBytes,
+    });
+    if (result.ok) {
+      setKnownRemoteVersion(result.version);
+    } else if (result.conflict) {
+      // 远端被另一个浏览器抢先 PUT 了，本次推送放弃；下次启动会通过 hash 比对再触发弹窗
+      console.warn(
+        '[plotmesh] 远端 version 已变化（current=' + result.current.version + '），本次推送跳过'
+      );
+    } else {
+      // server 不可用 / 网络错 → 静默忽略
+    }
+  } catch (e) {
+    console.warn('[plotmesh] 远端推送失败：', e);
+  }
 }
 
 /** RecentCanvas 在 IDB 中即一条 Canvas 记录（用 lastOpenedAt 排序） */
@@ -447,6 +489,18 @@ export function deleteRecentCanvas(id: string) {
  *   7) hydrated = true
  */
 export async function hydrateNodeStore(): Promise<void> {
+  // v1.5.2：启动时清理已软删超过 30 天的实体
+  try {
+    const purged = await (await import('./storage')).purgeOldDeleted(30);
+    if (purged.canvases + purged.packages + purged.groups > 0) {
+      console.info(
+        `[plotmesh] purge: 清理回收站 ${purged.canvases} 画布 / ${purged.packages} 包 / ${purged.groups} 分组`
+      );
+    }
+  } catch (e) {
+    console.warn('[plotmesh] purge 失败（不阻塞启动）：', e);
+  }
+
   // 1) active canvas id
   let activeId = (await getMeta<string>(META_KEYS.ACTIVE_CANVAS_ID)) || null;
   if (!activeId) {
@@ -1174,7 +1228,88 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       return n;
     });
 
-    set({ nodes: updated });
+    // ---- Bug 2 修复：展开时如果内层 group 的尺寸超出父 group 范围，自动级联扩大父级 ----
+    // 仅在切换为"展开态"时执行（折叠时父 group 反而会变小，无需扩展）。
+    let finalNodes = updated;
+    if (!collapsed) {
+      // 找到本 group 自身的祖先链（不包括本身）
+      const ancestorChain: string[] = [];
+      let p = group.parentId;
+      while (p) {
+        ancestorChain.push(p);
+        const parentNode: any = updated.find((x: any) => x.id === p);
+        p = parentNode?.parentId;
+      }
+      // 同时处理本 group：它的子节点变可见，自身尺寸由 expandedSize 恢复，但仍可能不够大
+      // → 把本 group 也加进"待扩展集合"，从最内层向外扩
+      const toFix: string[] = [groupId, ...ancestorChain];
+
+      // 节点尺寸估算（同 savePackage / loadPackage 中的预设）
+      const nodeSizes: Record<string, { w: number; h: number }> = {
+        fileUpload: { w: 150, h: 90 },
+        textPrompt: { w: 150, h: 110 },
+        llm: { w: 150, h: 150 },
+        output: { w: 150, h: 110 },
+      };
+      const sizeOf = (n: any): { w: number; h: number } => {
+        const w = n.style?.width || n.width;
+        const h = n.style?.height || n.height;
+        if (w && h) return { w, h };
+        return nodeSizes[n.type] || { w: 200, h: 130 };
+      };
+
+      const PAD = 30;          // group 内边距（右/下侧）
+
+      // 从内向外依次扩展
+      for (const gid of toFix) {
+        const idx = finalNodes.findIndex((x: any) => x.id === gid);
+        if (idx < 0) continue;
+        const g: any = finalNodes[idx];
+        if (g.type !== 'group') continue;
+        // 折叠态的 group 自身视作单节点，无须容纳子节点 → 跳过
+        if (g.data?.collapsed) continue;
+        // 收集"直接子节点"（一层）
+        const directChildren = finalNodes.filter((c: any) => c.parentId === gid);
+        if (!directChildren.length) continue;
+        // 计算子节点占用的最右下角（相对 g 自身的局部坐标）
+        let needW = 0;
+        let needH = 0;
+        directChildren.forEach((c: any) => {
+          const sz = sizeOf(c);
+          const rx = (c.position?.x || 0) + sz.w;
+          const ry = (c.position?.y || 0) + sz.h;
+          if (rx > needW) needW = rx;
+          if (ry > needH) needH = ry;
+        });
+        // 加边距 + 顶部标题
+        const minW = needW + PAD;
+        const minH = needH + PAD;
+        const curW = g.style?.width || g.width || 0;
+        const curH = g.style?.height || g.height || 0;
+        const newW = Math.max(curW, minW);
+        const newH = Math.max(curH, minH);
+        if (newW !== curW || newH !== curH) {
+          finalNodes = finalNodes.map((n: any, i: number) =>
+            i === idx
+              ? {
+                  ...n,
+                  width: newW,
+                  height: newH,
+                  style: { ...(n.style || {}), width: newW, height: newH },
+                  data: {
+                    ...n.data,
+                    // 同步更新 expandedSize，让用户下次手动折叠/展开时按当前已扩展尺寸记忆
+                    expandedSize: { w: newW, h: newH },
+                  },
+                }
+              : n
+          );
+        }
+        // 注意：此处不修改 HEADER_PAD 偏移（仅把 group 拉大），子节点位置不动 —— 与现有 group 创建时的"节点相对父级坐标已含 header"约定一致。
+      }
+    }
+
+    set({ nodes: finalNodes });
   },
 
   loadPackage: (pkgId) => {
@@ -1239,7 +1374,104 @@ export const useNodeStore = create<NodeStore>((set, get) => {
 
     // 3) 顶层节点 = 没有 parentId 的；只有顶层节点的坐标参与外层包围盒计算
     const topLevel = remappedPkgNodes.filter((n: any) => !n.parentId);
-    const leafTopLevel = topLevel.filter((n: any) => n.type !== 'group');
+
+    // 特殊情况：包内 topLevel 只有 1 个 group 节点 → 直接把它当 wrapper，不再额外包一层
+    // 这样多层嵌套 group 的包加载到画布时，结构与原本保存时一致，不会多嵌一层。
+    const isSingleGroupPkg = topLevel.length === 1 && topLevel[0].type === 'group';
+    if (isSingleGroupPkg) {
+      const wrapper = topLevel[0];
+      // 把整体偏移到鼠标位置（外部传入的 offsetX/offsetY 已经累加，但这里我们想要 wrapper 落在 offset 处）
+      // 让 wrapper 的 position 为 (offsetX, offsetY)，子节点保持相对父级坐标不变
+      const wrapperOldPos = { x: wrapper.position?.x || 0, y: wrapper.position?.y || 0 };
+
+      // 推断 wrapper 的端口（沿用包里已经存好的 exposedPorts；若无则用所有叶子重新推断）
+      const wrapperExposed = Array.isArray(wrapper.data?.exposedPorts) && wrapper.data.exposedPorts.length > 0
+        ? wrapper.data.exposedPorts
+        : inferExposedPorts(remappedPkgNodes.filter((n: any) => n.type !== 'group'), newEdges);
+
+      // wrapper 默认折叠态展示（与原 wrapper 路径一致）
+      const wrapperCollapsedH = Math.max(90, ((wrapperExposed.length || 1) * 16) + 70);
+      const wrapperW = wrapper.style?.width || wrapper.width || 240;
+      const wrapperH = wrapper.style?.height || wrapper.height || 160;
+
+      const wrapperFinal: any = {
+        ...wrapper,
+        position: { x: offsetX + wrapperOldPos.x, y: offsetY + wrapperOldPos.y },
+        // 强制折叠展示
+        width: 200,
+        height: wrapperCollapsedH,
+        style: { ...(wrapper.style || {}), width: 200, height: wrapperCollapsedH },
+        data: {
+          ...wrapper.data,
+          collapsed: true,
+          exposedPorts: wrapperExposed,
+          childCount: remappedPkgNodes.filter((n: any) => n.type !== 'group' && n.parentId === wrapper.id).length || (wrapper.data?.childCount ?? 0),
+          expandedSize: { w: wrapperW, h: wrapperH },
+          packageId: pkg.id,
+        },
+        zIndex: -1,
+        selectable: true,
+        draggable: true,
+      };
+
+      // 子节点：保留原 parentId/extent 与相对坐标；嵌套 group 折叠态 + hidden=true
+      const childrenFinal = remappedPkgNodes
+        .filter((n: any) => n.id !== wrapper.id)
+        .map((n: any) => {
+          const isInnerGroup = n.type === 'group';
+          const innerCollapsedH = isInnerGroup
+            ? Math.max(90, ((n.data?.exposedPorts?.length || 1) * 16) + 70)
+            : null;
+          const out: any = {
+            ...n,
+            hidden: true,
+            extent: 'parent' as const,
+          };
+          if (isInnerGroup) {
+            out.width = 200;
+            out.height = innerCollapsedH;
+            out.style = { ...(n.style || {}), width: 200, height: innerCollapsedH };
+            out.data = {
+              ...n.data,
+              collapsed: true,
+              expandedSize: n.data?.expandedSize || { w: n.style?.width || 240, h: n.style?.height || 160 },
+            };
+          }
+          return out;
+        });
+
+      // 按"父在前"拓扑顺序排（wrapper 在第一个）
+      const ordered: any[] = [wrapperFinal];
+      const placed = new Set<string>([wrapperFinal.id]);
+      let remaining = [...childrenFinal];
+      let safety = childrenFinal.length + 10;
+      while (remaining.length && safety-- > 0) {
+        const next: any[] = [];
+        remaining.forEach((n) => {
+          if (placed.has(n.parentId)) {
+            ordered.push(n);
+            placed.add(n.id);
+          } else {
+            next.push(n);
+          }
+        });
+        if (next.length === remaining.length) {
+          next.forEach((n) => {
+            ordered.push({ ...n, parentId: wrapperFinal.id });
+            placed.add(n.id);
+          });
+          break;
+        }
+        remaining = next;
+      }
+
+      set({
+        nodes: [...existingNodes, ...ordered],
+        edges: [...get().edges, ...newEdges],
+      });
+      setTimeout(() => get().updatePromptNumbers(), 0);
+      return;
+    }
 
     // 估算尺寸：叶子节点用预设；嵌套 group 节点用自身保存的 width/height
     const sizeOf = (n: any): { w: number; h: number } => {
@@ -1736,9 +1968,12 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     const cur = get();
     const isActive = cur.activeCanvasId === canvasId;
     try {
-      await deleteCanvas(canvasId);
+      // v1.5.2 起用软删：标 deleted=true + deletedAt，留在 IDB 由 30 天 purge 清
+      await softDeleteCanvas(canvasId);
+      // 触发一次远端推送（让其他浏览器拉到带 deleted 标志的版本）
+      scheduleRemoteSync();
     } catch (e) {
-      console.warn('[plotmesh] deleteCanvasById 失败：', e);
+      console.warn('[plotmesh] deleteCanvasById 软删失败：', e);
     }
     if (isActive) {
       // 删的是当前 active —— 找一张候补的最近画布切过去；都没有就开张空白

@@ -62,6 +62,22 @@ const MODEL_CONFIG = {
     envName: 'ANTHROPIC_API_KEY',
     displayName: 'Anthropic Claude',
   },
+  kimi: {
+    // Kimi (Moonshot) 走 OpenAI 兼容协议
+    apiUrl: 'https://api.moonshot.cn/v1/chat/completions',
+    apiKey: process.env.MOONSHOT_API_KEY || '',
+    modelName: 'moonshot-v1-8k',
+    envName: 'MOONSHOT_API_KEY',
+    displayName: 'Kimi (Moonshot)',
+  },
+  qwen: {
+    // 通义千问 DashScope OpenAI 兼容端点
+    apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    apiKey: process.env.DASHSCOPE_API_KEY || '',
+    modelName: 'qwen-plus',
+    envName: 'DASHSCOPE_API_KEY',
+    displayName: '通义千问 (Qwen)',
+  },
 };
 
 // 返回每个模型是否已配置 API Key（不返回 key 本身，做好安全边界）
@@ -113,7 +129,7 @@ router.post('/config', (req, res) => {
 
 router.post('/chat', async (req, res) => {
   try {
-    const { model, messages, stream = false, temperature = 0.7 } = req.body;
+    const { model, customModelName, messages, stream = false, temperature = 0.7 } = req.body;
 
     const config = MODEL_CONFIG[model];
     if (!config) {
@@ -122,6 +138,13 @@ router.post('/chat', async (req, res) => {
     if (!config.apiKey) {
       return res.status(500).json({ error: `模型 ${model} 的 API Key 未配置，请点击工具栏的「API 配置」按钮填写` });
     }
+
+    // v1.5.3：前端可以传 customModelName 覆盖默认 modelName
+    // —— 这样新厂商出新模型版本不必改后端代码
+    const effectiveModelName =
+      typeof customModelName === 'string' && customModelName.trim()
+        ? customModelName.trim()
+        : config.modelName;
 
     let headers = {};
     let body = {};
@@ -132,13 +155,13 @@ router.post('/chat', async (req, res) => {
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
       };
-      body = { model: config.modelName, messages, stream, max_tokens: 4096 };
+      body = { model: effectiveModelName, messages, stream, max_tokens: 4096 };
     } else {
       headers = {
         'Authorization': `Bearer ${config.apiKey}`,
         'Content-Type': 'application/json',
       };
-      body = { model: config.modelName, messages, stream, temperature };
+      body = { model: effectiveModelName, messages, stream, temperature };
     }
 
     if (stream) {

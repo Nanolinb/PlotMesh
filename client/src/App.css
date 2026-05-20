@@ -51,9 +51,9 @@
   --bg-tip: rgba(99, 102, 241, 0.9);
   --bg-tip-text: #ffffff;
   --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --text-placeholder: #64748b;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-placeholder: #cbd5e1;
   --border-color: #334155;
   --border-input: #475569;
   --accent: #818cf8;
@@ -95,6 +95,45 @@ body {
   overflow-y: auto;
   box-shadow: var(--shadow-sidebar);
   z-index: 10;
+}
+
+/* 产品品牌区：左上角 logo + 产品英文名 */
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border-color);
+  user-select: none;
+}
+
+.app-brand-logo {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 16px;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+}
+
+.app-brand-logo-placeholder {
+  /* 占位字母 P，等真正 logo 替换后可移除 */
+  font-family: 'Inter', system-ui, sans-serif;
+  letter-spacing: -0.5px;
+}
+
+.app-brand-name {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
 .sidebar-header {
@@ -290,10 +329,23 @@ body {
   position: relative;
   flex: 1;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* CanvasTabs 之后的 React Flow 包装块，占满剩余高度 */
+.canvas-flow-wrapper {
+  flex: 1;
+  position: relative;
+  min-height: 0;
 }
 
 .canvas-flow {
   background: var(--bg-canvas);
+  /* 作为 .canvas-container（flex column）的子项，撑开剩余高度；
+     不能用 height:100%，否则在 flex 里会变 0 */
+  flex: 1;
+  min-height: 0;
 }
 
 .react-flow__background {
@@ -689,6 +741,257 @@ body {
   z-index: 10;
 }
 
+/* v1.5.x：顶部画布管理条（只放 ≡ 入口 + 画布名 + 新画布） */
+.canvas-topbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 10;
+}
+
+/* ===== v1.5.x：Chrome-style 顶部画布页签条 ===== */
+/* 不用 absolute，让它占布局空间（40px 高），ReactFlow 自然在下方 */
+.canvas-tabs-bar {
+  flex-shrink: 0;
+  height: 40px;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px 8px 0 8px;
+  background: var(--bg-page);
+  border-bottom: 1px solid var(--border-color);
+  z-index: 11;
+  user-select: none;
+}
+
+.canvas-tabs-icon-btn {
+  flex-shrink: 0;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.canvas-tabs-icon-btn:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--border-color);
+}
+.canvas-tabs-icon-btn.add {
+  margin-left: 2px;
+}
+
+.canvas-tabs-scroll {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  /* 让 active tab 的底边可以"咬"住下方画布，无下边框 */
+  padding-bottom: 0;
+}
+.canvas-tabs-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+.canvas-tabs-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 2px;
+}
+
+.canvas-tab {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  min-width: 100px;
+  max-width: 220px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  position: relative;
+}
+.canvas-tab:hover {
+  background: var(--bg-card-body);
+  color: var(--text-primary);
+}
+.canvas-tab.active {
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-weight: 600;
+  border-color: var(--border-color);
+  /* 与下方画布"连体"：盖住底边那 1px 边 */
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+  z-index: 1;
+}
+
+.canvas-tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.canvas-tab-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.canvas-tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  /* 默认隐藏，hover tab 或 hover 自身时显示 */
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.canvas-tab:hover .canvas-tab-close,
+.canvas-tab.active .canvas-tab-close {
+  opacity: 1;
+}
+.canvas-tab-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 溢出菜单 */
+.canvas-tabs-overflow {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.canvas-tabs-overflow-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  max-width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  z-index: 50;
+}
+[data-theme='dark'] .canvas-tabs-overflow-menu {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+.canvas-tabs-overflow-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.canvas-tabs-overflow-item:hover {
+  background: var(--accent-bg);
+}
+.canvas-tabs-overflow-item.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+.canvas-tabs-overflow-empty {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* v1.5.x：底部主工具栏（运行/日志/撤销/导出等）—— 不带背景 bar，纯按钮组，右对齐 */
+.canvas-toolbar.bottom {
+  position: absolute;
+  top: auto;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  /* 留出左下角给 React Flow 的缩放控件 */
+  left: calc(60px + env(safe-area-inset-left, 0px));
+  max-width: calc(100% - 80px);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  gap: 6px;
+}
+
+/* 操作提示胶囊：放在底部 toolbar 最左边，与按钮同高 */
+.canvas-toolbar-hint {
+  margin-right: auto;
+  padding: 6px 14px;
+  background: var(--bg-tip);
+  color: var(--bg-tip-text);
+  border-radius: 20px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 窄屏：让提示折到下一行避免与按钮挤压 */
+@media (max-width: 1100px) {
+  .canvas-toolbar-hint {
+    font-size: 11px;
+    padding: 5px 10px;
+  }
+}
+
+[data-theme='dark'] .canvas-toolbar.bottom {
+  box-shadow: none;
+}
+
 .toolbar-btn {
   padding: 6px 14px;
   background: var(--bg-toolbar);
@@ -821,6 +1124,9 @@ body {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  /* 抬高到底部 toolbar 之上，避免与"自动保存"等右侧菜单重叠 */
+  bottom: 90px !important;
+  right: 12px !important;
 }
 
 .react-flow__controls {
@@ -943,3 +1249,309 @@ body {
 .group-collapse-btn:active {
   transform: translateY(0);
 }
+
+/* ===== 跨浏览器同步冲突弹窗（v1.5.1） ===== */
+.sync-conflict-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay, rgba(15, 23, 42, 0.55));
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  backdrop-filter: blur(2px);
+}
+
+.sync-conflict-card {
+  background: var(--bg-card, #fff);
+  color: var(--text-primary, #1f2937);
+  border-radius: 12px;
+  padding: 24px 28px;
+  max-width: 720px;
+  width: 100%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sync-conflict-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.sync-conflict-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+}
+
+.sync-conflict-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.sync-conflict-col {
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg-card-body, #f9fafb);
+}
+
+.sync-conflict-col-newer {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.sync-conflict-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.sync-conflict-col-icon {
+  font-size: 16px;
+}
+
+.sync-conflict-col-name {
+  font-size: 13px;
+}
+
+.sync-conflict-newer-tag {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--accent, #6366f1);
+  font-weight: 700;
+}
+
+.sync-conflict-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 0;
+  color: var(--text-secondary, #64748b);
+}
+
+.sync-conflict-row strong {
+  color: var(--text-primary, #1f2937);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-conflict-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sync-conflict-btn {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: var(--bg-card, #fff);
+  color: var(--text-primary, #1f2937);
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.sync-conflict-btn:hover {
+  background: var(--bg-card-body, #f9fafb);
+  border-color: var(--accent, #6366f1);
+}
+
+.sync-conflict-btn-recommend {
+  border-color: var(--accent, #6366f1);
+  background: var(--accent-bg, rgba(99, 102, 241, 0.08));
+  font-weight: 600;
+}
+
+.sync-conflict-recommend-tag {
+  margin-left: auto;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.sync-conflict-btn-skip {
+  color: var(--text-secondary, #64748b);
+}
+
+.sync-conflict-hint {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  text-align: center;
+  margin-top: 4px;
+}
+
+.sync-conflict-hint code {
+  background: var(--bg-card-body, #f9fafb);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+/* ===== v1.5.2 三向合并报告弹窗 ===== */
+.merge-auto-list {
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card-body, #f9fafb);
+  font-size: 12px;
+}
+.merge-auto-list summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary, #1f2937);
+  padding: 4px 0;
+}
+.merge-auto-list ul {
+  margin: 4px 0 0 0;
+  padding-left: 20px;
+  color: var(--text-secondary, #64748b);
+  max-height: 160px;
+  overflow-y: auto;
+}
+.merge-auto-list li {
+  padding: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.merge-conflicts {
+  border-top: 1px solid var(--border-color, #e2e8f0);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.merge-conflicts-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: #d97706;
+}
+.merge-conflicts-tip {
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  background: rgba(217, 119, 6, 0.08);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border-left: 2px solid #d97706;
+}
+.merge-conflict-row {
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-card, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.merge-conflict-row.picked {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.10);
+}
+.merge-conflict-row-head {
+  font-size: 14px;
+}
+.merge-conflict-row-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.merge-side {
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bg-card-body, #f9fafb);
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+}
+.merge-side.picked {
+  border-color: var(--accent, #6366f1);
+  background: var(--accent-bg, rgba(99, 102, 241, 0.08));
+}
+.merge-side-label {
+  font-weight: 600;
+  color: var(--text-primary, #1f2937);
+  margin-bottom: 2px;
+}
+.merge-side-meta {
+  font-variant-numeric: tabular-nums;
+}
+.merge-conflict-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.merge-conflict-buttons button {
+  flex: 1;
+  min-width: 100px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 6px;
+  background: var(--bg-card, #fff);
+  color: var(--text-primary, #1f2937);
+  cursor: pointer;
+}
+.merge-conflict-buttons button:hover {
+  border-color: var(--accent, #6366f1);
+}
+.merge-conflict-buttons button.btn-picked {
+  border-color: var(--accent, #6366f1);
+  background: var(--accent, #6366f1);
+  color: #fff;
+  font-weight: 600;
+}
+.sync-conflict-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+ * Dark 主题 · 画布右键菜单可读性修复（v1.5.3）
+ * ------------------------------------------------------------
+ * 问题：Canvas.tsx 的右键菜单用 `var(--surface, #fff)` 行内 style，
+ *      但项目里没有 --surface / --border 变量，浏览器永远走 fallback
+ *      白色背景；夜晚模式下 --text-primary 是浅灰 (#f1f5f9)，
+ *      浅灰文字写在白色背景上 → 看不清。
+ * 修法：仅在 [data-theme='dark'] 下用 !important 覆盖 .context-menu
+ *      及其内部子菜单 / 分隔线。白天模式不写规则，零影响。
+ * 注意：行内 style 的颜色 (#fff / #1a1a1a / #e2e8f0) 用 !important
+ *      才能盖掉 inline style。
+ * ============================================================ */
+[data-theme='dark'] .context-menu {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+}
+/* 二级子菜单（行内 style 用 position: absolute + 同样的 fallback 颜色） */
+[data-theme='dark'] .context-menu > div > div[style*="position: absolute"],
+[data-theme='dark'] .context-menu div[style*="left: 100%"] {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+}
+/* 分隔线（高度 1px、行内 style 用 #e2e8f0 浅色，在深色菜单上几乎不可见） */
+[data-theme='dark'] .context-menu > div[style*="height: 1px"],
+[data-theme='dark'] .context-menu div[style*="height: 1px"] {
+  background: var(--border-color) !important;
+}
+/* 灰色项（不可点击的 Group / Ungroup 提示）在 dark 下行内用 #94a3b8，
+   写在 dark 卡片上其实够清楚，这里不动；保留行内 muted 即可 */
+

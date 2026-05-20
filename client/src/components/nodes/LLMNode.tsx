@@ -26,14 +26,17 @@ type Props = {
 function LLMNode({ id, data, selected }: Props) {
   const [isEditingSystem, setIsEditingSystem] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
+  const [editingCustomModel, setEditingCustomModel] = useState(false);
   const [localTitle, setLocalTitle] = useState(data.label || '大模型');
   const [localSystemPrompt, setLocalSystemPrompt] = useState(data.systemPrompt || '');
   const [localModel, setLocalModel] = useState(data.model || 'deepseek');
+  const [localCustomModel, setLocalCustomModel] = useState(data.customModelName || '');
   const [localTemp, setLocalTemp] = useState(data.temperature ?? 0.7);
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
 
   useEffect(() => { setLocalSystemPrompt(data.systemPrompt || ''); }, [data.systemPrompt]);
   useEffect(() => { setLocalModel(data.model || 'deepseek'); }, [data.model]);
+  useEffect(() => { setLocalCustomModel(data.customModelName || ''); }, [data.customModelName]);
   useEffect(() => { setLocalTemp(data.temperature ?? 0.7); }, [data.temperature]);
   useEffect(() => { setLocalTitle(data.label || '大模型'); }, [data.label]);
 
@@ -54,10 +57,27 @@ function LLMNode({ id, data, selected }: Props) {
     updateNodeData(id, { model: value });
   }, [id, updateNodeData]);
 
+  const commitCustomModel = useCallback(() => {
+    setEditingCustomModel(false);
+    updateNodeData(id, { customModelName: localCustomModel.trim() } as any);
+  }, [id, localCustomModel, updateNodeData]);
+
   const handleTempChange = useCallback((value: number) => {
     setLocalTemp(value);
     updateNodeData(id, { temperature: value });
   }, [id, updateNodeData]);
+
+  /** 各厂商默认版本号（仅 placeholder 提示用，不参与运行） */
+  const DEFAULT_MODEL_NAMES: Record<string, string> = {
+    hunyuan: 'hunyuan-turbo',
+    deepseek: 'deepseek-chat',
+    glm: 'glm-4',
+    gpt: 'gpt-4o',
+    claude: 'claude-3-5-sonnet-20241022',
+    kimi: 'moonshot-v1-8k',
+    qwen: 'qwen-plus',
+  };
+  const placeholderModelName = DEFAULT_MODEL_NAMES[localModel] || '使用厂商默认';
 
   return (
     <div className={`node-card llm-node ${selected ? 'selected' : ''}`} data-status={data.status || 'idle'}>
@@ -101,6 +121,53 @@ function LLMNode({ id, data, selected }: Props) {
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
+        </div>
+
+        <div className="field" style={{ marginBottom: '8px' }}>
+          <label
+            style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', gap: 4, marginBottom: '4px' }}
+            title="留空则用厂商默认版本号；填值则用你指定的版本（例 deepseek-reasoner / qwen3-coder-plus / kimi-k2-0905-preview）"
+          >
+            <span>版本号</span>
+            <span style={{ cursor: 'help', color: '#94a3b8' }}>ⓘ</span>
+            <span style={{ marginLeft: 'auto', fontSize: 10, color: '#94a3b8' }}>可选</span>
+          </label>
+          {editingCustomModel ? (
+            <input
+              autoFocus
+              className="nodrag"
+              value={localCustomModel}
+              onChange={(e) => setLocalCustomModel(e.target.value)}
+              onBlur={commitCustomModel}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitCustomModel();
+                if (e.key === 'Escape') { setEditingCustomModel(false); setLocalCustomModel(data.customModelName || ''); }
+                e.stopPropagation();
+              }}
+              placeholder={`留空 → 默认 ${placeholderModelName}`}
+              style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, fontFamily: 'monospace' }}
+            />
+          ) : (
+            <div
+              className="nodrag"
+              onDoubleClick={(e) => { e.stopPropagation(); setEditingCustomModel(true); }}
+              title="双击编辑自定义版本号"
+              style={{
+                padding: '4px 8px',
+                borderRadius: 6,
+                border: '1px dashed #d1d5db',
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: data.customModelName ? '#1e293b' : '#94a3b8',
+                cursor: 'text',
+                minHeight: 22,
+              }}
+            >
+              {data.customModelName
+                ? data.customModelName
+                : `默认: ${placeholderModelName}`}
+            </div>
+          )}
         </div>
 
         <div className="field" style={{ marginBottom: '8px' }}>

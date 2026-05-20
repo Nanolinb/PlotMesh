@@ -73,26 +73,41 @@ export async function deleteProject(id: string): Promise<void> {
 
 // ---------- Canvas ----------
 
+/**
+ * 列出画布。默认过滤掉 deleted=true（回收站里的）；
+ * 传 includeDeleted=true 则全部返回（用于回收站、同步合并等场景）。
+ */
 export async function listCanvases(opts?: {
   workspaceId?: string;
   projectId?: string;
+  includeDeleted?: boolean;
 }): Promise<Canvas[]> {
   const db = await getDB();
+  let arr: Canvas[];
   if (opts?.projectId) {
-    return db.getAllFromIndex(STORE.CANVASES, 'by-project', opts.projectId);
+    arr = await db.getAllFromIndex(STORE.CANVASES, 'by-project', opts.projectId);
+  } else if (opts?.workspaceId) {
+    arr = await db.getAllFromIndex(STORE.CANVASES, 'by-workspace', opts.workspaceId);
+  } else {
+    arr = await db.getAll(STORE.CANVASES);
   }
-  if (opts?.workspaceId) {
-    return db.getAllFromIndex(STORE.CANVASES, 'by-workspace', opts.workspaceId);
-  }
-  return db.getAll(STORE.CANVASES);
+  return opts?.includeDeleted ? arr : arr.filter((c) => !c.deleted);
 }
 
-/** 按"最近打开时间"倒序，取前 N 个 */
+/** 仅"已软删"的画布，按 deletedAt 倒序（回收站列表） */
+export async function listDeletedCanvases(workspaceId?: string): Promise<Canvas[]> {
+  const all = await listCanvases({ workspaceId, includeDeleted: true });
+  return all
+    .filter((c) => c.deleted)
+    .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+}
+
+/** 按"最近打开时间"倒序，取前 N 个（自动排除已软删） */
 export async function listRecentCanvases(limit = 4): Promise<Canvas[]> {
   const db = await getDB();
   const all = await db.getAllFromIndex(STORE.CANVASES, 'by-lastOpenedAt');
-  // idb 的 getAllFromIndex 是升序，反转一下
-  return all.reverse().slice(0, limit);
+  // idb 的 getAllFromIndex 是升序，反转一下 + 过滤 deleted
+  return all.reverse().filter((c) => !c.deleted).slice(0, limit);
 }
 
 export async function getCanvas(id: string): Promise<Canvas | undefined> {
@@ -105,9 +120,35 @@ export async function putCanvas(c: Canvas): Promise<void> {
   await db.put(STORE.CANVASES, { ...c, updatedAt: Date.now() });
 }
 
+/** 真删（仅在彻底清空回收站 / 30 天 purge 时使用） */
 export async function deleteCanvas(id: string): Promise<void> {
   const db = await getDB();
   await db.delete(STORE.CANVASES, id);
+}
+
+/**
+ * 软删画布：标 deleted=true + deletedAt=now。
+ * 同步时通过 putCanvas 推送到 server，其他浏览器拉到后从可见列表中过滤。
+ */
+export async function softDeleteCanvas(id: string): Promise<void> {
+  const db = await getDB();
+  const cur = await db.get(STORE.CANVASES, id);
+  if (!cur) return;
+  await db.put(STORE.CANVASES, {
+    ...cur,
+    deleted: true,
+    deletedAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+}
+
+/** 从回收站恢复 */
+export async function restoreCanvas(id: string): Promise<void> {
+  const db = await getDB();
+  const cur = await db.get(STORE.CANVASES, id);
+  if (!cur) return;
+  const { deleted: _d, deletedAt: _da, ...rest } = cur as any;
+  await db.put(STORE.CANVASES, { ...rest, updatedAt: Date.now() });
 }
 
 /** 仅触碰画布的 lastOpenedAt（不动其他字段，避免和 autosave 抢写） */
@@ -122,14 +163,67 @@ export async function touchCanvasOpened(id: string): Promise<void> {
   await tx.done;
 }
 
+/**
+ * 启动时清理已软删超过 retentionDays 天的画布 / 包 / 包分组（默认 30 天）。
+ */
+export async function purgeOldDeleted(retentionDays = 30): Promise<{
+  canvases: number;
+  packages: number;
+  groups: number;
+}> {
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const db = await getDB();
+  let canvasCount = 0;
+  let pkgCount = 0;
+  let grpCount = 0;
+  {
+    const tx = db.transaction(STORE.CANVASES, 'readwrite');
+    for (const rec of await tx.store.getAll()) {
+      if ((rec as any).deleted && ((rec as any).deletedAt || 0) < cutoff) {
+        await tx.store.delete(rec.id);
+        canvasCount++;
+      }
+    }
+    await tx.done;
+  }
+  {
+    const tx = db.transaction(STORE.PACKAGES, 'readwrite');
+    for (const rec of await tx.store.getAll()) {
+      if ((rec as any).deleted && ((rec as any).deletedAt || 0) < cutoff) {
+        await tx.store.delete(rec.id);
+        pkgCount++;
+      }
+    }
+    await tx.done;
+  }
+  {
+    const tx = db.transaction(STORE.PACKAGE_GROUPS, 'readwrite');
+    for (const rec of await tx.store.getAll()) {
+      if ((rec as any).deleted && ((rec as any).deletedAt || 0) < cutoff) {
+        await tx.store.delete(rec.id);
+        grpCount++;
+      }
+    }
+    await tx.done;
+  }
+  return { canvases: canvasCount, packages: pkgCount, groups: grpCount };
+}
+
 // ---------- Package ----------
 
-export async function listPackages(workspaceId?: string): Promise<PackageRecord[]> {
+/** 列出包；默认过滤 deleted=true */
+export async function listPackages(
+  workspaceId?: string,
+  opts?: { includeDeleted?: boolean }
+): Promise<PackageRecord[]> {
   const db = await getDB();
+  let arr: PackageRecord[];
   if (workspaceId) {
-    return db.getAllFromIndex(STORE.PACKAGES, 'by-workspace', workspaceId);
+    arr = await db.getAllFromIndex(STORE.PACKAGES, 'by-workspace', workspaceId);
+  } else {
+    arr = await db.getAll(STORE.PACKAGES);
   }
-  return db.getAll(STORE.PACKAGES);
+  return opts?.includeDeleted ? arr : arr.filter((p) => !p.deleted);
 }
 
 export async function putPackage(p: PackageRecord): Promise<void> {
@@ -142,16 +236,33 @@ export async function deletePackage(id: string): Promise<void> {
   await db.delete(STORE.PACKAGES, id);
 }
 
-/** 批量替换某 workspace 下的全部包（兼容老 nodes.ts 的 saveAllPackages 语义） */
+export async function softDeletePackage(id: string): Promise<void> {
+  const db = await getDB();
+  const cur = await db.get(STORE.PACKAGES, id);
+  if (!cur) return;
+  await db.put(STORE.PACKAGES, {
+    ...cur,
+    deleted: true,
+    deletedAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * 批量替换某 workspace 下的全部活包（deleted=true 的不动，留在回收站）。
+ * 兼容老 nodes.ts 的 saveAllPackages 语义。
+ */
 export async function replaceAllPackages(
   workspaceId: string,
   packages: PackageRecord[]
 ): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(STORE.PACKAGES, 'readwrite');
-  // 删旧
-  const existing = await tx.store.index('by-workspace').getAllKeys(workspaceId);
-  for (const k of existing) await tx.store.delete(k);
+  // 删旧（仅活包；保留 deleted=true 的）
+  const all = (await tx.store.index('by-workspace').getAll(workspaceId)) as PackageRecord[];
+  for (const rec of all) {
+    if (!rec.deleted) await tx.store.delete(rec.id);
+  }
   // 写新
   const now = Date.now();
   for (const p of packages) {
@@ -163,13 +274,17 @@ export async function replaceAllPackages(
 // ---------- PackageGroup ----------
 
 export async function listPackageGroups(
-  workspaceId?: string
+  workspaceId?: string,
+  opts?: { includeDeleted?: boolean }
 ): Promise<PackageGroupRecord[]> {
   const db = await getDB();
+  let arr: PackageGroupRecord[];
   if (workspaceId) {
-    return db.getAllFromIndex(STORE.PACKAGE_GROUPS, 'by-workspace', workspaceId);
+    arr = await db.getAllFromIndex(STORE.PACKAGE_GROUPS, 'by-workspace', workspaceId);
+  } else {
+    arr = await db.getAll(STORE.PACKAGE_GROUPS);
   }
-  return db.getAll(STORE.PACKAGE_GROUPS);
+  return opts?.includeDeleted ? arr : arr.filter((g) => !g.deleted);
 }
 
 export async function putPackageGroup(g: PackageGroupRecord): Promise<void> {
@@ -188,8 +303,11 @@ export async function replaceAllPackageGroups(
 ): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(STORE.PACKAGE_GROUPS, 'readwrite');
-  const existing = await tx.store.index('by-workspace').getAllKeys(workspaceId);
-  for (const k of existing) await tx.store.delete(k);
+  // 仅删活的，保留 deleted=true 的留在回收站
+  const all = (await tx.store.index('by-workspace').getAll(workspaceId)) as PackageGroupRecord[];
+  for (const rec of all) {
+    if (!rec.deleted) await tx.store.delete(rec.id);
+  }
   const now = Date.now();
   for (const g of groups) {
     await tx.store.put({ ...g, workspaceId, updatedAt: now });

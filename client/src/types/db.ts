@@ -17,6 +17,10 @@ export interface BaseEntity {
   id: string;
   createdAt: number; // Unix ms
   updatedAt: number;
+  /** 软删除标志（v1.5.2 起）：true = 进了回收站；启动时统一清理 deletedAt < 30 天前的实体 */
+  deleted?: boolean;
+  /** 软删除时间（Unix ms）；只有 deleted=true 才有意义 */
+  deletedAt?: number;
 }
 
 /** 顶层工作区（v1.5 暂时只有 default 一个） */
@@ -95,6 +99,11 @@ export const META_KEYS = {
   /** 默认 workspace / project id（v1.5 期间只有这一组） */
   DEFAULT_WORKSPACE_ID: 'default-workspace-id',
   DEFAULT_PROJECT_ID: 'default-project-id',
+  /**
+   * v1.5.2 三向合并基线快照（实体 id → updatedAt 映射 + 当时的 server version）
+   * 启动时拉远端最新快照后，与本地 IDB + base 三方对比生成 merge plan
+   */
+  LAST_SYNCED_BASE: 'last-synced-base',
 } as const;
 
 export type MetaKey = (typeof META_KEYS)[keyof typeof META_KEYS];

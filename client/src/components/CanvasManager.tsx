@@ -173,7 +173,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
               border: '1px solid var(--border-color, #e2e8f0)',
               borderRadius: 6,
               background: 'var(--bg-1, #f8fafc)',
-              color: 'var(--text, #1e293b)',
+              color: 'var(--text-primary, #1e293b)',
               boxSizing: 'border-box',
             }}
           />
@@ -240,7 +240,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
                         fontWeight: isActive ? 600 : 500,
                         color: isActive
                           ? 'var(--accent, #6366f1)'
-                          : 'var(--text, #1e293b)',
+                          : 'var(--text-primary, #1e293b)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',

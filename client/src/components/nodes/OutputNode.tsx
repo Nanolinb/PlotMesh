@@ -68,6 +68,55 @@ function OutputNode({ id, data, selected }: Props) {
         openAsWeb(data.output, { title: data.label || '网页输出' });
         return;
       }
+      if (localFormat === 'tencentDocs') {
+        // 输出到腾讯文档：调 server 转发到 MCP 创建文档
+        const td = (data as any).tencentDocs || {};
+        let token = td.token;
+        if (!token) {
+          token = prompt('请输入腾讯文档 MCP token（首次使用需配置；之后会保留在此节点）：');
+          if (!token) return;
+          token = token.trim();
+        }
+        const title = td.title || `${data.label || '输出'}-${ts}`;
+        updateNodeData(id, {
+          status: 'running',
+          tencentDocs: { ...td, token, title },
+        } as any);
+        try {
+          const r = await fetch('/api/tencent-docs/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, content: data.output, format: 'mdx', token }),
+          });
+          const body = await r.json();
+          if (!r.ok || !body.ok) {
+            throw new Error(body?.message || `HTTP ${r.status}`);
+          }
+          updateNodeData(id, {
+            status: 'success',
+            tencentDocs: {
+              ...td,
+              token,
+              title,
+              lastUrl: body.url,
+              lastFileId: body.fileId,
+              lastExportedAt: new Date().toISOString(),
+            },
+          } as any);
+          if (body.url) {
+            window.open(body.url, '_blank');
+          } else {
+            alert('已创建腾讯文档，但未返回链接：\n' + JSON.stringify(body.raw || body, null, 2));
+          }
+        } catch (e: any) {
+          updateNodeData(id, {
+            status: 'error',
+            error: e?.message || '腾讯文档导出失败',
+          } as any);
+          alert('腾讯文档导出失败：' + (e?.message || '未知错误'));
+        }
+        return;
+      }
       if (localFormat === 'docx') {
         const { exportAsDocx } = await import('../../utils/exporters');
         await exportAsDocx(data.output, { filename });
@@ -96,7 +145,7 @@ function OutputNode({ id, data, selected }: Props) {
     } catch (e: any) {
       alert((localFormat === 'web' ? '打开失败：' : '导出失败：') + (e?.message || '未知错误'));
     }
-  }, [data.output, data.label, localFormat]);
+  }, [data, id, localFormat, updateNodeData]);
 
   const handleCopy = useCallback(async () => {
     if (!data.output) return;
@@ -174,8 +223,20 @@ function OutputNode({ id, data, selected }: Props) {
                 className="nodrag"
                 onClick={(e) => { e.stopPropagation(); handleDownload(); }}
                 style={{ flex: 1, padding: '3px 6px', fontSize: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-card-body)', color: 'var(--text-primary)', borderRadius: '4px', cursor: 'pointer' }}
-                title={localFormat === 'web' ? '在浏览器新标签页打开渲染后的网页' : '下载为文件'}
-              >{localFormat === 'web' ? '🌐 浏览器打开' : '⬇️ 下载'}</button>
+                title={
+                  localFormat === 'web'
+                    ? '在浏览器新标签页打开渲染后的网页'
+                    : localFormat === 'tencentDocs'
+                    ? '导出到腾讯文档（首次需输入 MCP token）'
+                    : '下载为文件'
+                }
+              >{
+                localFormat === 'web'
+                  ? '🌐 浏览器打开'
+                  : localFormat === 'tencentDocs'
+                  ? '☁️ 导出腾讯文档'
+                  : '⬇️ 下载'
+              }</button>
               <button
                 className="nodrag"
                 onClick={(e) => { e.stopPropagation(); handleCopy(); }}
@@ -189,6 +250,20 @@ function OutputNode({ id, data, selected }: Props) {
                 title="清空输出"
               >🗑</button>
             </div>
+            {localFormat === 'tencentDocs' && (data as any).tencentDocs?.lastUrl && (
+              <div style={{ marginTop: 6, fontSize: 11 }}>
+                <a
+                  href={(data as any).tencentDocs.lastUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="nodrag"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ color: 'var(--accent)', wordBreak: 'break-all' }}
+                >
+                  ☁️ 上次导出 · 点击打开
+                </a>
+              </div>
+            )}
           </>
         ) : null}
 

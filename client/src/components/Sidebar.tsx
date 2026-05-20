@@ -27,11 +27,12 @@ interface SidebarProps {
 const NODE_TYPES = [
   { type: 'textPrompt', label: '✏️ 文本提示词', description: '输入提示词内容' },
   { type: 'fileUpload', label: '📁 文件上传', description: '上传并解析文件' },
+  { type: 'webLink', label: '🔗 Web 链接', description: 'wiki / 在线文档 / 新闻' },
   { type: 'llm', label: '🤖 大模型', description: '调用 LLM 处理' },
   { type: 'textTransform', label: '🔤 文本处理', description: '大小写/替换/提取' },
   { type: 'condition', label: '🔀 条件分支', description: '按关键词分流' },
   { type: 'splitter', label: '🔀 分叉', description: '一段切成 N 路输出' },
-  { type: 'output', label: '📤 输出', description: '预览/下载/复制' },
+  { type: 'output', label: '📤 输出', description: '预览/下载/复制/腾讯文档' },
   { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
 ];
 
@@ -100,10 +101,11 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
       deleteGroup(groupName, 'unassign');
       return;
     }
-    const choice = confirm(
-      `分组「${groupName}」内有 ${count} 个常用功能。\n\n点击「确定」一并删除分组和功能；点击「取消」仅删除分组（功能保留为未分组）。`
+    // v1.5.2 起：删除分组就是删分组本身，组内功能自动放到未分组（不再二次问是否一并删功能）
+    const ok = confirm(
+      `确定删除分组「${groupName}」？\n\n组内 ${count} 个常用功能会被移到「未分组」保留。`
     );
-    deleteGroup(groupName, choice ? 'delete-all' : 'unassign');
+    if (ok) deleteGroup(groupName, 'unassign');
   };
 
   const handleRenameGroup = (oldName: string) => {
@@ -165,12 +167,23 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
               minWidth: 140,
               fontSize: 12,
               overflow: 'hidden',
+              maxHeight: 360,
+              overflowY: 'auto',
             }}
           >
             <button
               className="package-menu-item"
               onClick={() => { handleRenamePackage(pkg.id, pkg.name); setShowGroupMenu(null); }}
             >✎ 重命名</button>
+            <button
+              className="package-menu-item danger"
+              onClick={() => {
+                if (confirm(`确定删除常用功能「${pkg.name}」？\n\n此操作不可撤销。`)) {
+                  onDeletePackage(pkg.id);
+                }
+                setShowGroupMenu(null);
+              }}
+            >🗑 删除</button>
             <div style={{ borderTop: '1px solid var(--border-color)' }} />
             <div style={{ padding: '4px 10px', color: 'var(--text-muted)', fontSize: 10 }}>移动到分组</div>
             <button
@@ -184,16 +197,6 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
                 onClick={() => { movePackageToGroup(pkg.id, g.name); setShowGroupMenu(null); }}
               >📁 {g.name}</button>
             ))}
-            <div style={{ borderTop: '1px solid var(--border-color)' }} />
-            <button
-              className="package-menu-item danger"
-              onClick={() => {
-                if (confirm(`确定删除「${pkg.name}」？`)) {
-                  onDeletePackage(pkg.id);
-                }
-                setShowGroupMenu(null);
-              }}
-            >🗑 删除</button>
           </div>
         )}
       </div>
@@ -207,6 +210,15 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
 
   return (
     <div className="sidebar" onClick={onSidebarClick}>
+      {/* 产品品牌区：左上角 logo 占位 + 产品名（先英文 PlotMesh） */}
+      <div className="app-brand" title="PlotMesh">
+        <div className="app-brand-logo" aria-hidden="true">
+          {/* TODO: 这里替换成真正的 logo（SVG / IMG）。当前为占位方块。 */}
+          <span className="app-brand-logo-placeholder">P</span>
+        </div>
+        <div className="app-brand-name">PlotMesh</div>
+      </div>
+
       <div className="sidebar-header">
         <h2>🧩 节点面板</h2>
       </div>

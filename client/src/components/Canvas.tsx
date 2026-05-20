@@ -19,6 +19,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   MarkerType,
@@ -36,9 +37,11 @@ import ConditionNode from './nodes/ConditionNode';
 import TextTransformNode from './nodes/TextTransformNode';
 import TimelineNode from './nodes/TimelineNode';
 import SplitterNode, { splitText as splitTextHelper } from './nodes/SplitterNode';
+import WebLinkNode from './nodes/WebLinkNode';
 import Sidebar from './Sidebar';
 import ApiKeyConfigModal from './ApiKeyConfigModal';
 import CanvasManager from './CanvasManager';
+import CanvasTabs from './CanvasTabs';
 import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
@@ -51,6 +54,7 @@ const nodeTypes = {
   textTransform: TextTransformNode,
   timeline: TimelineNode,
   splitter: SplitterNode,
+  webLink: WebLinkNode,
 };
 
 let idCounter = 0;
@@ -67,6 +71,7 @@ function getDefaultData(type: string): any {
     case 'output': return { type: 'output', label: '输出', format: 'text', status: 'idle', output: '' };
     case 'condition': return { type: 'condition', label: '条件分支', mode: 'contains', keyword: '', status: 'idle' };
     case 'textTransform': return { type: 'textTransform', label: '文本处理', transform: 'trim', param: '', param2: '', status: 'idle', output: '' };
+    case 'webLink': return { type: 'webLink', label: '🔗 Web 链接', url: '', status: 'idle' };
     case 'timeline': return {
       type: 'timeline',
       label: '时间轴',
@@ -119,12 +124,7 @@ export default function Canvas() {
   const storeImportWorkflow = useNodeStore((s) => s.importWorkflow);
 
   // ─── v1.5 D3 多画布管理 ───
-  const activeCanvasName = useNodeStore((s) => s.activeCanvasName);
-  const renameActiveCanvas = useNodeStore((s) => s.renameActiveCanvas);
-  const createNewCanvas = useNodeStore((s) => s.createNewCanvas);
   const [showCanvasManager, setShowCanvasManager] = useState(false);
-  const [renamingTitle, setRenamingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState('');
 
   const [showSave, setShowSave] = useState(false);
   const [showApiConfig, setShowApiConfig] = useState(false);
@@ -914,6 +914,62 @@ export default function Canvas() {
           results.set(nodeId, (data as any).text || '');
           storeUpdateNodeData(nodeId, { status: 'success' });
         }
+        if (data.type === 'webLink') {
+          // Web 链接节点：如果还没抓过就 fetch 一次；
+          // 抓到的 fetchedText 用 <web-source> 标签包起来当下游参考资料
+          const url = ((data as any).url || '').trim();
+          if (!url) {
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, { status: 'idle' });
+            log(`  ⚠️ Web 链接未填写 URL，跳过`);
+          } else {
+            let text = (data as any).fetchedText as string | undefined;
+            let title = (data as any).fetchedTitle as string | undefined;
+            let finalUrl = (data as any).fetchedFinalUrl as string | undefined;
+            if (!text) {
+              // 没抓过 → 现在抓
+              storeUpdateNodeData(nodeId, { status: 'running', error: undefined });
+              try {
+                // 用 POST 把 token 放 body（避免 token 进 URL 日志）
+                const r = await fetch('/api/web-fetch', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    url,
+                    token: (data as any).tencentDocsToken || undefined,
+                  }),
+                });
+                const body = await r.json();
+                if (!r.ok) throw new Error(body?.message || `HTTP ${r.status}`);
+                text = body.text || '';
+                title = body.title || '';
+                finalUrl = body.finalUrl || url;
+                storeUpdateNodeData(nodeId, {
+                  status: 'success',
+                  fetchedText: text,
+                  fetchedTitle: title,
+                  fetchedFinalUrl: finalUrl,
+                  fetchedSource: body.source || 'http',
+                  fetchedAt: new Date().toISOString(),
+                });
+                log(`  🔗 已抓取 ${url}（${(text || '').length} 字符 · ${body.source || 'http'}）`);
+              } catch (e: any) {
+                storeUpdateNodeData(nodeId, { status: 'error', error: e?.message || '抓取失败' });
+                log(`  ❌ Web 链接抓取失败：${e?.message || e}`);
+                results.set(nodeId, '');
+                continue;
+              }
+            } else {
+              storeUpdateNodeData(nodeId, { status: 'success' });
+              log(`  🔗 复用已抓取的 ${url}（${text.length} 字符）`);
+            }
+            const titleAttr = (title || '').replace(/"/g, '&quot;');
+            const urlAttr = (finalUrl || url).replace(/"/g, '&quot;');
+            // 也用 __PM_FILE__ 前缀让下游 LLM 当参考资料处理
+            const wrapped = `__PM_FILE__\n<web-source url="${urlAttr}" title="${titleAttr}">\n${text}\n</web-source>`;
+            results.set(nodeId, wrapped);
+          }
+        }
         if (data.type === 'llm') {
           // 把上游输入分两类：
           //   - 文件块（来源是 fileUpload 节点，前缀 __PM_FILE__）→ 当作参考资料
@@ -950,6 +1006,7 @@ export default function Canvas() {
             storeUpdateNodeData(nodeId, { status: 'idle' });
           } else {
             const model = (data as any).model || 'deepseek';
+            const customModelName = ((data as any).customModelName || '').trim();
             const systemPrompt = (data as any).systemPrompt || '';
             const temperature = (data as any).temperature ?? 0.7;
             // 在用户的 system prompt 之外再加一段防注入提示
@@ -971,7 +1028,7 @@ export default function Canvas() {
             const finalSystem = (systemPrompt.trim()
               ? `${guardSystem}\n\n${systemPrompt}`
               : guardSystem) + formatHint;
-            log(`  调用 ${model}（温度 ${temperature}），文件块 ${fileChunks.length} 个 / 指令块 ${instructionChunks.length} 个`);
+            log(`  调用 ${model}${customModelName ? `（自定义版本: ${customModelName}）` : ''}（温度 ${temperature}），文件块 ${fileChunks.length} 个 / 指令块 ${instructionChunks.length} 个`);
             storeUpdateNodeData(nodeId, { status: 'running' });
             try {
               const messages = [
@@ -981,7 +1038,13 @@ export default function Canvas() {
               const resp = await fetch('/api/llm/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model, messages, temperature, stream: false }),
+                body: JSON.stringify({
+                  model,
+                  customModelName: customModelName || undefined,
+                  messages,
+                  temperature,
+                  stream: false,
+                }),
               });
               if (!resp.ok) {
                 const err = await resp.json().catch(() => ({ error: resp.statusText }));
@@ -1470,6 +1533,9 @@ export default function Canvas() {
           openCtxMenuAt(e.clientX, e.clientY);
         }}
       >
+        {/* v1.5.x：顶部 Chrome-style 画布页签条（必须放在 ReactFlow 前面，作为 flex column 第一个子项） */}
+        <CanvasTabs onOpenManager={() => setShowCanvasManager(true)} />
+
         <ReactFlow
           nodes={nodes as any[]}
           edges={edges as any[]}
@@ -1508,9 +1574,17 @@ export default function Canvas() {
           }}
           className="canvas-flow"
         >
-          <Background variant="dots" gap={20} size={1} color="#e2e8f0" />
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={20}
+            size={theme === 'dark' ? 1 : 1.4}
+            color={theme === 'dark' ? '#334155' : '#94a3b8'}
+          />
           <Controls />
-          <MiniMap nodeColor={() => '#6366f1'} style={{ background: '#f8fafc' }} />
+          <MiniMap
+            nodeColor={() => '#6366f1'}
+            style={{ background: theme === 'dark' ? '#0b1220' : '#f8fafc' }}
+          />
         </ReactFlow>
 
         {/* 右键菜单：在画布或节点上右键时弹出 */}
@@ -1564,7 +1638,7 @@ export default function Canvas() {
                   zIndex: 999,
                   minWidth: 200,
                   background: 'var(--surface, #fff)',
-                  color: 'var(--text, #1a1a1a)',
+                  color: 'var(--text-primary, #1a1a1a)',
                   border: '1px solid var(--border, #e2e8f0)',
                   borderRadius: 8,
                   boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
@@ -1599,7 +1673,7 @@ export default function Canvas() {
                         marginLeft: 2,
                         minWidth: 180,
                         background: 'var(--surface, #fff)',
-                        color: 'var(--text, #1a1a1a)',
+                        color: 'var(--text-primary, #1a1a1a)',
                         border: '1px solid var(--border, #e2e8f0)',
                         borderRadius: 8,
                         boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
@@ -1647,7 +1721,7 @@ export default function Canvas() {
                   style={{
                     padding: '8px 14px',
                     cursor: canGroup ? 'pointer' : 'not-allowed',
-                    color: canGroup ? 'var(--text, #1a1a1a)' : 'var(--text-muted, #94a3b8)',
+                    color: canGroup ? 'var(--text-primary, #1a1a1a)' : 'var(--text-muted, #94a3b8)',
                     opacity: canGroup ? 1 : 0.55,
                   }}
                   onMouseOver={(e) => {
@@ -1689,88 +1763,12 @@ export default function Canvas() {
         })()}
 
         {/* 工具栏 */}
-        <div className="canvas-toolbar">
-          {/* ─── v1.5 D3：画布管理入口 + 当前画布名 ─── */}
-          <button
-            className="toolbar-btn"
-            onClick={() => setShowCanvasManager(true)}
-            title="打开画布管理器"
-            style={{ fontSize: 14 }}
-          >
-            ≡
-          </button>
-          {renamingTitle ? (
-            <input
-              autoFocus
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={async () => {
-                setRenamingTitle(false);
-                const v = titleDraft.trim();
-                if (v && v !== activeCanvasName) {
-                  await renameActiveCanvas(v);
-                }
-              }}
-              onKeyDown={async (e) => {
-                if (e.key === 'Enter') {
-                  (e.target as HTMLInputElement).blur();
-                } else if (e.key === 'Escape') {
-                  setRenamingTitle(false);
-                }
-              }}
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                padding: '4px 8px',
-                border: '1px solid var(--accent, #6366f1)',
-                borderRadius: 4,
-                background: 'var(--bg-1, #fff)',
-                color: 'var(--text, #1e293b)',
-                minWidth: 120,
-                maxWidth: 240,
-              }}
-            />
-          ) : (
-            <span
-              onDoubleClick={() => {
-                setTitleDraft(activeCanvasName);
-                setRenamingTitle(true);
-              }}
-              title="双击重命名当前画布"
-              data-testid="active-canvas-name"
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                padding: '4px 8px',
-                color: 'var(--text, #1e293b)',
-                cursor: 'text',
-                maxWidth: 240,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {activeCanvasName || '未命名画布'}
-            </span>
-          )}
-          <button
-            className="toolbar-btn"
-            onClick={async () => {
-              await createNewCanvas();
-            }}
-            title="新建一张画布"
-          >
-            ＋ 新画布
-          </button>
-          <span
-            style={{
-              width: 1,
-              alignSelf: 'stretch',
-              background: 'var(--border-color, #e2e8f0)',
-              margin: '0 4px',
-            }}
-          />
 
+        {/* v1.5.x：底部主工具栏 */}
+        <div className="canvas-toolbar bottom">
+          <span className="canvas-toolbar-hint" title="画布操作提示">
+            💡 左键点击=单选 | Cmd+点击=多选 | 空白处拖动=框选 | 右键拖动=平移 | Cmd+Z=撤销
+          </span>
           <button className="toolbar-btn primary" onClick={() => executeFlow()} disabled={isRunning}>
             {isRunning ? '⏳ 运行中...' : '▶️ 运行'}
           </button>
@@ -1862,22 +1860,7 @@ export default function Canvas() {
           </div>
         </div>
 
-        {/* 提示 */}
-        <div style={{
-          position: 'absolute',
-          bottom: '10px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          background: 'var(--bg-tip)',
-          color: 'var(--bg-tip-text)',
-          padding: '6px 14px',
-          borderRadius: '20px',
-          fontSize: '12px',
-          pointerEvents: 'none',
-          zIndex: 10,
-        }}>
-          💡 左键点击=单选 | Cmd+点击=多选 | 空白处拖动=框选 | 右键拖动=平移 | Cmd+Z=撤销
-        </div>
+        {/* 提示已合并进底部 toolbar 左侧 */}
 
         {/* 日志面板 */}
         {showLog && runLog.length > 0 && (

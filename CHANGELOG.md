@@ -5,6 +5,162 @@
 
 ---
 
+## [1.5.3] — 2026-05-20
+
+> 围绕"画布对接外部世界"做了一组体验补强：新增 Web 链接输入节点（含腾讯文档智能识别）、输出节点新增"输出到腾讯文档"、API 配置新增 Kimi/Qwen、LLM 节点新增自定义版本号字段。同时修复 Sidebar 两个 bug 与夜晚模式右键菜单字色看不清问题。
+
+### Added · 新增
+
+- **Web 链接输入节点（`WebLinkNode`）**：把外部 URL 当画布输入源（wiki / 在线文档 / 新闻）。
+  - 单 source handle 源节点；URL 双击编辑、抓取一次后写入 `fetchedText` 供下游 LLM 消费
+  - 抓取走 `POST /api/web-fetch`（避免 token 进 URL 日志），32KB 截断 + 标签剥离
+  - **腾讯文档智能分支**：URL 是 `docs.qq.com` 时自动改走 MCP `get_content`（兜底 `smartcanvas.read` 分页读取），UI 露出 password 风格的 token 输入框（双击编辑、4****4 显示）
+  - 抓取来源徽章：MCP 路径在节点上显示蓝色 `MCP` 标签
+- **输出到腾讯文档（OutputNode 新格式）**：选择 `tencentDocs` 格式后填 token + 标题，运行画布即创建一份新文档；UI 展示最后一次导出的链接 + fileId + 时间。
+  - 后端走腾讯文档 OpenAPI MCP 真实协议：`POST https://docs.qq.com/openapi/mcp` + JSON-RPC 2.0 + 工具 `create_smartcanvas_by_mdx`
+- **API 配置新增 Kimi (Moonshot) 和通义千问 (Qwen)**：两家都走 OpenAI 兼容协议，前端 `MODEL_OPTIONS` 加 2 项；后端 `MODEL_CONFIG` 加 2 项；`ApiKeyConfigModal` 加 KEY_HINTS（链到 platform.moonshot.cn / bailian.console.aliyun.com）
+- **LLM 节点自定义版本号字段（`customModelName`）**：模型选择下方多一行可选输入框，placeholder 显示该厂商默认版本（`deepseek-chat / qwen-plus / moonshot-v1-8k` 等）；
+  - 留空 → 用厂商默认版本号
+  - 填值 → server chat 路由直接用该值替换默认 `modelName`
+  - 副产品：DeepSeek 现已支持 `deepseek-v4-pro / deepseek-v4-flash`，无须改代码即可切到新版
+
+### Fixed · 修复
+
+- **Sidebar 分组删除**：分组右上角的 `×` 按钮现在真的删除分组（之前只是把分组下的包脱钩到"未分组"）；删空分组直接消失。
+- **Sidebar 包"…"菜单**：包的右上角 `…` 菜单现在含「删除此包」选项（带二次确认）。
+- **腾讯文档导出"调用失败"**：之前用了猜的 endpoint（`/mcp/v1/tools/...`）和 `Bearer` 头格式。改成真实协议 `https://docs.qq.com/openapi/mcp` + JSON-RPC 2.0 + Authorization 直接是 token（不带 Bearer）+ 参数名 `mdx`（不是 content）。已通过 server 实测创建多份文档验证。
+- **夜晚模式右键菜单字色看不清**：根因是 `Canvas.tsx` 行内 style 用了 `var(--surface, #fff)` 等不存在的 CSS 变量，浏览器永远走白色 fallback；dark 主题 `--text-primary` 是浅灰，浅灰字 + 白底 → 看不见。在 `App.css` 末尾加 `[data-theme='dark'] .context-menu` 规则用 `!important` 覆盖背景/文字/边框/分隔线，白天模式不写规则零影响。
+
+### Changed · 优化
+
+- `server/src/routes/webFetch.js` 重写为双通道（腾讯文档 MCP / 普通 axios.get），新增 `extractTencentDocsFileId` 智能提取 `?_fid=` 或 path 末段。
+- `client/src/types/nodes.ts` 加：
+  - `WebLinkNodeData.tencentDocsToken? / fetchedSource?`
+  - `LLMNodeData.customModelName?`
+  - `OutputFormat` 加 `'tencentDocs'`，`OutputNodeData.tencentDocs` 子结构
+  - `ModelType` 加 `'kimi' | 'qwen'`
+- 经验沉淀进 MEMORY：项目里行内 style 一律用真实存在的变量（`--bg-card / --text-primary / --border-color` 等），**禁用** 编造的 `--surface / --border / --primary / --bg`。
+
+---
+
+## [1.5.2] — 2026-05-19
+
+> 把同步从"整盘覆盖"升级为"实体级三向合并"。同一账户下双浏览器分别编辑不同画布的场景从"必弹窗强迫覆盖一边"变成"自动并集，零打扰"；只有真正同 ID 画布两边都改了才弹窗，且每条画布独立决策。同时引入软删除 + 30 天回收站底座，删除从此可跨浏览器同步且可恢复。
+
+### Added · 新增
+
+- **三向合并核心**：新增 `client/src/store/syncMerge.ts`。
+  - 用 `meta:last-synced-base`（id→updatedAt 映射 + version）作为同步基线
+  - 按实体类型分类合并：
+    - canvas 同 ID 都改 → 真冲突（每条画布独立决策）
+    - canvas 不同 ID → 直接并集
+    - package / packageGroup / workspace / project 同 ID 都改 → 取 updatedAt 较新一方
+    - 双方都软删 → 自动取较新（不算冲突）
+  - 边界处理：首次同步无 base 时双方同 ID 实体按 updatedAt 较新一方处理（不算冲突）
+- **合并报告弹窗**：新增 `client/src/components/MergeReportDialog.tsx`。
+  - 顶部"自动合并清单"（X 项变更，知情即可）
+  - 中部"需要决策的画布"列表，每条画布独立 3 选 1：保留本地 / 保留远端 / 都保留（远端版以新 id「(远端版)」副本形式追加）
+  - 必须为所有冲突画布做完决策才能继续
+- **软删除底座**：`types/db.ts` 的 BaseEntity 加 `deleted?: boolean` + `deletedAt?: number`。
+  - `storage.listCanvases()` / `listPackages()` / `listPackageGroups()` 默认过滤 deleted=true
+  - 新增 `listDeletedCanvases()` / `softDeleteCanvas()` / `restoreCanvas()` / `softDeletePackage()`
+  - 新增 `purgeOldDeleted(retentionDays=30)`：启动时清理 deletedAt 超 30 天的实体
+  - `nodes.ts` 的 `deleteCanvasById` 改走软删 + 触发远端推送
+  - `replaceAllPackages` / `replaceAllPackageGroups` 修正：仅替换活实体，保留 deleted=true 的留在回收站
+- **同步基线管理**：syncAdapter 新增 `getSyncBase / setSyncBase / planSync / applyMerged / buildBaseFromMerged`。
+  - `dumpLocalSnapshot` 现在直接从 IDB 全量读（含 deleted 实体），让删除通过同步 propagate
+  - `applyMerged` 单事务清空 + 重写所有 store；保留浏览器本地 meta；active-canvas-id 兜底（指向已删/不存在的画布时自动跳到第一张活画布）
+
+### Changed · 优化
+
+- **App.tsx 启动 gate** 从"整盘 hash 比对 + 三选一弹窗"重写为"三向合并 + 仅真冲突弹窗"。
+- 老 `<SyncConflictDialog>` 文件保留作为兜底（暂未使用），后续可清理。
+- meta 中新增 `last-synced-base` 加入浏览器本地 key 白名单（不参与同步）。
+
+### Fixed · 修复
+
+- 同账户双浏览器各自加不同画布的场景从"必弹窗 + 选谁覆盖谁就丢一边数据"变成"零打扰自动并集"。
+- 删除操作从此能跨浏览器同步（之前删了画布另一浏览器仍能看到）。
+
+### Internal · 内部
+
+- 浏览器内单元测试 mergeSnapshots 8 个边界 case 全过：
+  - 加不同 ID / 同 ID 都改冲突 / 一方改一方没改 / 软删 vs 编辑 / 双方都软删 / 首次同步无 base / 同 ID 包都改取较新 / 混合新增
+- Playwright 端到端 4 项验证全过：
+  - 干净启动不弹窗
+  - 双浏览器加不同画布 → 自动合并不弹窗（核心目标）
+  - 双浏览器同 ID 画布都改 → 弹窗，仅冲突那条出现在列表
+  - 选「都保留」→ 远端版以「(远端版)」副本入列；同步基线记下，下次启动不再弹
+
+### v2.0 兼容性承诺
+
+- 升级路径不变：v2.0-α 启动时检测到 `<DATA_DIR>/store.json` → 创建第一个本地账号 → mv 到 `users/<uid>/store.json`，零数据损失。
+- `last-synced-base` 是浏览器本地状态，每个浏览器独立，不参与共享，v2.0 升级不影响。
+
+### 已知遗留
+
+- 回收站 UI 暂未做（计划批 4：CanvasManager 抽屉里加一个"🗑 回收站"区，列出 deleted=true 画布 + 恢复 / 彻底删除按钮）；当前回收站只能通过 `softDeleteCanvas / restoreCanvas` API 操作，UI 上删了就是删了。
+- "较新"判定遗留同 v1.5.1：基于 updatedAt，hydrate 写盘会刷新本地 updatedAt。
+
+---
+
+## [1.5.1] — 2026-05-19
+
+> 跨浏览器画布同步（共享盘模式）。同一台机器的多个浏览器（Edge / Chrome / Firefox）从此共享同一份画布数据；启动时若本地与共享盘内容不一致会弹出对比对话框，由用户决定以哪一侧为准。本期为 v2.0-α 后端账号系统的雏形——只是少了"用户身份"那一层。
+
+### Added · 新增
+
+- **server 端 sync 路由**：新增 `server/src/routes/sync.js` + `server/src/utils/storePath.js`。
+  - `GET /api/sync/meta` 返回轻量元数据（`{ exists, version, updatedAt, hash, summary }`），前端启动时拿来比对本地 hash。
+  - `GET /api/sync/snapshot` 返回完整快照；不存在返 `null`。
+  - `PUT /api/sync/snapshot` 接收 `{ lastKnownVersion, payload, summary }`，version 不一致返 409 + 当前 meta；一致则原子写盘（先写 `.tmp` 再 rename）+ version+1。
+  - 数据目录默认 `~/.plotmesh/`，支持 `PLOTMESH_DATA_DIR` 环境变量覆盖（可指向 iCloud / Dropbox / OneDrive 同步盘间接获得跨设备同步）。
+- **client 端同步适配层**：新增 `client/src/store/syncAdapter.ts`。
+  - `dumpLocalSnapshot()` 把 IDB 全部内容打包成 SnapshotPayload，**剔除浏览器本地状态**（`canvas.lastOpenedAt / thumbnail / viewport` + meta 中的 `active-canvas-id / presets-injected / migrated-from-ls / ls-backup / last-sync-decision / last-synced-hash`）。
+  - `computeLocalSummary()` 计算稳定 hash（SHA-1 hex 前 16 位），hash 算法**剥离 updatedAt 和节点上的 React Flow 渲染时字段**（`measured / selected / dragging / resizing`），server 端用同样规则保持算法一致。
+  - `applyRemoteSnapshot(payload)` 单事务清空 + 重写所有 store；保留浏览器本地 meta（active-canvas-id 等）；远端不存在 active-canvas-id 对应的 canvas 时自动指向第一条，避免 hydrate 凭空新建空白画布污染下次同步。
+  - `pushSnapshot(lastKnownVersion, payload, summary)` 推本地到远端，409 时返 `{ ok: false, conflict: true, current }` 让 UI 走冲突弹窗。
+- **启动 gate 改造**：`App.tsx` 增加 `checking-sync` 阶段。
+  - server 不可用 / 远端无数据 / hash 一致 → 直接进入 hydrate（不阻塞、不弹窗）。
+  - hash 不一致 → 阻塞渲染，弹出冲突对话框等待用户决策。
+- **冲突弹窗**：新增 `client/src/components/SyncConflictDialog.tsx`。
+  - 双列对比：上次保存时间 / 画布数 / 节点总数 / 大小，更新时间较新的一侧加 `← 较新` 标记 + 推荐按钮高亮。
+  - 三个按钮：「使用共享目录覆盖本地」「用本地覆盖共享目录」「本次不同步，稍后处理」。
+  - 选定后写 `meta:last-sync-decision` 记录决策（含双方 hash + 时间），便于排查。
+- **写后异步推送（防抖）**：`store/nodes.ts` 的 `flushActiveCanvasToIDB` 写完 IDB 后调用 `scheduleRemoteSync()`（2s 防抖），用户连续编辑时只推最后一次。
+  - `skip_this_session` 期间不推送；`pushSnapshot` 收 409 时不打断本地操作，下次启动仍会通过 hash 比对兜底处理。
+
+### Changed · 优化
+
+- **网关请求都走 server**：vite proxy 配置已支持 `/api/sync/*`，无需额外配置（沿用 v1.0 的 LLM 网关 proxy）。
+- **CHANGELOG 路径**：本次新增 `server/src/utils/storePath.js`，构成"数据访问层"骨架，未来 v2.0-α 加用户身份时只需扩展为 `users/<uid>/store.json`。
+
+### Fixed · 修复
+
+- 解决"Edge 编辑画布 → Chrome 看不到"的根本原因（IndexedDB 按"浏览器 + profile + origin"三维隔离）。
+
+### Internal · 内部
+
+- 端到端验证：5 项 Playwright 自动化测试用例全过——
+  - 干净状态启动不弹窗
+  - server 不可用降级
+  - 用本地覆盖远端 + reload 不再弹窗
+  - 选 skip 后本次会话不推送
+  - 模拟另一浏览器较新 → 弹窗显示"远端较新"
+- 并发 PUT 用 `lastKnownVersion` 校验 + 409 返回当前 meta，前端拿到 409 会再走一次冲突弹窗。
+
+### v2.0 兼容性承诺
+
+- 当前数据布局：`<DATA_DIR>/store.json`（单用户）。
+- v2.0-α 升级路径：检测到 `<DATA_DIR>/store.json` 存在 → 自动创建第一个本地账号 → `mv` 到 `users/<uid>/store.json`，零数据损失。
+- store.json 顶层格式预留 `ownerHint` 字段，v2.0 直接填实际 uid 即可，不破协议。
+
+### 已知遗留（不影响主功能）
+
+- "较新"判定基于实体的 `updatedAt`，hydrate 写盘会刷新本地 updatedAt，可能让本地标记为"较新"即使实际内容旧。后续考虑用 server 时间戳作为权威来源。
+
+---
+
 ## [1.5.0] — 2026-05-18
 
 > 多画布管理（D1 + D2 + D3 三步合并发布）。把单画布 + LocalStorage 时代的 PlotMesh 升级为 IndexedDB 多画布工作台：可同时管理任意张画布、左侧抽屉里随时切换、顶栏显示并支持双击重命名当前画布。底层从 LS 完全迁移到 IDB，老用户首次启动会一次性把现有画布和常用功能搬迁过去。

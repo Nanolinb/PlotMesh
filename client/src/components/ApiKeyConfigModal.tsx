@@ -33,6 +33,8 @@ const KEY_HINTS: Record<string, { url: string; tip: string }> = {
   glm: { url: 'https://open.bigmodel.cn/usercenter/apikeys', tip: '智谱开放平台 → 用户中心 → API Keys' },
   gpt: { url: 'https://platform.openai.com/api-keys', tip: 'OpenAI Platform → API keys（注意：国内无法直连，需代理）' },
   claude: { url: 'https://console.anthropic.com/settings/keys', tip: 'Anthropic Console → Settings → API Keys（同样需要代理）' },
+  kimi: { url: 'https://platform.moonshot.cn/console/api-keys', tip: 'Moonshot 平台 → API Keys（Kimi 同款）' },
+  qwen: { url: 'https://bailian.console.aliyun.com/?apiKey=1', tip: '阿里云百炼 / DashScope → API Key' },
 };
 
 /**

@@ -12,10 +12,11 @@ export enum NodeType {
   TEXT_PROMPT = 'textPrompt',
   LLM = 'llm',
   OUTPUT = 'output',
+  WEB_LINK = 'webLink', // v1.5.2 新增：抓取 wiki / 在线文档 / 新闻等
 }
 
 // 模型类型
-export type ModelType = 'hunyuan' | 'deepseek' | 'glm' | 'gpt' | 'claude';
+export type ModelType = 'hunyuan' | 'deepseek' | 'glm' | 'gpt' | 'claude' | 'kimi' | 'qwen';
 
 export const MODEL_OPTIONS: { value: ModelType; label: string }[] = [
   { value: 'hunyuan', label: '腾讯混元' },
@@ -23,10 +24,12 @@ export const MODEL_OPTIONS: { value: ModelType; label: string }[] = [
   { value: 'glm', label: '智谱 GLM' },
   { value: 'gpt', label: 'OpenAI GPT' },
   { value: 'claude', label: 'Claude' },
+  { value: 'kimi', label: 'Kimi (Moonshot)' },
+  { value: 'qwen', label: '通义千问 (Qwen)' },
 ];
 
 // 输出格式类型
-export type OutputFormat = 'text' | 'markdown' | 'docx' | 'xlsx' | 'pdf' | 'image' | 'web';
+export type OutputFormat = 'text' | 'markdown' | 'docx' | 'xlsx' | 'pdf' | 'image' | 'web' | 'tencentDocs';
 
 export const OUTPUT_FORMAT_OPTIONS: { value: OutputFormat; label: string }[] = [
   { value: 'text', label: '纯文本 (.txt)' },
@@ -36,6 +39,7 @@ export const OUTPUT_FORMAT_OPTIONS: { value: OutputFormat; label: string }[] = [
   { value: 'pdf', label: 'PDF 文档 (.pdf)' },
   { value: 'image', label: '图片 (.png)' },
   { value: 'web', label: '网页 (浏览器打开)' },
+  { value: 'tencentDocs', label: '☁️ 输出到腾讯文档' },
 ];
 
 // 节点执行状态
@@ -69,6 +73,14 @@ export interface LLMNodeData {
   type: NodeType.LLM;
   label: string;
   model: ModelType;
+  /**
+   * 可选：自定义模型版本号（v1.5.3 起）
+   * 留空 → 用 MODEL_OPTIONS 里厂商的默认版本（如 deepseek-chat / qwen-plus）
+   * 填值 → server 会用这个值替换默认 modelName 发给厂商 API
+   *        例：qwen → qwen3-coder-plus；deepseek → deepseek-reasoner；kimi → kimi-k2-0905-preview
+   * 这样新厂商出新模型版本不必改前端代码。
+   */
+  customModelName?: string;
   systemPrompt: string;
   temperature: number;
   status: NodeStatus;
@@ -84,13 +96,46 @@ export interface OutputNodeData {
   status: NodeStatus;
   output: string;
   error?: string;
+  /** 仅 format='tencentDocs' 时使用：导出后腾讯文档的链接 + fileId */
+  tencentDocs?: {
+    title?: string;       // 用户自定义标题（默认用画布名 + 时间）
+    token?: string;        // 用户的 MCP token（用户输入；存在 store 里）
+    lastUrl?: string;
+    lastFileId?: string;
+    lastExportedAt?: string;
+  };
+}
+
+/** v1.5.2 新增：Web 链接节点（wiki / 在线文档 / 新闻外部源） */
+export interface WebLinkNodeData {
+  type: NodeType.WEB_LINK;
+  label: string;
+  /** 用户输入的 URL */
+  url: string;
+  /**
+   * 仅 URL 是 docs.qq.com 时用：腾讯文档 MCP token（v1.5.3 起）
+   * server 会优先用这个，没有则回退到 server/.env 的 TENCENT_DOCS_TOKEN。
+   * 注意：token 会跟随画布持久化到 IDB，介意可留空让 server 用环境变量。
+   */
+  tencentDocsToken?: string;
+  /** 抓取后的元信息（运行时填） */
+  fetchedTitle?: string;
+  fetchedFinalUrl?: string;
+  fetchedAt?: string;     // ISO 时间
+  /** 抓取来源：http | mcp:get_content | mcp:smartcanvas.read（v1.5.3 起） */
+  fetchedSource?: string;
+  /** 抓取后的纯文本（最大 32KB；运行时填，下游 LLM 消费它） */
+  fetchedText?: string;
+  status: NodeStatus;
+  error?: string;
 }
 
 export type CustomNodeData =
   | FileUploadNodeData
   | TextPromptNodeData
   | LLMNodeData
-  | OutputNodeData;
+  | OutputNodeData
+  | WebLinkNodeData;
 
 // 打包（常用功能）
 export interface NodePackage {
