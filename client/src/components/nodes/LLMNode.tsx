@@ -14,7 +14,7 @@
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';
-import { MODEL_OPTIONS, type ModelType, type LLMNodeData } from '../../types/nodes';
+import { MODEL_OPTIONS, MODEL_VERSION_OPTIONS, type ModelType, type LLMNodeData } from '../../types/nodes';
 
 type Props = {
   id: string;
@@ -26,7 +26,6 @@ type Props = {
 function LLMNode({ id, data, selected }: Props) {
   const [isEditingSystem, setIsEditingSystem] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [editingCustomModel, setEditingCustomModel] = useState(false);
   const [localTitle, setLocalTitle] = useState(data.label || '大模型');
   const [localSystemPrompt, setLocalSystemPrompt] = useState(data.systemPrompt || '');
   const [localModel, setLocalModel] = useState(data.model || 'deepseek');
@@ -57,10 +56,10 @@ function LLMNode({ id, data, selected }: Props) {
     updateNodeData(id, { model: value });
   }, [id, updateNodeData]);
 
-  const commitCustomModel = useCallback(() => {
-    setEditingCustomModel(false);
-    updateNodeData(id, { customModelName: localCustomModel.trim() } as any);
-  }, [id, localCustomModel, updateNodeData]);
+  const handleCustomModelChange = useCallback((value: string) => {
+    setLocalCustomModel(value);
+    updateNodeData(id, { customModelName: value.trim() } as any);
+  }, [id, updateNodeData]);
 
   const handleTempChange = useCallback((value: number) => {
     setLocalTemp(value);
@@ -78,6 +77,8 @@ function LLMNode({ id, data, selected }: Props) {
     qwen: 'qwen-plus',
   };
   const placeholderModelName = DEFAULT_MODEL_NAMES[localModel] || '使用厂商默认';
+  /** 当前厂商的版本备选清单（喂给 select；选「自定义」会切到 input） */
+  const versionOptions = MODEL_VERSION_OPTIONS[localModel as ModelType] || [];
 
   return (
     <div className={`node-card llm-node ${selected ? 'selected' : ''}`} data-status={data.status || 'idle'}>
@@ -132,42 +133,86 @@ function LLMNode({ id, data, selected }: Props) {
             <span style={{ cursor: 'help', color: '#94a3b8' }}>ⓘ</span>
             <span style={{ marginLeft: 'auto', fontSize: 10, color: '#94a3b8' }}>可选</span>
           </label>
-          {editingCustomModel ? (
-            <input
-              autoFocus
-              className="nodrag"
-              value={localCustomModel}
-              onChange={(e) => setLocalCustomModel(e.target.value)}
-              onBlur={commitCustomModel}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitCustomModel();
-                if (e.key === 'Escape') { setEditingCustomModel(false); setLocalCustomModel(data.customModelName || ''); }
-                e.stopPropagation();
-              }}
-              placeholder={`留空 → 默认 ${placeholderModelName}`}
-              style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, fontFamily: 'monospace' }}
-            />
-          ) : (
-            <div
-              className="nodrag"
-              onDoubleClick={(e) => { e.stopPropagation(); setEditingCustomModel(true); }}
-              title="双击编辑自定义版本号"
-              style={{
-                padding: '4px 8px',
-                borderRadius: 6,
-                border: '1px dashed #d1d5db',
-                fontSize: 11,
-                fontFamily: 'monospace',
-                color: data.customModelName ? '#1e293b' : '#94a3b8',
-                cursor: 'text',
-                minHeight: 22,
-              }}
-            >
-              {data.customModelName
-                ? data.customModelName
-                : `默认: ${placeholderModelName}`}
-            </div>
-          )}
+          {/*
+            v1.6.0-β9：去掉双击折叠态，直接显示 input。
+            原因：用户反馈"看不出是输入框，双击也没反应"。
+            实际是双击会进入编辑态、blur 后回折叠态——但 dashed 边框 + placeholder
+            视觉上太弱，很多人意识不到要双击。
+            现在直接 input：留空走厂商默认；填值则 server 用该值替换 modelName。
+            常见用法举例：deepseek 默认 deepseek-chat，想要推理版填 deepseek-reasoner；
+            qwen 默认 qwen-plus，想要长上下文填 qwen-long 或 qwen3-coder-plus。
+          */}
+          {/*
+            v1.6.0-β16：把 datalist 换成 "select + 自定义" 双控件。
+            原 datalist 在浏览器里有前缀过滤问题：用户输入了 "deepseek-chat" 后再展开
+            下拉只剩它自己（其他 deepseek-reasoner/v4-pro 等被过滤掉）—— 看起来像
+            "只有 1 个版本"。改成纯 select 一直显示完整列表 + 选择 "✏️ 自定义..." 时
+            才出现输入框，最稳。
+          */}
+          {(() => {
+            const isCustom = !!localCustomModel && !versionOptions.some((o) => o.value === localCustomModel);
+            return (
+              <>
+                <select
+                  className="nodrag"
+                  value={isCustom ? '__custom__' : (localCustomModel || '')}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '__custom__') {
+                      // 切到自定义：保留之前的自定义值（如果有）；否则给个占位
+                      handleCustomModelChange(localCustomModel && isCustom ? localCustomModel : '自定义版本号');
+                    } else {
+                      handleCustomModelChange(v);
+                    }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    width: '100%',
+                    padding: '4px 8px',
+                    borderRadius: 6,
+                    border: '1px solid #d1d5db',
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    boxSizing: 'border-box',
+                    background: '#fff',
+                    color: '#1e293b',
+                  }}
+                >
+                  <option value="">{`默认（${placeholderModelName}）`}</option>
+                  {versionOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                  <option value="__custom__">✏️ 自定义版本号…</option>
+                </select>
+                {isCustom && (
+                  <input
+                    type="text"
+                    className="nodrag"
+                    value={localCustomModel}
+                    onChange={(e) => handleCustomModelChange(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                    placeholder="例如 deepseek-2099-future"
+                    style={{
+                      width: '100%',
+                      marginTop: 4,
+                      padding: '4px 8px',
+                      borderRadius: 6,
+                      border: '1px solid #94a3b8',
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      boxSizing: 'border-box',
+                      background: '#fff',
+                      color: '#1e293b',
+                    }}
+                  />
+                )}
+              </>
+            );
+          })()}
+          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2, lineHeight: 1.3 }}>
+            选「自定义版本号」可填厂商最新版（无须改代码）
+          </div>
         </div>
 
         <div className="field" style={{ marginBottom: '8px' }}>

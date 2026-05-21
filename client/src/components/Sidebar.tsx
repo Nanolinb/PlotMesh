@@ -34,6 +34,7 @@ const NODE_TYPES = [
   { type: 'splitter', label: '🔀 分叉', description: '一段切成 N 路输出' },
   { type: 'output', label: '📤 输出', description: '预览/下载/复制/腾讯文档' },
   { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
+  { type: 'swimlane', label: '🏊 项目泳道', description: '横向泳道 / 项目时序' },
 ];
 
 export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {

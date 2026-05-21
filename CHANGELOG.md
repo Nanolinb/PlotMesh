@@ -5,6 +5,75 @@
 
 ---
 
+## [1.6.0] — 2026-05-22
+
+> 把 PlotMesh 升级成"可被外部 AI 操作的工作台"。新增 SwimlaneNode 项目泳道；TimelineNode 形态重做（横轴贯穿 + 双模缩放 + cut/handle 合二为一）；分叉节点自动派生 OutputNode + 互不遮挡布局；LLM 版本下拉；触摸板模式（Mac 友好）；执行日志底部抽屉。最大特性：完整的 REST API + MCP server（14 工具）+ 触发运行调度（前端 polling worker），让 codex/kimi/Claude Desktop 等 AI 客户端能搭画布、改节点、跑画布、看结果。
+
+### Added · 新增
+
+#### 大特性：外部 AI 操作画布（切片 1+2+3）
+- **REST API**（`server/src/routes/canvas.js`，11 路由）：CRUD 节点/边、列画布、节点类型 schema、触发运行（含 jobId 状态查询）
+- **MCP server**（`server/mcp/index.js`，14 工具）：包装 REST 当 stdio MCP tools，codex / kimi / Claude Desktop 直接接入
+- **触发运行**：POST /run 写 pending job → 前端 polling worker 5s 内 claim + 切画布 + executeFlow + 写 succeeded
+- **token 鉴权**：localhost 默认豁免，远端 `Authorization: Bearer <token>`，token 自动生成或写 server/.env
+- **多浏览器协调**：leaderId + heartbeat 防多客户端并发抢同一 job
+- 详见 `server/mcp/README.md`（codex / kimi / Claude Desktop 三种客户端配置示例）
+
+#### SwimlaneNode 项目泳道（β1～β5 渐进迭代）
+- 横向 group 形态 + lanes 数组 + 软驱动节点摆放（方案 Z）
+- 单位切换：秒 / 小时 / 天，含 startISO 起始时间
+- 双模缩放（密度 / 等长）
+- 子节点 attach/detach 双向：从画布外拖入 / 从泳道内拖出 / 切 swimlane（用 `screenToFlowPosition` 反推鼠标坐标算最准）
+- 子节点折叠态色块（CSS `.swimlane-child`）+ 双击展开 `.swimlane-child-expanded`
+- 不破坏 GroupNode 的 `extent='parent'` 强约束（v1.6.0-β8 守卫）
+- "+ 泳道"按钮在刻度行左侧；toolbar 空白处可拖；lane 标签整块可拖
+
+#### TimelineNode 形态重做
+- 去 `.node-card` 圆角，节点宽度 = `durationSec * pixelsPerSecond`，主轴贯穿
+- 双模缩放（密度 / 等长，数据字段 `resizeMode`）
+- 控件栏移到横轴下方
+- cut 圆点 = source handle（视觉 + 锚点合一），无 cut = 无输出端子
+- 修复点击位置偏左 bug（zoom 折算）
+
+#### 分叉节点自动派生 OutputNode（β12～β14）
+- 「自动接输出节点」开关 + 增量补齐 / 删多余 / 段数变化时刷新内容
+- 标题策略：编号 / 前 8 字
+- 布局：右侧纵向 / 底部横向（β14 source handle 跟着切位置）
+- 派生位置算法：互不遮挡 + 整体居中对齐 splitter（β13）
+- 操作技巧已写入产品文档 # 8 章
+
+#### 触摸板模式（Mac 友好）
+- 自动检测 macOS → 默认开
+- 双指滑动 = 平移；双指捏合 / Cmd+滚轮 = 缩放
+- 底部 toolbar 可手动切换，持久化 localStorage
+
+#### 执行日志底部抽屉
+- 200px 高度，从底部滑入
+- 底部 toolbar 联动上移让位
+- 含清空按钮 / 空态友好提示
+
+#### LLM 节点版本号下拉
+- select + "✏️ 自定义版本号..." 选项（替代 datalist 避免前缀过滤 bug）
+- 默认厂商 4-5 个版本预设 + 切换厂商自动换列表
+
+### Fixed · 修复
+
+- LLM 自定义版本号字段：之前双击折叠态 + onBlur stale 闭包导致填了不生效；改 input 直显 + onChange 立即同步 store
+- TimelineNode 鼠标点击位置偏左（getBoundingClientRect 不考虑 zoom）
+- 分叉节点派生节点不连边（OutputNode 的 Handle 没 id，传 targetHandle:'in' 反而匹配不上）
+- 分叉节点派生位置飞远（取 splitter 高度兜底 200 太小，改用 measured.height）
+- Group 节点被 SwimlaneNode 拖拽逻辑误伤（β8 加守卫只处理 swimlane 父节点）
+- 夜晚模式右键菜单字色（v1.5.3 已修，本次 commit 一起带上）
+
+### Changed · 优化
+
+- ReactFlow v12 hook 作用域规则写入 MEMORY（`useUpdateNodeInternals` 必须在 Provider 内）
+- "建边时 targetHandle 不要乱传字符串"写入 MEMORY 长期清单（坑 #22）
+- "拖拽 attach/detach 用鼠标坐标算最准"写入 MEMORY 长期清单（坑 #21）
+- 行内 style 必须用项目里真实存在的 CSS 变量（避免编 `--surface` / `--border`）
+
+---
+
 ## [1.5.3] — 2026-05-20
 
 > 围绕"画布对接外部世界"做了一组体验补强：新增 Web 链接输入节点（含腾讯文档智能识别）、输出节点新增"输出到腾讯文档"、API 配置新增 Kimi/Qwen、LLM 节点新增自定义版本号字段。同时修复 Sidebar 两个 bug 与夜晚模式右键菜单字色看不清问题。

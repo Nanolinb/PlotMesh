@@ -20,6 +20,8 @@ import uploadRouter from './routes/upload.js';
 import syncRouter from './routes/sync.js';
 import webFetchRouter from './routes/webFetch.js';
 import tencentDocsRouter from './routes/tencentDocs.js';
+import canvasRouter from './routes/canvas.js';
+import { printApiTokenBanner } from './middleware/apiToken.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +44,8 @@ app.use('/api/upload', uploadRouter);
 app.use('/api/sync', syncRouter);
 app.use('/api/web-fetch', webFetchRouter);
 app.use('/api/tencent-docs', tencentDocsRouter);
+// v1.6 切片 1：外部 AI 操作画布的 REST API
+app.use('/api/canvas', canvasRouter);
 
 // 健康检查
 app.get('/health', (_req, res) => {
@@ -50,4 +54,6 @@ app.get('/health', (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
+  // 打印 API token（让用户知道怎么调 /api/canvas/*）
+  printApiTokenBanner();
 });

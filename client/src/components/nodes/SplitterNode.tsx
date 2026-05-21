@@ -25,6 +25,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import { useNodeStore } from '../../store/nodes';
+import { NodeType, type OutputFormat } from '../../types/nodes';
 
 type Props = {
   id: string;
@@ -239,11 +240,185 @@ function SplitterNode({ id, data, selected }: Props) {
     // 写回 upstreamText 并固化端子数（按当前切出的段数）
     const segs = splitText(combined, splitMode, delimiter, regex);
     const next = Math.max(1, Math.min(20, segs.length || 1));
-    updateNodeData(id, {
-      upstreamText: combined,
-      autoCommittedCount: next,
-    } as any);
-  }, [id, updateNodeData, splitMode, delimiter, regex]);
+
+    // ─── v1.6.0-β12 自动派生 OutputNode（增量补齐 / 删多余） ───────────────────
+    // autoOutputs 关 → 只更新 splitter 自己；
+    // autoOutputs 开 → 在 setNodes 里同步：
+    //   - 已派生 ≥ N：删除多出来的（含相关 edge）
+    //   - 已派生 < N：补齐缺的（带默认布局 + 自动连边 splitter#out__i → output#i）
+    //   - 已派生 ≤ N 但有的节点被用户删了：跳过缺失项，正常补齐到 N
+    const autoOutputs: boolean = data.autoOutputs !== false; // 默认开
+    const layout: 'right-vertical' | 'bottom-horizontal' = data.outputLayout || 'right-vertical';
+    const labelMode: 'index' | 'preview' = data.outputLabelMode || 'index';
+    const prevDerived: string[] = Array.isArray(data.derivedOutputIds) ? data.derivedOutputIds : [];
+
+    if (!autoOutputs) {
+      updateNodeData(id, {
+        upstreamText: combined,
+        autoCommittedCount: next,
+      } as any);
+      return;
+    }
+
+    // 计算新派生节点位置：splitter 自身位置 + 偏移
+    // ⚠ React Flow v12：普通节点的 store 顶层 width/height 一般是 undefined（只有 group 节点
+    //   会主动写）；真实尺寸在 n.measured.{width,height} 里。这里优先取 measured，
+    //   兜底给 splitter 一个偏大的估值（含预览框 + 控件，约 320px 高）。
+    const splitterNode = allNodes.find((n: any) => n.id === id);
+    const baseX = splitterNode?.position?.x ?? 0;
+    const baseY = splitterNode?.position?.y ?? 0;
+    const splitterW =
+      (typeof splitterNode?.width === 'number' ? splitterNode.width : null)
+      ?? splitterNode?.measured?.width
+      ?? 240;
+    const splitterH =
+      (typeof splitterNode?.height === 'number' ? splitterNode.height : null)
+      ?? splitterNode?.measured?.height
+      ?? 320;
+
+    // 派生节点位置（v1.6.0-β13 修正）：
+    //   核心目标 = "互不遮挡 + 尽量靠近"。
+    //   - 右侧纵向：节点间最小间距 OUTPUT_H + GAP（不重叠），整体堆叠**居中对齐 splitter 中心**
+    //     不再死磕 "y 中心对齐 source handle 中心"——N>4 时 handle 间距 < OUTPUT_H 必然重叠
+    //   - 底部横向：节点间距固定 OUTPUT_W + GAP，整体水平居中对齐 splitter 中心
+    //   x/y 对齐策略让连线呈"扇形"分布，视觉自然
+    const OUTPUT_W = 224;     // OutputNode 大致宽度（实测 ~220，留点余量）
+    const OUTPUT_H = 218;     // OutputNode 大致高度（实测 ~213）
+    const GAP = 10;           // 节点间视觉缝（很小，让堆叠紧凑）
+    const computePos = (idx: number, total: number): { x: number; y: number } => {
+      const n = Math.max(1, total);
+      if (layout === 'bottom-horizontal') {
+        // 整体水平居中：起点 x = splitter 中心 - 总宽/2
+        const totalW = n * OUTPUT_W + (n - 1) * GAP;
+        const splitterCenterX = baseX + splitterW / 2;
+        const startX = splitterCenterX - totalW / 2;
+        return {
+          x: Math.round(startX + idx * (OUTPUT_W + GAP)),
+          y: baseY + splitterH + 24,
+        };
+      }
+      // right-vertical：整体垂直居中堆叠
+      const totalH = n * OUTPUT_H + (n - 1) * GAP;
+      const splitterCenterY = baseY + splitterH / 2;
+      const startY = splitterCenterY - totalH / 2;
+      return {
+        x: baseX + splitterW + 24,
+        y: Math.round(startY + idx * (OUTPUT_H + GAP)),
+      };
+    };
+
+    const labelOf = (segIdx: number, seg: string | undefined): string => {
+      if (labelMode === 'preview' && seg) {
+        const head = seg.replace(/\s+/g, ' ').trim().slice(0, 8);
+        return head ? `📤 ${head}` : `📤 输出 #${segIdx + 1}`;
+      }
+      return `📤 输出 #${segIdx + 1}`;
+    };
+
+    // 现存于画布的派生节点 id 子集（可能用户删过几个）
+    const stillExist = prevDerived.filter((nid) => allNodes.some((n: any) => n.id === nid));
+
+    // 1) 多出来的派生节点：删除节点 + 相关 edge
+    const toDelete = stillExist.slice(next);
+    const toKeep = stillExist.slice(0, next);
+
+    // 2) 不够的：补齐到 next 个
+    const newIds: string[] = [];
+    while (toKeep.length + newIds.length < next) {
+      const idx = toKeep.length + newIds.length;
+      newIds.push(`output-${Date.now().toString(36)}-${idx}-${Math.random().toString(36).slice(2, 6)}`);
+    }
+
+    // 3) 计算最终派生 id 列表
+    const finalDerived = [...toKeep, ...newIds];
+
+    // 一次性 setState：原子更新 nodes / edges / splitter data
+    useNodeStore.setState((s: any) => {
+      // 删除多余 output + 清掉指向它们的 edges
+      const nodesAfterDelete = s.nodes.filter((n: any) => !toDelete.includes(n.id));
+      const edgesAfterDelete = s.edges.filter((e: any) => !toDelete.includes(e.target) && !toDelete.includes(e.source));
+
+      // 创建新 output 节点
+      const createdOutputs = newIds.map((nid, i) => {
+        const segIdx = toKeep.length + i;
+        const seg = segs[segIdx];
+        const pos = computePos(segIdx, next);
+        return {
+          id: nid,
+          type: 'output',
+          position: pos,
+          data: {
+            type: NodeType.OUTPUT,
+            label: labelOf(segIdx, seg),
+            format: 'markdown' as OutputFormat,
+            status: 'idle',
+            output: seg || '',
+          },
+        } as any;
+      });
+
+      // 给所有 finalDerived 重新写一遍 label + output（用户改过段数后要刷新 label 和段内容）
+      // 注意：OutputNode 的 output 字段在画布执行时会被覆盖，这里只是\"抓取生成\"时同步把当前段写进去，
+      // 让用户立刻能看到该 output 节点对应哪段内容（不需要再跑一遍画布）。
+      // 同时**重新布局位置** —— 用户可能切换了 outputLayout（右侧纵向 ↔ 底部横向），
+      // 复用的现存节点也应该按新布局重排，否则一切就乱。
+      const nodesAfterLabel = nodesAfterDelete.map((n: any) => {
+        const idx = finalDerived.indexOf(n.id);
+        if (idx < 0) return n;
+        const newLabel = labelOf(idx, segs[idx]);
+        const newOutput = segs[idx] || '';
+        const newPos = computePos(idx, next);
+        const labelEqual = n.data?.label === newLabel;
+        const outputEqual = n.data?.output === newOutput;
+        const posEqual = n.position?.x === newPos.x && n.position?.y === newPos.y;
+        if (labelEqual && outputEqual && posEqual) return n;
+        return {
+          ...n,
+          position: newPos,
+          data: { ...n.data, label: newLabel, output: newOutput },
+        };
+      });
+
+      // 边：每个 finalDerived[i] 应该有边 splitter#out__i -> output#in
+      const edgeIdOf = (oi: string, idx: number) => `e-split-${id}-${idx}-${oi}`;
+      // 先剔除\"指向 finalDerived 但 sourceHandle 不对\"的旧边（避免重复）
+      const filteredEdges = edgesAfterDelete.filter((e: any) => {
+        if (!finalDerived.includes(e.target)) return true;
+        if (e.source !== id) return true;
+        // 同 splitter → finalDerived，但 sourceHandle/target 错位的统统重建
+        return false;
+      });
+      // ⚠ 不传 targetHandle：OutputNode 的 target Handle 没有显式 id（OutputNode.tsx 里就是
+      //   `<Handle type=\"target\" position={Position.Left} />`），React Flow v12 对未指定 id
+      //   的 handle 用 null 当 key，传字符串 \"in\" 反而匹配不上 → 边创建后不渲染连线。
+      //   省略 targetHandle 让 RF 自动落在节点的默认 target handle 上。
+      const newEdges = finalDerived.map((oid, idx) => ({
+        id: edgeIdOf(oid, idx),
+        source: id,
+        sourceHandle: `out__${idx}`,
+        target: oid,
+      } as any));
+
+      // 更新 splitter 自己的 data
+      const finalNodes = [...nodesAfterLabel, ...createdOutputs].map((n: any) => {
+        if (n.id !== id) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            upstreamText: combined,
+            autoCommittedCount: next,
+            derivedOutputIds: finalDerived,
+          },
+        };
+      });
+
+      return {
+        nodes: finalNodes,
+        edges: [...filteredEdges, ...newEdges],
+      };
+    });
+  }, [id, updateNodeData, splitMode, delimiter, regex, data.autoOutputs, data.outputLayout, data.outputLabelMode, data.derivedOutputIds]);
 
   // 实际渲染的端子数：
   //   manual → 用户固定 N
@@ -252,11 +427,12 @@ function SplitterNode({ id, data, selected }: Props) {
     ? manualCount
     : (autoCommittedCount && autoCommittedCount > 0 ? autoCommittedCount : 1);
 
-  // 端子数变化 → 通知 React Flow 重新读取 handle DOM 位置。
-  // 不加这一步的话，刚增/减出来的 handle 会有"视觉位置 ≠ 真实连线锚点"的错位。
+  // 端子数 / 布局变化 → 通知 React Flow 重新读取 handle DOM 位置。
+  // 不加这一步的话，刚增/减出来的 handle 或 Position 切换（Right ↔ Bottom）会有
+  // "视觉位置 ≠ 真实连线锚点"的错位。
   useEffect(() => {
     updateNodeInternals(id);
-  }, [id, portCount, updateNodeInternals]);
+  }, [id, portCount, data.outputLayout, updateNodeInternals]);
 
   // auto 模式下：当前切出的段数和已生成的端子数不一致 → 提示用户点 ↻ 重新生成
   const autoNeedsRegen = portMode === 'auto'
@@ -275,15 +451,22 @@ function SplitterNode({ id, data, selected }: Props) {
       style={{ minWidth: 240 }}
     >
       <Handle type="target" position={Position.Left} id="in" />
+      {/*
+        v1.6.0-β14：source handle 位置随 outputLayout 切换
+        - right-vertical（默认）→ 右边竖排（Position.Right + top: %）
+        - bottom-horizontal     → 底部横排（Position.Bottom + left: %）
+        让派生的 OutputNode 与 splitter 的 source handle 在同一边，连线更顺。
+      */}
       {Array.from({ length: portCount }).map((_, idx) => {
-        const top = ((idx + 1) / (portCount + 1)) * 100;
+        const isBottom = (data.outputLayout || 'right-vertical') === 'bottom-horizontal';
+        const pct = ((idx + 1) / (portCount + 1)) * 100;
         return (
           <Handle
             key={`out-${idx}`}
             type="source"
-            position={Position.Right}
+            position={isBottom ? Position.Bottom : Position.Right}
             id={`out__${idx}`}
-            style={{ top: `${top}%` }}
+            style={isBottom ? { left: `${pct}%` } : { top: `${pct}%` }}
             title={`第 ${idx + 1} 段：${(segments[idx] || '').slice(0, 50)}${(segments[idx] || '').length > 50 ? '…' : ''}`}
           />
         );
@@ -425,6 +608,69 @@ function SplitterNode({ id, data, selected }: Props) {
               </button>
             )}
           </div>
+        </div>
+
+        {/* v1.6.0-β12 自动派生 OutputNode 配置行 */}
+        <div
+          className="nodrag"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+            marginTop: 6,
+            padding: '6px 8px',
+            background: 'rgba(99,102,241,0.06)',
+            border: '1px dashed rgba(99,102,241,0.35)',
+            borderRadius: 6,
+            fontSize: 11,
+            color: 'var(--text-secondary, #475569)',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+            title="开启后：每次「抓取并生成」按钮按下时自动派生 N 个 OutputNode 并连边。&#10;增量补齐 / 段数变少自动删多余。"
+          >
+            <input
+              type="checkbox"
+              checked={data.autoOutputs !== false}
+              onChange={(e) => updateNodeData(id, { autoOutputs: e.target.checked } as any)}
+              style={{ margin: 0 }}
+            />
+            <span>自动接输出节点</span>
+          </label>
+
+          {data.autoOutputs !== false && (
+            <>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }} title="输出节点的排列方向">
+                布局
+                <select
+                  value={data.outputLayout || 'right-vertical'}
+                  onChange={(e) => updateNodeData(id, { outputLayout: e.target.value } as any)}
+                  style={{ fontSize: 11, padding: '0 2px' }}
+                >
+                  <option value="right-vertical">右侧纵向</option>
+                  <option value="bottom-horizontal">底部横向</option>
+                </select>
+              </label>
+
+              <label
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                title="标题策略：&#10;· 编号 = 固定显示『输出 #1 / #2』整齐&#10;· 前 8 字 = 自动取该段开头 8 个字（适合每段开头有明确小标题时使用）"
+              >
+                标题
+                <select
+                  value={data.outputLabelMode || 'index'}
+                  onChange={(e) => updateNodeData(id, { outputLabelMode: e.target.value } as any)}
+                  style={{ fontSize: 11, padding: '0 2px' }}
+                >
+                  <option value="index">编号</option>
+                  <option value="preview">前 8 字</option>
+                </select>
+              </label>
+            </>
+          )}
         </div>
 
         {/* 预览 + 警告（外层 div 支持垂直拖拽 resize；高度持久化到 data.previewHeight） */}

@@ -35,10 +35,17 @@ import OutputNode from './nodes/OutputNode';
 import GroupNode from './nodes/GroupNode';
 import ConditionNode from './nodes/ConditionNode';
 import TextTransformNode from './nodes/TextTransformNode';
+
+// v1.6.0-β：泳道节点（独立文件 / 独立类型；想拿掉这一行 + Sidebar 一行 + nodeTypes 一行即可彻底卸载）
+// eslint-disable-next-line import/order
+import SwimlaneNode from './nodes/SwimlaneNode';
 import TimelineNode from './nodes/TimelineNode';
 import SplitterNode, { splitText as splitTextHelper } from './nodes/SplitterNode';
 import WebLinkNode from './nodes/WebLinkNode';
 import Sidebar from './Sidebar';
+// v1.6 切片 3：外部 AI 通过 REST/MCP 触发的运行任务，前端 worker 5s 拉一次跑画布
+// eslint-disable-next-line import/order
+import { startRunWorker, stopRunWorker, type RunHooks } from '../store/runWorker';
 import ApiKeyConfigModal from './ApiKeyConfigModal';
 import CanvasManager from './CanvasManager';
 import CanvasTabs from './CanvasTabs';
@@ -55,6 +62,8 @@ const nodeTypes = {
   timeline: TimelineNode,
   splitter: SplitterNode,
   webLink: WebLinkNode,
+  // v1.6.0-β SwimlaneNode（独立类型；想下线删此行 + 顶部 import 即可）
+  swimlane: SwimlaneNode,
 };
 
 let idCounter = 0;
@@ -77,13 +86,40 @@ function getDefaultData(type: string): any {
       label: '时间轴',
       durationSec: 15,
       fps: 30,
-      widthPx: 1100,
+      pixelsPerSecond: 60,    // v1.6 起改用 px/s 替代 widthPx；节点宽度自动 = duration*px/s
       heightPx: 130,
-      resizeMode: 'stretch',
+      resizeMode: 'compress', // v1.6：默认密度缩放（时长不变）；可切 'stretch' 等长
       timeMode: 'seconds',
       cuts: [],
       status: 'idle',
     };
+    case 'swimlane': {
+      // v1.6.0-β SwimlaneNode 默认数据：3 条泳道、天单位、7 天、起始日期 = 今天
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const startISO = today.toISOString();
+      const mkLane = (label: string, color: string) => ({
+        id: `lane-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        label,
+        height: 80,
+        color,
+      });
+      return {
+        type: 'swimlane',
+        label: '🏊 项目泳道',
+        unit: 'days',
+        durationValue: 7,
+        pixelsPerUnit: 90,
+        startISO,
+        lanes: [
+          mkLane('需求', '#0ea5e9'),
+          mkLane('设计', '#10b981'),
+          mkLane('开发', '#f59e0b'),
+        ],
+        rulerHeight: 36,
+        paddingLeft: 80,
+      } as any;
+    }
     case 'splitter': return {
       type: 'splitter',
       label: '分叉',
@@ -95,6 +131,11 @@ function getDefaultData(type: string): any {
       regex: '\\n\\n',
       upstreamText: '',
       status: 'idle',
+      // v1.6.0-β12 自动派生 OutputNode 的开关与配置
+      autoOutputs: true,                  // 默认开：「生成」时同步派生 N 个 OutputNode
+      outputLayout: 'right-vertical',     // 'right-vertical'（右侧纵向）| 'bottom-horizontal'（底部横向）
+      outputLabelMode: 'index',           // 'index'（编号 #1#2）| 'preview'（用首段前 8 字）
+      derivedOutputIds: [],               // 已派生 output 节点的 id 列表（增量补齐 / 删多余用）
     };
     default: return { type: 'textPrompt', label: '', text: '', promptNumber: 0, status: 'idle' };
   }
@@ -143,6 +184,29 @@ export default function Canvas() {
     const next = panButton === 'right' ? 'middle' : 'right';
     setPanButton(next);
     localStorage.setItem('plotmesh-pan-button', next);
+  };
+
+  /**
+   * v1.6.0-β15：触摸板模式（Mac 用户友好）
+   * ----------------------------------------------------------------
+   * 默认（鼠标模式）：滚轮 = 缩放，按住右键/中键拖 = 平移（Windows 习惯）
+   * 触摸板模式      ：双指滑 = 平移，双指捏合（或 Cmd + 滚轮）= 缩放（Mac 浏览器习惯）
+   *
+   * 启动时自动检测 macOS（platform 含 "Mac"）→ 默认开触摸板模式；
+   * 用户可在底部 toolbar 切换；选择持久化到 localStorage。
+   */
+  const [trackpadMode, setTrackpadMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('plotmesh-trackpad-mode');
+    if (saved === 'on') return true;
+    if (saved === 'off') return false;
+    // 未设置 → 自动检测 macOS
+    const ua = (navigator.userAgent || navigator.platform || '').toLowerCase();
+    return ua.includes('mac');
+  });
+  const toggleTrackpadMode = () => {
+    const next = !trackpadMode;
+    setTrackpadMode(next);
+    localStorage.setItem('plotmesh-trackpad-mode', next ? 'on' : 'off');
   };
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -328,6 +392,7 @@ export default function Canvas() {
       output: { w: 150, h: 110 },
       timeline: { w: 1100, h: 130 },
       splitter: { w: 240, h: 220 },
+      swimlane: { w: 800, h: 320 },
     };
     const getSize = (n: any): { w: number; h: number } => {
       // group 节点用自己的 width/height/style，避免被默认尺寸算错
@@ -520,15 +585,222 @@ export default function Canvas() {
     const position = rfInstance?.screenToFlowPosition
       ? rfInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
       : { x: event.clientX, y: event.clientY };
+
+    // v1.6.0-β：如果落点在某个 swimlane 节点的范围内，且新节点不是 swimlane 自己，
+    // 自动把新节点 parentId 挂到 swimlane 上 + 用相对坐标 + extent='parent'。
+    // —— 这是 SwimlaneNode 的核心交互。
     const newNode: any = {
       id: getNewId(type),
       type,
       position,
       data: getDefaultData(type),
     };
+    if (type !== 'swimlane') {
+      const swimlaneHit = (useNodeStore.getState().nodes as any[]).find((n: any) => {
+        if (n.type !== 'swimlane') return false;
+        // 顶层 width/height 是数字最稳；style.width 可能是 "722px" 字符串
+        const numW = (typeof n.width === 'number' ? n.width : parseFloat(String(n.style?.width || 0))) || 0;
+        const numH = (typeof n.height === 'number' ? n.height : parseFloat(String(n.style?.height || 0))) || 0;
+        if (!numW || !numH) return false;
+        return (
+          position.x >= n.position.x &&
+          position.x <= n.position.x + numW &&
+          position.y >= n.position.y &&
+          position.y <= n.position.y + numH
+        );
+      });
+      if (swimlaneHit) {
+        newNode.parentId = swimlaneHit.id;
+        // ⚠️ 不设 extent='parent' —— swimlane 是软驱动（方案 Z），允许子节点
+        // 拖出 swimlane 范围；handleNodeDragStop 会在拖完时基于中心点重算 parentId，
+        // 自动 detach 出去。如果加了 extent='parent'，节点会被强制限在父边界内，
+        // 永远拖不出去。
+        // 相对父级坐标
+        newNode.position = {
+          x: position.x - swimlaneHit.position.x,
+          y: position.y - swimlaneHit.position.y,
+        };
+        // v1.6.0-β2：给子节点加 'swimlane-child' className，触发 CSS 折叠样式
+        newNode.className = 'swimlane-child';
+      }
+    }
+
     storePushHistory();
     storeAddNode(newNode);
   };
+
+  /**
+   * v1.6.0-β3：双击 swimlane-child 节点 → 展开 / 折叠 toggle
+   * ----------------------------------------------------------------
+   * 折叠态下用户只能看到 header label，看不到 body（被 CSS hidden）。
+   * 双击节点（非 input/textarea/button 等可编辑控件区域）→ toggle expanded。
+   *   - 第 1 次双击：把 className 'swimlane-child' 替换成 'swimlane-child-expanded'，
+   *                 节点恢复完整态可编辑
+   *   - 第 2 次双击（在已展开节点上）：换回 'swimlane-child'，重新折叠
+   *
+   * 注意：原节点 header 上的"双击改 label"不受影响——折叠态下还是可以双击 header
+   *      改名（onClick 会冒泡到这里，但本 handler 检测了 input/textarea 跳过）。
+   */
+  const handleNodeDoubleClick = useCallback((e: any, node: any) => {
+    if (!node) return;
+    const cls = String(node.className || '');
+    const isChild = cls.includes('swimlane-child');
+    if (!isChild) return;
+    // 跳过：用户在 input/textarea/button/select 上双击，这是组件自己的编辑事件
+    const target = e?.target as HTMLElement;
+    if (target && /^(INPUT|TEXTAREA|BUTTON|SELECT)$/i.test(target.tagName)) return;
+
+    useNodeStore.setState((state) => ({
+      nodes: state.nodes.map((n: any) => {
+        if (n.id !== node.id) return n;
+        const list = (n.className || '').split(/\s+/).filter(Boolean);
+        const expanded = list.includes('swimlane-child-expanded');
+        const next = list.filter((c: string) => c !== 'swimlane-child' && c !== 'swimlane-child-expanded');
+        next.push(expanded ? 'swimlane-child' : 'swimlane-child-expanded');
+        return { ...n, className: next.join(' ') };
+      }),
+    }));
+  }, []);
+
+  /**
+   * v1.6.0-β3：节点拖完后，自动维护 SwimlaneNode 的 attach / detach
+   * ----------------------------------------------------------------
+   * 场景：
+   *   A) 节点之前没在任何 swimlane 内，拖完后落在某 swimlane 范围内 → attach
+   *   B) 节点之前在 swimlane A，拖完后落在 swimlane A 之外 → detach（恢复完整态）
+   *   C) 节点之前在 swimlane A，拖完后落在 swimlane B 范围内 → 切换 parentId
+   * 不处理：拖动 swimlane 自身。
+   *
+   * "范围内"判定：节点中心点是否在 swimlane 矩形内。
+   */
+  const handleNodeDragStop = useCallback((e: any, node: any) => {
+    if (!node) return;
+    if (node.type === 'swimlane') return;
+    const allNodes = useNodeStore.getState().nodes as any[];
+
+    // 用 store 拿最新 node 数据；callback 里的 node 副本可能 stale。
+    const currentNode = allNodes.find((n) => n.id === node.id);
+    if (!currentNode) return;
+
+    const w = (typeof currentNode.width === 'number' ? currentNode.width : (currentNode.measured?.width || 100)) || 100;
+    const h = (typeof currentNode.height === 'number' ? currentNode.height : (currentNode.measured?.height || 50)) || 50;
+
+    // ① 计算节点中心点（flow 坐标，绝对值）
+    // 优先用 RF 实例的 getNode().positionAbsolute —— 这是 RF 内部维护的、考虑了 parentId 的"绝对位置"，
+    // 任何时候都是最新的。优于读 store（可能 stale）和 callback 副本（v12 的 position 是相对父级，
+    // 没有父就是绝对，但 attach 切换瞬间不一致）。
+    let cx = 0, cy = 0;
+    const rfNode = rfInstance?.getNode?.(node.id);
+    if (rfNode?.positionAbsolute) {
+      cx = rfNode.positionAbsolute.x + w / 2;
+      cy = rfNode.positionAbsolute.y + h / 2;
+    } else if (rfInstance?.screenToFlowPosition && e?.clientX != null) {
+      // 二选：用鼠标位置反推（拖完时鼠标在哪儿就是哪儿）
+      const flow = rfInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      cx = flow.x;
+      cy = flow.y;
+    } else {
+      // 三兜：用 store 里 node 的位置（含 parentId 偏移）
+      let absX = currentNode.position.x;
+      let absY = currentNode.position.y;
+      if (currentNode.parentId) {
+        const parent = allNodes.find((n) => n.id === currentNode.parentId);
+        if (parent) { absX += parent.position.x; absY += parent.position.y; }
+      }
+      cx = absX + w / 2;
+      cy = absY + h / 2;
+    }
+
+    // 命中检测：找包含 (cx, cy) 的 swimlane
+    const swimlaneHit = allNodes.find((n: any) => {
+      if (n.type !== 'swimlane') return false;
+      const numW = (typeof n.width === 'number' ? n.width : parseFloat(String(n.style?.width || 0))) || 0;
+      const numH = (typeof n.height === 'number' ? n.height : parseFloat(String(n.style?.height || 0))) || 0;
+      if (!numW || !numH) return false;
+      return cx >= n.position.x && cx <= n.position.x + numW && cy >= n.position.y && cy <= n.position.y + numH;
+    });
+
+    const oldParentId = currentNode.parentId;
+    const newParentId = swimlaneHit?.id;
+    if (oldParentId === newParentId) return;
+
+    // ⚠️ 关键守卫（v1.6.0-β8）：本 handler 只负责 SwimlaneNode 的 attach/detach 维护。
+    // 如果节点的旧父级是 GroupNode（或者其它非 swimlane 父），不要去碰它的 parentId！
+    // 因为 GroupNode 用 extent='parent' 的强约束语义（节点不允许跑出 group 边界），
+    // 我们这里如果误判为\"离开了 swimlane\"就 detach，会破坏 Group 子节点的归属。
+    // 正确语义：只处理\"旧父级是 swimlane\"或\"新父级是 swimlane\"的情况。
+    const oldParentNode = oldParentId ? allNodes.find((n) => n.id === oldParentId) : null;
+    const oldParentIsSwimlane = oldParentNode?.type === 'swimlane';
+    const newParentIsSwimlane = !!swimlaneHit;
+    if (!oldParentIsSwimlane && !newParentIsSwimlane) return;
+    // 如果旧父级是 Group 而我们把它换到 swimlane 也不对（语义上是\"从 group 分离\"，
+    // 这种破坏性操作让用户先用 Group 自己的 ungroup 流程处理）
+    if (oldParentNode && oldParentNode.type !== 'swimlane' && newParentIsSwimlane) return;
+
+    // ② attach 时使用"折叠后预估尺寸"算左上角，让折叠后的小卡片中心仍然落在鼠标位置
+    //    （否则按原节点 height ~150 算的左上角会让折叠后的小卡片视觉上偏上 60px）
+    //    .swimlane-child 的样式：max-width: 140 / body 隐藏 / 只剩 header ≈ 28px
+    const COLLAPSED_W = 130;
+    const COLLAPSED_H = 28;
+    let finalAbsX: number, finalAbsY: number;
+    if (newParentId) {
+      // 进入泳道（即将变折叠态）→ 按折叠尺寸对中
+      finalAbsX = cx - COLLAPSED_W / 2;
+      finalAbsY = cy - COLLAPSED_H / 2;
+    } else {
+      // 出泳道（恢复完整态）→ 按完整尺寸对中
+      finalAbsX = cx - w / 2;
+      finalAbsY = cy - h / 2;
+    }
+
+    storePushHistory();
+    useNodeStore.setState((state) => {
+      // 第一步：map 改 parentId / className / position
+      const mapped = state.nodes.map((n: any) => {
+        if (n.id !== node.id) return n;
+        if (newParentId) {
+          // attach：position 改成相对新 swimlane 的偏移
+          const sw = swimlaneHit;
+          const cls = ((n.className || '').split(/\s+/).filter(Boolean).filter((c: string) => c !== 'swimlane-child' && c !== 'swimlane-child-expanded'));
+          cls.push('swimlane-child');
+          return {
+            ...n,
+            parentId: newParentId,
+            className: cls.join(' '),
+            position: { x: finalAbsX - sw.position.x, y: finalAbsY - sw.position.y },
+            data: n.data?.swimlaneExpanded ? { ...n.data, swimlaneExpanded: false } : n.data,
+          };
+        }
+        // detach：position 改回绝对坐标
+        const cls = ((n.className || '').split(/\s+/).filter(Boolean).filter((c: string) => c !== 'swimlane-child' && c !== 'swimlane-child-expanded'));
+        const newNodeRest: any = {
+          ...n,
+          position: { x: finalAbsX, y: finalAbsY },
+          className: cls.join(' ') || undefined,
+        };
+        delete newNodeRest.parentId;
+        delete newNodeRest.extent;
+        return newNodeRest;
+      });
+
+      // 第二步：如果是 attach，且子节点在数组中排在 swimlane 之前，要把它移到 swimlane 之后。
+      // React Flow v12 要求 parent 节点必须在 children 之前，否则父节点位置 / extent 计算
+      // 错乱 —— 表现为子节点 attach 后视觉位置飞到画布远处。
+      // 触发场景：用户先建普通节点、再建 swimlane，然后把这个老节点拖进 swimlane。
+      if (newParentId) {
+        const targetIdx = mapped.findIndex((n: any) => n.id === node.id);
+        const parentIdx = mapped.findIndex((n: any) => n.id === newParentId);
+        if (targetIdx >= 0 && parentIdx >= 0 && targetIdx < parentIdx) {
+          const [child] = mapped.splice(targetIdx, 1);
+          // 重新找 parent 索引（splice 之后位置变了）
+          const newParentIdx = mapped.findIndex((n: any) => n.id === newParentId);
+          mapped.splice(newParentIdx + 1, 0, child);
+        }
+      }
+
+      return { nodes: mapped };
+    });
+  }, [rfInstance]);
 
   /**
    * 打开"存常用功能"对话框。会尝试从当前画布上"被选中的节点"推断出一个默认包名：
@@ -1393,6 +1665,60 @@ export default function Canvas() {
     return n;
   }, [pasteFromClipboard]);
 
+  // v1.6 切片 3：启动外部触发任务的 polling worker
+  // ----------------------------------------------------------------
+  // worker 5s 一次扫 server 的 pendingRuns 队列；发现要跑的画布：
+  //   - 如果是当前活动画布 → 直接 executeFlow
+  //   - 如果是别的画布 → switchActiveCanvas 切过去（让用户能看着跑）→ executeFlow
+  // 跑完通过 hooks 把日志/结果回写给 server，AI 客户端就能 GET runs/:jobId 拿到结果。
+  //
+  // 闭包陷阱：executeFlow 闭包捕获了 setIsRunning/setRunLog 等当前实例 state；为了让
+  // worker 内部稳定取到最新 executeFlow，我们用 ref 转发。
+  const executeFlowRef = useRef<(subset?: Set<string>) => Promise<void>>();
+  executeFlowRef.current = executeFlow;
+
+  useEffect(() => {
+    const runner = async (canvasId: string, _jobId: string, hooks: RunHooks) => {
+      const store = useNodeStore.getState();
+      hooks.log(`[plotmesh-runner] 开始处理任务 → 目标画布 ${canvasId}`);
+      try {
+        // 切到目标画布（如果不是当前活动画布）
+        if (store.activeCanvasId !== canvasId) {
+          hooks.log(`[plotmesh-runner] 切换活动画布 ${store.activeCanvasId} → ${canvasId}`);
+          await store.switchActiveCanvas(canvasId);
+          // 等一会儿让 React 渲染
+          await new Promise((r) => setTimeout(r, 600));
+        }
+        // 跑
+        const fn = executeFlowRef.current;
+        if (!fn) {
+          hooks.fail('executeFlow 不可用（前端未挂载）');
+          return;
+        }
+        await fn();
+        // 跑完采集所有 OutputNode 的结果
+        const after = useNodeStore.getState();
+        const results: Record<string, { output?: string; error?: string }> = {};
+        for (const n of after.nodes as any[]) {
+          if (n.type === 'output' && typeof n.data?.output === 'string') {
+            results[n.id] = { output: n.data.output };
+          }
+          if (n.data?.status === 'error' && n.data?.error) {
+            results[n.id] = { ...(results[n.id] || {}), error: String(n.data.error) };
+          }
+        }
+        hooks.updateResults(results);
+        hooks.log(`[plotmesh-runner] 完成，采集 ${Object.keys(results).length} 个节点结果`);
+        hooks.succeed();
+      } catch (e: any) {
+        hooks.fail(e?.message || String(e));
+      }
+    };
+    const getActive = () => useNodeStore.getState().activeCanvasId || null;
+    startRunWorker(runner, getActive);
+    return () => stopRunWorker();
+  }, []);
+
   // 键盘快捷键
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1544,6 +1870,8 @@ export default function Canvas() {
           onConnect={handleConnect}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
+          onNodeDragStop={handleNodeDragStop}
+          onNodeDoubleClick={handleNodeDoubleClick}
           onInit={setRfInstance}
           nodeTypes={nodeTypes}
           defaultViewport={{ x: 0, y: 0, zoom: 1.5 }}
@@ -1552,6 +1880,18 @@ export default function Canvas() {
           deleteKeyCode={null}  /* 我们自己处理 Delete 键 */
           selectionOnDrag={true}
           panOnDrag={panButton === 'middle' ? [1] : [2]}  /* middle=中键(1) / right=右键(2) */
+          /*
+            v1.6.0-β15 触摸板模式：
+            - 开启 panOnScroll：双指滑动 = 平移（Mac 触摸板的标准网页交互）
+            - panOnScrollSpeed=0.5 让平移不那么飘
+            - zoomOnScroll=false 把"滚轮即缩放"关掉（避免双指滑动误触发缩放）
+            - zoomOnPinch=true 双指捏合或 Cmd+滚轮 = 缩放（仍然可用）
+            鼠标模式保持原样：滚轮直接缩放（zoomOnScroll 默认 true）。
+          */
+          panOnScroll={trackpadMode}
+          panOnScrollSpeed={0.5}
+          zoomOnScroll={!trackpadMode}
+          zoomOnPinch={true}
           selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
           selectNodesOnDrag={true}
@@ -1614,6 +1954,7 @@ export default function Canvas() {
             { type: 'output', label: '📤 输出' },
             { type: 'splitter', label: '🔀 分叉' },
             { type: 'timeline', label: '⏱ 时间轴' },
+            { type: 'swimlane', label: '🏊 项目泳道' },
           ];
           const closeMenu = () => setCtxMenu(null);
           // 防止菜单超出视口右/下边界
@@ -1764,10 +2105,12 @@ export default function Canvas() {
 
         {/* 工具栏 */}
 
-        {/* v1.5.x：底部主工具栏 */}
-        <div className="canvas-toolbar bottom">
+        {/* v1.5.x：底部主工具栏（v1.6.0-β10：日志抽屉打开时加 with-log 类自动上移让位） */}
+        <div className={`canvas-toolbar bottom${showLog ? ' with-log' : ''}`}>
           <span className="canvas-toolbar-hint" title="画布操作提示">
-            💡 左键点击=单选 | Cmd+点击=多选 | 空白处拖动=框选 | 右键拖动=平移 | Cmd+Z=撤销
+            {trackpadMode
+              ? '💡 双指滑=平移 | 捏合/Cmd+滚轮=缩放 | 左键单选 | Cmd+点击=多选 | Cmd+Z=撤销'
+              : '💡 左键点击=单选 | Cmd+点击=多选 | 空白处拖动=框选 | 右键拖动=平移 | Cmd+Z=撤销'}
           </span>
           <button className="toolbar-btn primary" onClick={() => executeFlow()} disabled={isRunning}>
             {isRunning ? '⏳ 运行中...' : '▶️ 运行'}
@@ -1794,6 +2137,17 @@ export default function Canvas() {
             title={`画布平移：当前${panButton === 'right' ? '右键' : '中键'}拖动；点击切换为${panButton === 'right' ? '中键' : '右键'}`}
           >
             {panButton === 'right' ? '🖱 平移：右键' : '🖱 平移：中键'}
+          </button>
+          <button
+            className="toolbar-btn"
+            onClick={toggleTrackpadMode}
+            title={
+              trackpadMode
+                ? '触摸板模式：双指滑动=平移，双指捏合或 Cmd+滚轮=缩放（Mac 网页习惯）。\n点击切换回鼠标模式（滚轮直接缩放）。'
+                : '鼠标模式：滚轮=缩放，右键/中键拖动=平移（Windows 习惯）。\n点击切换到触摸板模式（Mac 用户更顺手）。'
+            }
+          >
+            {trackpadMode ? '🖲️ 触摸板' : '🖱️ 鼠标'}
           </button>
           <button
             className="toolbar-btn"
@@ -1862,11 +2216,32 @@ export default function Canvas() {
 
         {/* 提示已合并进底部 toolbar 左侧 */}
 
-        {/* 日志面板 */}
-        {showLog && runLog.length > 0 && (
-          <div className="log-panel">
-            <div className="log-header"><span>执行日志</span><button onClick={() => setShowLog(false)}>✕</button></div>
-            <div className="log-content">{runLog.map((l, i) => <div key={i} className="log-line">{l}</div>)}</div>
+        {/* v1.6.0-β10：日志改成底部抽屉（占满整条画布底）—— 显示时底部 toolbar 自动上移让位 */}
+        {showLog && (
+          <div className={`log-drawer ${runLog.length === 0 ? 'empty' : ''}`}>
+            <div className="log-header">
+              <span>📋 执行日志{runLog.length ? `（${runLog.length} 行）` : ''}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {runLog.length > 0 && (
+                  <button
+                    className="log-action"
+                    onClick={() => setRunLog([])}
+                    title="清空日志"
+                  >🗑 清空</button>
+                )}
+                <button
+                  className="log-action"
+                  onClick={() => setShowLog(false)}
+                  title="关闭抽屉"
+                >✕</button>
+              </div>
+            </div>
+            <div className="log-content">
+              {runLog.length === 0
+                ? <div className="log-empty">暂无日志，运行画布后这里会显示执行过程。</div>
+                : runLog.map((l, i) => <div key={i} className="log-line">{l}</div>)
+              }
+            </div>
           </div>
         )}
       </div>

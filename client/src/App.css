@@ -1555,3 +1555,161 @@ body {
 /* 灰色项（不可点击的 Group / Ungroup 提示）在 dark 下行内用 #94a3b8，
    写在 dark 卡片上其实够清楚，这里不动；保留行内 muted 即可 */
 
+/* ============================================================
+ * v1.6.0-β2 SwimlaneNode 子节点折叠态
+ * ------------------------------------------------------------
+ * 当节点 parentId 指向 swimlane 时，给节点加 className 'swimlane-child'。
+ * 这里用 CSS 把节点压缩成"小色块徽章"形态：
+ *   - 宽度从 ≤170px 限制到 110px（更紧凑，适合泳道里挤多个）
+ *   - 隐藏 .node-body（双击 .node-header 仍可改 label）
+ *   - 留下 .node-header（各节点 type 已有自己的渐变色，自然区分）
+ * 取消折叠：删除节点的 parentId（拖出 swimlane 范围；现在还没做拖出语义，
+ * 后续 v1.6.0-β3 加 onNodeDragStop 自动重算 parentId）。
+ * ============================================================ */
+.react-flow__node.swimlane-child > .node-card {
+  min-width: 110px !important;
+  max-width: 140px !important;
+  width: auto !important;
+  font-size: 10px;
+  /* 让小卡片在泳道里贴边对齐 */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+.react-flow__node.swimlane-child .node-body {
+  display: none !important;
+}
+.react-flow__node.swimlane-child .node-header {
+  padding: 4px 6px !important;
+  font-size: 11px !important;
+  /* header 圆角恢复（被 body 隐藏后变成 card 全部） */
+  border-radius: 6px !important;
+}
+/* 折叠态下，node-card 自身边框 / 圆角可视化收一收 */
+.react-flow__node.swimlane-child > .node-card {
+  border-radius: 6px !important;
+  overflow: visible;
+}
+/* 文件上传 / WebLink 等节点没有 .node-header（直接用 div），兜底：
+   把第一个直接子 div 视作 header，做最小压缩。 */
+.react-flow__node.swimlane-child > .node-card > div:first-child {
+  font-size: 11px !important;
+}
+
+/* v1.6.0-β3：展开态（双击折叠节点切换）
+   - 完全恢复完整态尺寸 / body 显示（不命中任何 .swimlane-child 选择器即可）
+   - 加蓝色 dashed 边框 + 底部提示徽章，让用户知道这是临时展开
+   - 再次双击节点空白处会折叠回去（Canvas 的 onNodeDoubleClick 处理 className toggle） */
+.react-flow__node.swimlane-child-expanded > .node-card {
+  outline: 2px dashed #0ea5e9 !important;
+  outline-offset: 2px;
+  z-index: 10;
+}
+.react-flow__node.swimlane-child-expanded > .node-card::after {
+  content: '展开中（双击空白处折叠）';
+  position: absolute;
+  bottom: -18px;
+  left: 0;
+  font-size: 10px;
+  color: #0ea5e9;
+  background: var(--bg-card, #fff);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ============================================================
+ * v1.6.0-β10 执行日志底部抽屉
+ * ------------------------------------------------------------
+ * 从画布底部弹出，占满整条画布宽度，固定高度 200px。
+ * 日志显示时，底部 toolbar 加 .with-log 类自动 bottom 上移让出空间，
+ * 不再重叠遮挡 —— 类似 PPT 底部备注/输入框的形态。
+ * ============================================================ */
+.log-drawer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 200px;
+  background: var(--bg-card, #fff);
+  border-top: 1px solid var(--border-color, #e2e8f0);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  z-index: 25;
+  /* 从下往上滑入 */
+  animation: log-drawer-slide 0.18s ease-out;
+}
+@keyframes log-drawer-slide {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.log-drawer .log-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--bg-page, #f8fafc);
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+  user-select: none;
+}
+.log-drawer .log-action {
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: var(--bg-card, #fff);
+  color: var(--text-secondary, #64748b);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.log-drawer .log-action:hover {
+  background: var(--bg-page, #f1f5f9);
+  color: var(--text-primary, #0f172a);
+}
+.log-drawer .log-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-primary, #1e293b);
+  background: var(--bg-card, #fff);
+}
+.log-drawer .log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 1px 0;
+}
+.log-drawer .log-line:nth-child(odd) {
+  background: rgba(0, 0, 0, 0.02);
+}
+.log-drawer .log-empty {
+  color: var(--text-muted, #94a3b8);
+  font-style: italic;
+  padding: 8px;
+  text-align: center;
+}
+
+/* dark 主题适配 */
+[data-theme='dark'] .log-drawer {
+  background: var(--bg-card);
+  border-top-color: var(--border-color);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .log-drawer .log-line:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* 底部 toolbar 在日志抽屉打开时上移 200px + 一点呼吸 */
+.canvas-toolbar.bottom.with-log {
+  bottom: calc(208px + env(safe-area-inset-bottom, 0px));
+  transition: bottom 0.18s ease-out;
+}
+.canvas-toolbar.bottom {
+  transition: bottom 0.18s ease-out;
+}
