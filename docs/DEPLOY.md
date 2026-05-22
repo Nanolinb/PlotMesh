@@ -15,6 +15,37 @@ PlotMesh 从 v1.6.2 起提供 Docker 部署支持，方便给身边团队尝试�
 
 ## 群晖 Container Manager 部署（推荐）
 
+### 方案 A：用一键脚本（v1.6.4+ 推荐）
+
+本仓库提供 `scripts/deploy-to-nas.sh` 脚本，能在你的 Mac 上一键 SSH 部署到 NAS，包括首次 git clone、后续更新、健康检查、token 打印。
+
+**首次配置：**
+```bash
+cp scripts/deploy.env.example scripts/deploy.env
+# 编辑 scripts/deploy.env，填入 NAS_HOST / NAS_USER / NAS_DEPLOY_PATH
+nano scripts/deploy.env
+
+# 推荐先配 ssh-key 免密登录
+ssh-copy-id -p 22 admin@<NAS-IP>
+```
+
+**部署：**
+```bash
+bash scripts/deploy-to-nas.sh           # 部署（首次 git clone, 之后 git pull + 重建）
+bash scripts/deploy-to-nas.sh status    # 看运行状态 + token
+bash scripts/deploy-to-nas.sh logs      # 实时日志
+bash scripts/deploy-to-nas.sh restart   # 重启容器
+bash scripts/deploy-to-nas.sh down      # 停止
+bash scripts/deploy-to-nas.sh ssh       # 进 NAS shell
+bash scripts/deploy-to-nas.sh help      # 看所有命令
+```
+
+**升级到新版本**：你 push 新版后，本地跑一次 `bash scripts/deploy-to-nas.sh deploy`，自动 `git pull` + `docker compose up -d --build`。
+
+---
+
+### 方案 B：手动步骤
+
 ### 1. 把项目上传到 NAS
 
 把整个项目目录上传到 NAS，例如：
