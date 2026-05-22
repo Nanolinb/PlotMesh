@@ -1,0 +1,51 @@
+# Dockerfile.server · PlotMesh server (Express + Node 22)
+# ----------------------------------------------------------------
+# 多阶段构建：
+#   1. deps 阶段：装 npm 包（缓存友好）
+#   2. runtime：copy 源码 + 装好的 node_modules
+#
+# 数据卷：
+#   /data → ~/.plotmesh 等价物（store.json / api-token / server-config.json / 日志）
+#   /uploads → server/uploads（fileUpload 节点上传的文件）
+#
+# 环境变量：
+#   PORT             默认 3001
+#   PLOTMESH_DATA_DIR=/data            （强制指向卷）
+#   PLOTMESH_API_TOKEN                 （可选，建议写文件让 token 持久化更灵活）
+#   PLOTMESH_REMOTE_ACCESS=true        （docker 默认强制远端访问 + token）
+
+FROM node:22-alpine AS deps
+
+WORKDIR /app
+COPY server/package.json server/package-lock.json* ./
+# 没 lock 文件就退化为 install
+RUN npm install --omit=dev --no-audit --no-fund
+
+FROM node:22-alpine AS runtime
+
+ENV NODE_ENV=production \
+    PORT=3001 \
+    PLOTMESH_DATA_DIR=/data \
+    PLOTMESH_REMOTE_ACCESS=true
+
+WORKDIR /app
+
+# 拷贝依赖与源码
+COPY --from=deps /app/node_modules ./node_modules
+COPY server/package.json ./
+COPY server/src ./src
+COPY server/mcp ./mcp
+
+# 准备数据目录
+RUN mkdir -p /data /app/uploads && chown -R node:node /data /app
+VOLUME ["/data", "/app/uploads"]
+
+USER node
+
+EXPOSE 3001
+
+# 健康检查（容器编排会用）
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3001/health || exit 1
+
+CMD ["node", "src/index.js"]

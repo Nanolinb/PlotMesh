@@ -1,0 +1,68 @@
+# docker-compose.yml · PlotMesh 群晖/Linux 部署（v1.6.2）
+# ----------------------------------------------------------------
+# 一键启动 client + server 两个容器，带数据卷持久化。
+#
+# 使用：
+#   docker compose up -d            # 后台启动
+#   docker compose logs -f          # 看日志
+#   docker compose down             # 停止
+#   docker compose pull && up -d    # 拉新版本（如果你 push 到了 registry）
+#
+# 群晖 Container Manager 推荐做法：
+#   1. 把整个项目目录上传到 NAS（如 /volume1/docker/plotmesh）
+#   2. SSH 进 NAS：cd /volume1/docker/plotmesh && docker compose up -d
+#   3. 浏览器访问 http://<NAS-IP>:8080/
+#   4. 第一次进入 → 打开 sidebar API 配置 → 外部 AI 接入 → token 自动生成
+#
+# ⚠️ 已知限制（v1.6.2）：前端代码里硬编码了 http://localhost:3001 调用
+#   server。Docker 部署需要前端改成相对路径（VITE_API_BASE）+ 同源 nginx 反代。
+#   这里 docker-compose 已经配好 nginx 反代，但**前端代码改造尚未完成**。
+#   要等 v1.6.3 才能直接通过 docker 部署给团队用。
+#   现阶段你想测试容器化，可以先把 server 容器跑起来，client 还用 npm run dev。
+
+version: "3.9"
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: plotmesh-server:1.6.2
+    container_name: plotmesh-server
+    restart: unless-stopped
+    environment:
+      # 数据目录（持久化卷）
+      PLOTMESH_DATA_DIR: /data
+      # docker 部署默认强制远端访问（监听 0.0.0.0 + 强制 token）
+      PLOTMESH_REMOTE_ACCESS: "true"
+      # 大模型 keys（如果要在容器里跑 LLM 节点，填这里或挂 .env）
+      # HUNYUAN_API_KEY: ""
+      # DEEPSEEK_API_KEY: ""
+      # GLM_API_KEY: ""
+      # OPENAI_API_KEY: ""
+      # ANTHROPIC_API_KEY: ""
+    volumes:
+      - ./data:/data                  # 画布 store / token / config
+      - ./uploads:/app/uploads        # 文件上传（fileUpload 节点）
+    ports:
+      - "3001:3001"                   # 远端访问开启时，外部直连也走这个
+    networks:
+      - plotmesh
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    image: plotmesh-client:1.6.2
+    container_name: plotmesh-client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "8080:80"                     # 团队访问 http://<NAS-IP>:8080/
+    networks:
+      - plotmesh
+
+networks:
+  plotmesh:
+    driver: bridge

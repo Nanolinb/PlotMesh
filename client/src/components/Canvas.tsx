@@ -176,38 +176,76 @@ export default function Canvas() {
   const [showConflict, setShowConflict] = useState<boolean>(false);
   const [conflictName, setConflictName] = useState<string>('');
   const [conflictSelectedIds, setConflictSelectedIds] = useState<string[]>([]);
-  const [panButton, setPanButton] = useState<'middle' | 'right'>(() => {
-    const saved = localStorage.getItem('plotmesh-pan-button');
-    return saved === 'middle' ? 'middle' : 'right';
-  });
-  const togglePanButton = () => {
-    const next = panButton === 'right' ? 'middle' : 'right';
-    setPanButton(next);
-    localStorage.setItem('plotmesh-pan-button', next);
-  };
-
   /**
-   * v1.6.0-β15：触摸板模式（Mac 用户友好）
+   * v1.6.2 输入模式（二选一：mouse / trackpad）
    * ----------------------------------------------------------------
-   * 默认（鼠标模式）：滚轮 = 缩放，按住右键/中键拖 = 平移（Windows 习惯）
-   * 触摸板模式      ：双指滑 = 平移，双指捏合（或 Cmd + 滚轮）= 缩放（Mac 浏览器习惯）
+   * 'mouse'    Windows/Linux 鼠标用户：滚轮=缩放，中键拖=平移，Space+左键拖=平移，
+   *            右键留给菜单
+   * 'trackpad' Mac 触摸板用户：双指滑=平移，双指捏合=缩放，左键=框选，
+   *            Space+左键拖=平移，右键留给菜单
    *
-   * 启动时自动检测 macOS（platform 含 "Mac"）→ 默认开触摸板模式；
-   * 用户可在底部 toolbar 切换；选择持久化到 localStorage。
+   * 首次使用时按 platform 设默认值（Mac → trackpad，其他 → mouse），用户可手动切。
+   * 持久化 key：plotmesh-input-mode（兼容老 key plotmesh-trackpad-mode）
+   *
+   * 设计权衡：取消 v1.6.2-α 的 'auto' 模式 —— 检测 platform 不可靠（外接鼠标
+   * 的 Mac 用户也会被判 trackpad），且"自动"的魔术行为反而让用户困惑。
    */
-  const [trackpadMode, setTrackpadMode] = useState<boolean>(() => {
-    const saved = localStorage.getItem('plotmesh-trackpad-mode');
-    if (saved === 'on') return true;
-    if (saved === 'off') return false;
-    // 未设置 → 自动检测 macOS
+  type InputMode = 'mouse' | 'trackpad';
+  const detectDefault = (): InputMode => {
     const ua = (navigator.userAgent || navigator.platform || '').toLowerCase();
-    return ua.includes('mac');
-  });
-  const toggleTrackpadMode = () => {
-    const next = !trackpadMode;
-    setTrackpadMode(next);
-    localStorage.setItem('plotmesh-trackpad-mode', next ? 'on' : 'off');
+    return ua.includes('mac') ? 'trackpad' : 'mouse';
   };
+  const [inputMode, setInputMode] = useState<InputMode>(() => {
+    const saved = localStorage.getItem('plotmesh-input-mode');
+    if (saved === 'mouse' || saved === 'trackpad') return saved;
+    // 兼容老 key
+    const old = localStorage.getItem('plotmesh-trackpad-mode');
+    if (old === 'on') return 'trackpad';
+    if (old === 'off') return 'mouse';
+    return detectDefault();
+  });
+  const cycleInputMode = () => {
+    const next: InputMode = inputMode === 'mouse' ? 'trackpad' : 'mouse';
+    setInputMode(next);
+    localStorage.setItem('plotmesh-input-mode', next);
+  };
+  // 派生：方便 props 直接读
+  const trackpadMode = inputMode === 'trackpad';
+
+  // v1.6.2：按住空格 = 平移模式（Figma 风格）
+  // 任意输入模式下都生效：spaceHeld 时把左键也变成"拖动平移"，光标变 grab
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null): boolean => {
+      const node = el as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (node.isContentEditable) return true;
+      return false;
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      if (isEditable(e.target)) return; // 在输入框内不抢
+      // 防止页面滚动
+      e.preventDefault();
+      setSpaceHeld(true);
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      setSpaceHeld(false);
+    };
+    // 失去焦点时强制释放（避免按着空格切走再回来卡住）
+    const onBlur = () => setSpaceHeld(false);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [rfInstance, setRfInstance] = useState<any>(null);
@@ -501,6 +539,86 @@ export default function Canvas() {
     }
     return undefined;
   }, []);
+
+  /**
+   * v1.6.2 把选中的"自由节点"加入到指定 group
+   * --------------------------------------------------------
+   * 调用条件（C+A 策略，由右键菜单守卫）：
+   *   - 必须有恰好 1 个目标 group（targetGroupId）
+   *   - 选中节点里至少有 1 个"自由节点"（无 parentId 的节点）
+   *
+   * 行为：
+   *   - 自由节点变成 targetGroup 的 children（加 parentId + extent='parent'）
+   *   - 坐标系切换：abs → rel = abs - groupPos
+   *   - 自由节点里如果含 group，整组（含其子节点）一并嵌入（嵌套 group）
+   *   - 已经是某个 group 子节点的、目标 group 自己、目标 group 的现有子节点，都跳过
+   *   - 数组顺序：父在子前（splice 重排）
+   *
+   * @returns 实际加入的"顶层自由节点"数量（不含被一起带入的孙节点）
+   */
+  const attachFreeToGroup = useCallback((groupId: string): number => {
+    const all = useNodeStore.getState().nodes as any[];
+    const group = all.find((n: any) => n.id === groupId && n.type === 'group');
+    if (!group) return 0;
+    const gx = group.position?.x || 0;
+    const gy = group.position?.y || 0;
+
+    // 收集"待加入"的自由节点（id）：选中 + 无 parentId + 不是目标 group 自己
+    const directIds = new Set<string>();
+    all.forEach((n: any) => {
+      if (n.selected && !n.parentId && n.id !== groupId) {
+        directIds.add(n.id);
+      }
+    });
+    if (directIds.size === 0) return 0;
+
+    // 计算"被带入的子孙节点"：被加入的 group 的 children 也要把 parentId 改对（保持嵌套关系）
+    // —— 实际上不需要修改 children 的 parentId（仍指向其原 group），只需要原 group 自己变成
+    //   targetGroup 的子节点（嵌套语义生效）。React Flow 会按嵌套坐标系递归渲染。
+
+    storePushHistory();
+    const newNodes = all.map((n: any) => {
+      if (directIds.has(n.id)) {
+        return {
+          ...n,
+          parentId: groupId,
+          extent: 'parent' as const,
+          position: {
+            x: (n.position?.x || 0) - gx,
+            y: (n.position?.y || 0) - gy,
+          },
+          selected: false,
+        };
+      }
+      return n;
+    });
+
+    // 数组顺序：父必须在子之前。简单做法：把目标 group 移到所有 directIds 之前。
+    // 因为 group 在画布上一般已经存在很久，updateExisting 后排序：把所有"目标 group 之后"
+    // 但 id 在 directIds 里的节点重新插到 group 之后即可。
+    const out: any[] = [];
+    const targetIdx = newNodes.findIndex((n: any) => n.id === groupId);
+    if (targetIdx >= 0) {
+      newNodes.forEach((n: any, idx: number) => {
+        if (directIds.has(n.id) && idx < targetIdx) {
+          // 这个 child 在 group 前，需要后移；先跳过
+          return;
+        }
+        out.push(n);
+        if (n.id === groupId) {
+          // group 后面紧跟所有"原本在 group 前的 child"
+          newNodes.forEach((m: any, j: number) => {
+            if (j < targetIdx && directIds.has(m.id)) out.push(m);
+          });
+        }
+      });
+    } else {
+      out.push(...newNodes);
+    }
+
+    useNodeStore.setState({ nodes: out });
+    return directIds.size;
+  }, [storePushHistory]);
 
   // 解散一个 group：把它的子节点解放出来（恢复绝对坐标），删掉 group 本身
   const ungroup = useCallback((groupId: string) => {
@@ -1538,6 +1656,23 @@ export default function Canvas() {
       .map((e: any) => JSON.parse(JSON.stringify(e)));
 
     clipboardRef.current = { nodes: cloned, edges: clonedEdges, pasteCount: 0 };
+
+    // v1.6.2：同步到系统剪贴板，让跨画布 / 跨浏览器粘贴成为可能
+    // 用一个特殊 marker 让粘贴端识别 PlotMesh 数据，避免误把普通文本当节点贴
+    try {
+      const payload = {
+        __plotmeshClipboard: true,
+        version: 1,
+        nodes: cloned,
+        edges: clonedEdges,
+      };
+      const text = JSON.stringify(payload);
+      // 不阻塞，写入失败也不影响内部 clipboard
+      navigator.clipboard?.writeText(text).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+
     return cloned.length;
   }, []);
 
@@ -1546,7 +1681,6 @@ export default function Canvas() {
   const pasteFromClipboard = useCallback((opts?: { anchor?: { x: number; y: number } }): number => {
     const clip = clipboardRef.current;
     if (!clip || !clip.nodes.length) return 0;
-
     storePushHistory();
     clip.pasteCount += 1;
     // 默认每次粘贴向右下偏移 40px * 第几次粘贴
@@ -1665,6 +1799,40 @@ export default function Canvas() {
     return n;
   }, [pasteFromClipboard]);
 
+  /**
+   * v1.6.2 跨画布粘贴包装：
+   * - 先尝试读系统剪贴板（navigator.clipboard.readText）
+   * - 如果是 PlotMesh JSON（含 __plotmeshClipboard:true），把它写到 clipboardRef，
+   *   再走原 pasteFromClipboard
+   * - 否则 fallback 到 pasteFromClipboard 直接读 clipboardRef
+   *
+   * 用 anchor 控制粘贴位置（屏幕坐标传进来已经是 flow 坐标）
+   */
+  const pasteFromAnywhere = useCallback(async (opts?: { anchor?: { x: number; y: number } }): Promise<number> => {
+    try {
+      const text = await navigator.clipboard?.readText();
+      if (text) {
+        try {
+          const data = JSON.parse(text);
+          if (data && data.__plotmeshClipboard && Array.isArray(data.nodes) && Array.isArray(data.edges)) {
+            // 写入 ref 后调用同步版 paste（保持原有 idMap / position 逻辑）
+            // 注意：跨画布粘贴每次都按"系统剪贴板内容"算，pasteCount 重置为 0（避免和本地连按粘贴叠加偏移）
+            clipboardRef.current = {
+              nodes: data.nodes,
+              edges: data.edges,
+              pasteCount: 0,
+            };
+          }
+        } catch {
+          /* 不是 JSON 或不是 PlotMesh 格式，忽略，使用内部 ref */
+        }
+      }
+    } catch {
+      /* 没权限读取系统剪贴板（safari/firefox 可能拒），fallback 内部 ref */
+    }
+    return pasteFromClipboard(opts);
+  }, [pasteFromClipboard]);
+
   // v1.6 切片 3：启动外部触发任务的 polling worker
   // ----------------------------------------------------------------
   // worker 5s 一次扫 server 的 pendingRuns 队列；发现要跑的画布：
@@ -1780,14 +1948,15 @@ export default function Canvas() {
         }
       }
 
-      // Cmd+V / Ctrl+V = 粘贴
+      // Cmd+V / Ctrl+V = 粘贴（v1.6.2：跨画布粘贴 — 优先读系统剪贴板）
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v') {
-        const n = pasteFromClipboard();
-        if (n > 0) {
-          e.preventDefault();
-          setSavedToast(`已粘贴 ${n} 个节点`);
-          setTimeout(() => setSavedToast(''), 1200);
-        }
+        e.preventDefault();
+        pasteFromAnywhere().then((n) => {
+          if (n > 0) {
+            setSavedToast(`已粘贴 ${n} 个节点`);
+            setTimeout(() => setSavedToast(''), 1200);
+          }
+        });
       }
 
       // Cmd+X / Ctrl+X = 剪切（复制 + 删除）
@@ -1824,7 +1993,7 @@ export default function Canvas() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [storeDeleteNodes, storeUndo, storeRedo, storePushHistory, copySelectedToClipboard, pasteFromClipboard, duplicateSelection]);
+  }, [storeDeleteNodes, storeUndo, storeRedo, storePushHistory, copySelectedToClipboard, pasteFromClipboard, pasteFromAnywhere, duplicateSelection]);
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
@@ -1841,7 +2010,12 @@ export default function Canvas() {
       <div
         className="canvas-container"
         ref={reactFlowWrapper}
-        style={{ flex: 1, position: 'relative' }}
+        style={{
+          flex: 1,
+          position: 'relative',
+          // v1.6.2：按住空格时整个画布光标变 grab，提示进入平移模式
+          cursor: spaceHeld ? 'grab' : undefined,
+        }}
         onContextMenu={(e) => {
           // 兜底：react-flow 内置的 onPaneContextMenu / onNodeContextMenu / onSelectionContextMenu
           // 已经在大多数命中点工作；这里再兜一层，确保画布的任何角落右键都能弹菜单。
@@ -1879,7 +2053,25 @@ export default function Canvas() {
           maxZoom={2}
           deleteKeyCode={null}  /* 我们自己处理 Delete 键 */
           selectionOnDrag={true}
-          panOnDrag={panButton === 'middle' ? [1] : [2]}  /* middle=中键(1) / right=右键(2) */
+          /*
+            v1.6.2 平移按钮：
+            - mouse 模式   ：中键 (1) + Space + 左键 (0 with key)
+            - trackpad 模式：Space + 左键（双指滑由 panOnScroll 处理）
+            - 右键 (2) 不再绑定平移，留给右键菜单使用
+
+            React Flow v12 的 panOnDrag 接受 (number | boolean)[]，但不直接支持
+            "Space + 左键" 这种组合键。所以我们通过监听 keydown 切换 panOnDrag：
+            - 默认：[1]（中键）；trackpad 模式：[]（不响应任何拖按钮）
+            - 按住空格：[0, 1]（左键 + 中键都触发平移）
+            鼠标光标在 spaceHeld 时变 grab。
+          */
+          panOnDrag={
+            spaceHeld
+              ? [0, 1]
+              : inputMode === 'mouse'
+              ? [1]
+              : []
+          }
           /*
             v1.6.0-β15 触摸板模式：
             - 开启 panOnScroll：双指滑动 = 平移（Mac 触摸板的标准网页交互）
@@ -1927,12 +2119,8 @@ export default function Canvas() {
           />
         </ReactFlow>
 
-        {/* 右键菜单：在画布或节点上右键时弹出 */}
+        {/* 右键菜单：在画布或节点上右键时弹出（v1.6.2 大改：完整位置感知） */}
         {ctxMenu && (() => {
-          // 计算"Group"是否可激活：
-          //   ≥2 个顶层节点（不在任何 group 内）选中；可以包含 group 本身（用于嵌套）
-          //   只在存在"父 group 没被选中"的孤儿子节点时才禁止（避免拆碎别人的 group）。
-          //   被选中 group 的子节点会被自动忽略。
           const all = useNodeStore.getState().nodes as any[];
           const selectedAll = all.filter((n: any) => n.selected);
           const groupable = selectedAll.filter((n: any) => !n.parentId);
@@ -1943,8 +2131,30 @@ export default function Canvas() {
             (n: any) => n.parentId && !selectedGroupIds.has(n.parentId)
           );
           const canGroup = groupable.length >= 2 && !hasOrphanNested;
-          const hasNestedSelected = hasOrphanNested; // 旧变量名兼容
-          // 7 类节点（与 Sidebar 保持一致；group 通过本菜单的"Group"项创建，不出现在新建列表里）
+          const hasNestedSelected = hasOrphanNested;
+
+          // v1.6.2 新增菜单状态判定
+          const selectionCount = selectedAll.length;
+          const hasSelection = selectionCount > 0;
+          const targetGroupId = ctxMenu.targetGroupId;
+          const targetGroup = targetGroupId
+            ? all.find((n: any) => n.id === targetGroupId)
+            : null;
+          const targetGroupLabel = targetGroup?.data?.label || '当前分组';
+          // C+A 策略：只有当选中里有"自由节点"且右键命中某个 group 时显示"加入此分组"
+          const freeNodesInSelection = selectedAll.filter(
+            (n: any) => !n.parentId && n.id !== targetGroupId && n.type !== 'group'
+          );
+          const freeGroupsInSelection = selectedAll.filter(
+            (n: any) => !n.parentId && n.type === 'group' && n.id !== targetGroupId
+          );
+          // 自由"组件"=自由节点 + 自由 group（嵌套）
+          const totalFreeAttachable = freeNodesInSelection.length + freeGroupsInSelection.length;
+          const showAttachToGroup = !!targetGroup && totalFreeAttachable >= 1;
+          // 检查是否选中了多个 group（A 规则禁用）
+          const selectedGroupCount = selectedAll.filter((n: any) => n.type === 'group').length;
+          const attachIsAmbiguous = selectedGroupCount > 1;
+
           const NODE_OPTIONS = [
             { type: 'textPrompt', label: '✏️ 文本提示词' },
             { type: 'fileUpload', label: '📁 文件上传' },
@@ -1957,11 +2167,36 @@ export default function Canvas() {
             { type: 'swimlane', label: '🏊 项目泳道' },
           ];
           const closeMenu = () => setCtxMenu(null);
-          // 防止菜单超出视口右/下边界
-          const maxX = window.innerWidth - 220;
-          const maxY = window.innerHeight - 240;
+          // 防止菜单超出视口右/下边界（菜单变长，加大保留）
+          const maxX = window.innerWidth - 240;
+          const maxY = window.innerHeight - 380;
           const left = Math.min(ctxMenu.screen.x, maxX);
           const top = Math.min(ctxMenu.screen.y, maxY);
+
+          // 通用菜单项样式 helper
+          const itemStyle = (enabled = true): React.CSSProperties => ({
+            padding: '7px 14px',
+            cursor: enabled ? 'pointer' : 'not-allowed',
+            color: enabled ? 'var(--text-primary, #1a1a1a)' : 'var(--text-muted, #94a3b8)',
+            opacity: enabled ? 1 : 0.55,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          });
+          const shortcut = (s: string) => (
+            <span style={{ fontSize: 11, color: 'var(--text-muted, #94a3b8)' }}>{s}</span>
+          );
+          const hoverIn = (e: React.MouseEvent<HTMLDivElement>, enabled = true) => {
+            if (enabled) e.currentTarget.style.background = 'rgba(99,102,241,0.1)';
+          };
+          const hoverOut = (e: React.MouseEvent<HTMLDivElement>) => {
+            e.currentTarget.style.background = 'transparent';
+          };
+          const Sep = () => (
+            <div style={{ height: 1, background: 'var(--border-color, #e2e8f0)', margin: '4px 0' }} />
+          );
+
           return (
             <>
               {/* 透明遮罩：点击或按 Escape 都关闭菜单 */}
@@ -1977,10 +2212,10 @@ export default function Canvas() {
                   left,
                   top,
                   zIndex: 999,
-                  minWidth: 200,
-                  background: 'var(--surface, #fff)',
+                  minWidth: 220,
+                  background: 'var(--bg-card, #fff)',
                   color: 'var(--text-primary, #1a1a1a)',
-                  border: '1px solid var(--border, #e2e8f0)',
+                  border: '1px solid var(--border-color, #e2e8f0)',
                   borderRadius: 8,
                   boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
                   padding: '6px 0',
@@ -1989,14 +2224,105 @@ export default function Canvas() {
                 }}
                 onContextMenu={(e) => e.preventDefault()}
               >
-                {/* 「新建节点」一级，hover 展开二级 */}
+                {/* ==== 选区操作（有选中时显示） ==== */}
+                {hasSelection && (
+                  <>
+                    <div
+                      onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                      onMouseLeave={hoverOut}
+                      onClick={() => {
+                        const n = copySelectedToClipboard();
+                        if (n > 0) {
+                          setSavedToast(`已复制 ${n} 个节点`);
+                          setTimeout(() => setSavedToast(''), 1200);
+                        }
+                        closeMenu();
+                      }}
+                      style={itemStyle()}
+                      title="复制选中节点（同时写入系统剪贴板，可在其他画布粘贴）"
+                    >
+                      <span>📋 复制</span>{shortcut('⌘C')}
+                    </div>
+                    <div
+                      onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                      onMouseLeave={hoverOut}
+                      onClick={() => {
+                        const n = copySelectedToClipboard();
+                        if (n > 0) {
+                          // 剪切 = 复制 + 删除
+                          const ids = (useNodeStore.getState().nodes as any[]).filter((nn: any) => nn.selected).map((nn: any) => nn.id);
+                          storeDeleteNodes(ids);
+                          setSavedToast(`已剪切 ${n} 个节点`);
+                          setTimeout(() => setSavedToast(''), 1200);
+                        }
+                        closeMenu();
+                      }}
+                      style={itemStyle()}
+                      title="剪切选中节点（复制后删除）"
+                    >
+                      <span>✂️ 剪切</span>{shortcut('⌘X')}
+                    </div>
+                    {/* 单选时显示"改名" */}
+                    {selectionCount === 1 && (
+                      <div
+                        onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                        onMouseLeave={hoverOut}
+                        onClick={() => {
+                          const target = selectedAll[0];
+                          const cur = target?.data?.label || '';
+                          const next = prompt('输入新的节点名称：', String(cur));
+                          if (next != null && next.trim()) {
+                            storePushHistory();
+                            useNodeStore.getState().updateNodeData(target.id, { label: next.trim() } as any);
+                          }
+                          closeMenu();
+                        }}
+                        style={itemStyle()}
+                        title="修改节点显示名称（label）"
+                      >
+                        <span>🏷 改名</span>{shortcut('F2')}
+                      </div>
+                    )}
+                    <div
+                      onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                      onMouseLeave={hoverOut}
+                      onClick={() => {
+                        // 复用 toolbar 上的"📦 存常用功能"逻辑
+                        openSaveDialog();
+                        closeMenu();
+                      }}
+                      style={itemStyle()}
+                      title="把选中节点存为可复用的预设"
+                    >
+                      <span>📦 存为常用功能</span>
+                    </div>
+                    <div
+                      onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                      onMouseLeave={hoverOut}
+                      onClick={() => {
+                        const ids = selectedAll.map((n: any) => n.id);
+                        storeDeleteNodes(ids);
+                        setSavedToast(`已删除 ${ids.length} 个节点`);
+                        setTimeout(() => setSavedToast(''), 1200);
+                        closeMenu();
+                      }}
+                      style={{ ...itemStyle(), color: '#ef4444' }}
+                      title="删除选中节点"
+                    >
+                      <span>🗑 删除</span>{shortcut('Delete')}
+                    </div>
+                    <Sep />
+                  </>
+                )}
+
+                {/* ==== 「新建节点」一级，hover 展开二级 ==== */}
                 <div
                   onMouseEnter={() => setCtxMenu({ ...ctxMenu, submenuOpen: true })}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    padding: '8px 14px',
+                    padding: '7px 14px',
                     cursor: 'pointer',
                     background: ctxMenu.submenuOpen ? 'rgba(99,102,241,0.1)' : 'transparent',
                     position: 'relative',
@@ -2013,9 +2339,9 @@ export default function Canvas() {
                         top: -6,
                         marginLeft: 2,
                         minWidth: 180,
-                        background: 'var(--surface, #fff)',
+                        background: 'var(--bg-card, #fff)',
                         color: 'var(--text-primary, #1a1a1a)',
-                        border: '1px solid var(--border, #e2e8f0)',
+                        border: '1px solid var(--border-color, #e2e8f0)',
                         borderRadius: 8,
                         boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
                         padding: '6px 0',
@@ -2029,7 +2355,7 @@ export default function Canvas() {
                             createNodeAt(opt.type, ctxMenu.flow);
                             closeMenu();
                           }}
-                          style={{ padding: '8px 14px', cursor: 'pointer' }}
+                          style={{ padding: '7px 14px', cursor: 'pointer' }}
                           onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
                           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                         >
@@ -2040,11 +2366,57 @@ export default function Canvas() {
                   )}
                 </div>
 
-                <div style={{ height: 1, background: 'var(--border, #e2e8f0)', margin: '4px 0' }} />
+                {/* ==== 粘贴 + 全选 + 居中视图 ==== */}
+                <div
+                  onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                  onMouseLeave={hoverOut}
+                  onClick={() => {
+                    pasteFromAnywhere({ anchor: ctxMenu.flow }).then((n) => {
+                      if (n > 0) {
+                        setSavedToast(`已粘贴 ${n} 个节点`);
+                        setTimeout(() => setSavedToast(''), 1200);
+                      }
+                    });
+                    closeMenu();
+                  }}
+                  style={itemStyle()}
+                  title="把剪贴板中的节点粘贴到此处（支持跨画布）"
+                >
+                  <span>📥 粘贴到此处</span>{shortcut('⌘V')}
+                </div>
+                <div
+                  onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                  onMouseLeave={hoverOut}
+                  onClick={() => {
+                    const allN = useNodeStore.getState().nodes as any[];
+                    useNodeStore.setState({ nodes: allN.map((n: any) => ({ ...n, selected: true })) });
+                    closeMenu();
+                  }}
+                  style={itemStyle()}
+                  title="选中所有节点"
+                >
+                  <span>☑️ 全选</span>{shortcut('⌘A')}
+                </div>
+                <div
+                  onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                  onMouseLeave={hoverOut}
+                  onClick={() => {
+                    rfInstance?.fitView?.({ padding: 0.15, duration: 250 });
+                    closeMenu();
+                  }}
+                  style={itemStyle()}
+                  title="缩放到适配所有节点"
+                >
+                  <span>🎯 居中视图</span>{shortcut('1')}
+                </div>
 
+                <Sep />
+
+                {/* ==== 分组操作 ==== */}
                 {/* 「Group（仅画布内）」：≥2 顶层节点选中时激活，否则灰色 */}
                 <div
-                  onMouseEnter={() => setCtxMenu({ ...ctxMenu, submenuOpen: false })}
+                  onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e, canGroup); }}
+                  onMouseLeave={hoverOut}
                   onClick={() => {
                     if (!canGroup) return;
                     const r = groupSelectedOnCanvas();
@@ -2059,45 +2431,51 @@ export default function Canvas() {
                     : (hasNestedSelected
                         ? '不能把已在 group 内的子节点单独再分组'
                         : '至少选中 2 个顶层节点才能 Group')}
-                  style={{
-                    padding: '8px 14px',
-                    cursor: canGroup ? 'pointer' : 'not-allowed',
-                    color: canGroup ? 'var(--text-primary, #1a1a1a)' : 'var(--text-muted, #94a3b8)',
-                    opacity: canGroup ? 1 : 0.55,
-                  }}
-                  onMouseOver={(e) => {
-                    if (canGroup) e.currentTarget.style.background = 'rgba(99,102,241,0.1)';
-                  }}
-                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                  style={itemStyle(canGroup)}
                 >
-                  📦 Group（打包到画布）
+                  <span>📦 Group（打包到画布）</span>
                 </div>
 
-                {/* 「Ungroup（解散分组）」：仅当右键命中了某个 group 时显示 */}
-                {ctxMenu.targetGroupId && (() => {
-                  const g = (useNodeStore.getState().nodes as any[]).find((n: any) => n.id === ctxMenu.targetGroupId);
-                  const label = g?.data?.label || '当前分组';
-                  return (
-                    <>
-                      <div style={{ height: 1, background: 'var(--border, #e2e8f0)', margin: '4px 0' }} />
-                      <div
-                        onMouseEnter={() => setCtxMenu({ ...ctxMenu, submenuOpen: false })}
-                        onClick={() => {
-                          ungroup(ctxMenu.targetGroupId!);
-                          setSavedToast(`已解散「${label}」`);
-                          setTimeout(() => setSavedToast(''), 1600);
-                          closeMenu();
-                        }}
-                        title="把分组拆开，子节点保留在原位（仅画布操作，不影响已保存的常用功能）"
-                        style={{ padding: '8px 14px', cursor: 'pointer' }}
-                        onMouseOver={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
-                        onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
-                      >
-                        🔓 Ungroup（解散「{label}」）
-                      </div>
-                    </>
-                  );
-                })()}
+                {/* v1.6.2 「加入此分组」C+A 策略：必须右键命中某个 group + 选区里有自由节点 */}
+                {showAttachToGroup && (
+                  <div
+                    onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e, !attachIsAmbiguous); }}
+                    onMouseLeave={hoverOut}
+                    onClick={() => {
+                      if (attachIsAmbiguous) return;
+                      const n = attachFreeToGroup(targetGroupId!);
+                      if (n > 0) {
+                        setSavedToast(`已加入「${targetGroupLabel}」（${n} 个节点）`);
+                        setTimeout(() => setSavedToast(''), 1600);
+                      }
+                      closeMenu();
+                    }}
+                    title={attachIsAmbiguous
+                      ? '选区里有多个分组，请只选一个目标分组（清掉其他分组的选中状态）'
+                      : `把当前选中的 ${totalFreeAttachable} 个自由节点加入到「${targetGroupLabel}」`}
+                    style={itemStyle(!attachIsAmbiguous)}
+                  >
+                    <span>➡️ 加入分组「{targetGroupLabel}」</span>
+                  </div>
+                )}
+
+                {/* Ungroup：仅当右键命中了某个 group 时显示 */}
+                {targetGroupId && (
+                  <div
+                    onMouseEnter={(e) => { setCtxMenu({ ...ctxMenu, submenuOpen: false }); hoverIn(e); }}
+                    onMouseLeave={hoverOut}
+                    onClick={() => {
+                      ungroup(targetGroupId);
+                      setSavedToast(`已解散「${targetGroupLabel}」`);
+                      setTimeout(() => setSavedToast(''), 1600);
+                      closeMenu();
+                    }}
+                    title="把分组拆开，子节点保留在原位（仅画布操作，不影响已保存的常用功能）"
+                    style={itemStyle()}
+                  >
+                    <span>🔓 解散「{targetGroupLabel}」</span>
+                  </div>
+                )}
               </div>
             </>
           );
@@ -2109,8 +2487,8 @@ export default function Canvas() {
         <div className={`canvas-toolbar bottom${showLog ? ' with-log' : ''}`}>
           <span className="canvas-toolbar-hint" title="画布操作提示">
             {trackpadMode
-              ? '💡 双指滑=平移 | 捏合/Cmd+滚轮=缩放 | 左键单选 | Cmd+点击=多选 | Cmd+Z=撤销'
-              : '💡 左键点击=单选 | Cmd+点击=多选 | 空白处拖动=框选 | 右键拖动=平移 | Cmd+Z=撤销'}
+              ? '💡 双指滑=平移 | 捏合/Cmd+滚轮=缩放 | Space+左键拖=平移 | 左键=框选 | 右键=菜单'
+              : '💡 滚轮=缩放 | 中键/Space+左键拖=平移 | 左键=框选 | 右键=菜单 | Cmd+Z=撤销'}
           </span>
           <button className="toolbar-btn primary" onClick={() => executeFlow()} disabled={isRunning}>
             {isRunning ? '⏳ 运行中...' : '▶️ 运行'}
@@ -2131,23 +2509,20 @@ export default function Canvas() {
             style={{ display: 'none' }}
             onChange={handleImportFile}
           />
+          {/*
+            v1.6.2：输入模式按钮（mouse / trackpad，二选一）
+            点击切换；首次默认按 platform 检测。
+          */}
           <button
             className="toolbar-btn"
-            onClick={togglePanButton}
-            title={`画布平移：当前${panButton === 'right' ? '右键' : '中键'}拖动；点击切换为${panButton === 'right' ? '中键' : '右键'}`}
-          >
-            {panButton === 'right' ? '🖱 平移：右键' : '🖱 平移：中键'}
-          </button>
-          <button
-            className="toolbar-btn"
-            onClick={toggleTrackpadMode}
+            onClick={cycleInputMode}
             title={
-              trackpadMode
-                ? '触摸板模式：双指滑动=平移，双指捏合或 Cmd+滚轮=缩放（Mac 网页习惯）。\n点击切换回鼠标模式（滚轮直接缩放）。'
-                : '鼠标模式：滚轮=缩放，右键/中键拖动=平移（Windows 习惯）。\n点击切换到触摸板模式（Mac 用户更顺手）。'
+              inputMode === 'mouse'
+                ? '鼠标模式：滚轮=缩放，中键/Space+左键拖=平移，右键留给菜单\n点击切换到「触摸板」'
+                : '触摸板模式：双指滑=平移，双指捏合=缩放，Space+左键拖=平移，右键留给菜单\n点击切换到「鼠标」'
             }
           >
-            {trackpadMode ? '🖲️ 触摸板' : '🖱️ 鼠标'}
+            {inputMode === 'mouse' ? '🖱️ 鼠标' : '🖲️ 触摸板'}
           </button>
           <button
             className="toolbar-btn"

@@ -1,74 +1,179 @@
 /**
- * server/src/middleware/apiToken.js · API token 鉴权中间件
+ * server/src/middleware/apiToken.js · API token 鉴权中间件（v1.6.1：持久化 + 重置）
  * ---------------------------------------------------------------
  * 用于 /api/canvas/* 路由（外部 AI 操作画布的入口）。
  *
+ * Token 解析优先级（高 → 低）：
+ *   1) 环境变量 PLOTMESH_API_TOKEN    永远赢；写在 server/.env 里最稳
+ *   2) ~/.plotmesh/api-token         首次启动自动生成并写到这里，重启不丢
+ *   3) 自动生成 32 字符 + 写盘到 (2)
+ *
+ * 受 PLOTMESH_DATA_DIR 影响：token 文件跟 store.json 同目录，方便用户把
+ * 整个目录指向 iCloud / Dropbox 实现跨设备共享。
+ *
  * 行为：
- *   1) 启动时检查 process.env.PLOTMESH_API_TOKEN：
- *      - 存在 → 用该值
- *      - 不存在 → 自动生成 32 字符随机 token，并打印到 server 控制台
- *        （不会写回 .env，重启会换；用户想固定就自己写到 server/.env）
- *   2) localhost (127.0.0.1 / ::1) 默认豁免鉴权（方便 dev 用 curl）
- *      可设环境变量 PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST=true 强制鉴权
- *   3) 非 localhost：必须携带 `Authorization: Bearer <token>`
+ *   - localhost (127.0.0.1 / ::1) 默认豁免鉴权（方便 dev 用 curl 与前端 polling）
+ *     可设环境变量 PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST=true 强制鉴权
+ *   - 非 localhost：必须携带 `Authorization: Bearer <token>`
+ *
+ * 重置入口（让用户能"换一把锁"）：
+ *   - 启动参数：`PLOTMESH_RESET_TOKEN=true npm start` —— 启动时强制重置
+ *   - REST：POST /api/canvas/auth/reset-token （由 routes/canvas.js 暴露，本机豁免）
+ *   - Node API：resetApiToken() 直接调用
  *
  * 设计权衡：
- *   - 单 token 简单实用，符合用户拍板（C2）
- *   - 启动自动生成而不是 require .env，让用户即开即用，但生产环境
- *     强烈建议在 .env 写死（重启不丢 token）
+ *   - 单 token 简单实用（用户拍板 C2）
+ *   - env > file 让用户随时能用 .env 覆盖文件
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { getDataDir } from '../utils/storePath.js';
+import { getServerConfig } from '../utils/serverConfig.js';
 
 let cachedToken = null;
-let tokenSource = null; // 'env' | 'generated'
+let tokenSource = null; // 'env' | 'file' | 'generated'
 
-/** 拿当前生效的 token；首次调用时生成（如果 .env 没设） */
+/** token 文件路径：~/.plotmesh/api-token（受 PLOTMESH_DATA_DIR 影响） */
+function getTokenFilePath() {
+  return path.join(getDataDir(), 'api-token');
+}
+
+function generateToken() {
+  // 32 字符 hex
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function readTokenFile() {
+  try {
+    const fp = getTokenFilePath();
+    if (!fs.existsSync(fp)) return null;
+    const v = fs.readFileSync(fp, 'utf8').trim();
+    if (!v) return null;
+    return v;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('⚠️  读取 token 文件失败：', err.message);
+    return null;
+  }
+}
+
+function writeTokenFile(token) {
+  try {
+    const fp = getTokenFilePath();
+    // 写入并尽量收紧权限（POSIX 上设 0600，Windows 忽略）
+    fs.writeFileSync(fp, token + '\n', { encoding: 'utf8', mode: 0o600 });
+    try { fs.chmodSync(fp, 0o600); } catch { /* 非 POSIX 系统会失败，无所谓 */ }
+    return true;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('⚠️  写入 token 文件失败（token 仍生效，但重启会丢）：', err.message);
+    return false;
+  }
+}
+
+/**
+ * 拿当前生效的 token；首次调用时按上述优先级解析；自动生成时会写盘。
+ * 启动参数 PLOTMESH_RESET_TOKEN=true 会强制重置（仅在启动首次解析时生效）。
+ */
 export function getApiToken() {
   if (cachedToken) return cachedToken;
+
+  // 启动参数强制重置：忽略 file，用 env 或重新生成
+  const forceReset = process.env.PLOTMESH_RESET_TOKEN === 'true';
+
+  // 优先级 1：环境变量
   const fromEnv = (process.env.PLOTMESH_API_TOKEN || '').trim();
   if (fromEnv) {
     cachedToken = fromEnv;
     tokenSource = 'env';
-  } else {
-    // 生成 32 字符随机 token（base32 风格，URL-safe）
-    cachedToken = crypto.randomBytes(20).toString('hex'); // 40 字符 hex（>32）
-    cachedToken = cachedToken.slice(0, 32);
-    tokenSource = 'generated';
+    return cachedToken;
   }
+
+  // 优先级 2：持久化文件（启动重置则跳过）
+  if (!forceReset) {
+    const fromFile = readTokenFile();
+    if (fromFile) {
+      cachedToken = fromFile;
+      tokenSource = 'file';
+      return cachedToken;
+    }
+  }
+
+  // 优先级 3：生成并写盘
+  const newTok = generateToken();
+  const ok = writeTokenFile(newTok);
+  cachedToken = newTok;
+  tokenSource = ok ? 'file' : 'generated';
   return cachedToken;
 }
 
 export function getTokenSource() {
+  // 确保 cachedToken 已初始化
+  if (!cachedToken) getApiToken();
   return tokenSource;
 }
 
 /**
- * 启动时打印 token 状态（在 index.js listen 后调用）
+ * 重置 token：生成新 token、写盘、清缓存。
+ * 注意：如果 PLOTMESH_API_TOKEN env 存在，重置无效（env 永远赢）—— 返回错误对象。
+ *
+ * @returns {{ok: true, token: string} | {ok: false, error: string}}
  */
+export function resetApiToken() {
+  const fromEnv = (process.env.PLOTMESH_API_TOKEN || '').trim();
+  if (fromEnv) {
+    return {
+      ok: false,
+      error: 'env_token_locked',
+      message: 'PLOTMESH_API_TOKEN env 已设置，重置无效。请改 server/.env 或取消该变量后重试。',
+    };
+  }
+  const newTok = generateToken();
+  writeTokenFile(newTok);
+  cachedToken = newTok;
+  tokenSource = 'file';
+  return { ok: true, token: newTok };
+}
+
+/** 启动时打印 token 状态（在 index.js listen 后调用） */
 export function printApiTokenBanner() {
   const token = getApiToken();
-  const isGenerated = tokenSource === 'generated';
   // eslint-disable-next-line no-console
   console.log('');
   console.log('🔑 PlotMesh API Token (canvas operations):');
   console.log(`   ${token}`);
-  if (isGenerated) {
-    console.log('   ↑ Auto-generated this session. Add to server/.env to keep stable:');
-    console.log(`   PLOTMESH_API_TOKEN=${token}`);
-  } else {
-    console.log('   ↑ Loaded from PLOTMESH_API_TOKEN env var.');
+  switch (tokenSource) {
+    case 'env':
+      console.log('   ↑ Loaded from PLOTMESH_API_TOKEN env var (highest priority).');
+      break;
+    case 'file':
+      console.log(`   ↑ Loaded from ${getTokenFilePath()} (persisted across restarts).`);
+      console.log('   To reset: POST /api/canvas/auth/reset-token  or  PLOTMESH_RESET_TOKEN=true npm start');
+      break;
+    case 'generated':
+    default:
+      console.log('   ↑ Auto-generated (could not persist to disk). Add to server/.env to keep stable:');
+      console.log(`   PLOTMESH_API_TOKEN=${token}`);
+      break;
   }
   console.log('');
 }
 
 /**
  * Express 中间件：校验 Authorization: Bearer <token>
- * - localhost 默认豁免，除非 PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST=true
+ * - 默认：localhost 自动豁免，外网请求需要 Bearer token
+ * - 当 server-config.json 的 remoteAccess=true 时：所有请求（含 localhost）都强制 token
+ *   此时 server 通常已绑定 0.0.0.0，对 LAN 暴露
+ * - 兼容老 env：PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST=true 也强制
  * - 错误时返回 401
  */
 export function requireApiToken(req, res, next) {
   const token = getApiToken();
-  const requireLocalhost = process.env.PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST === 'true';
+  const cfg = getServerConfig();
+  const requireLocalhost =
+    cfg.remoteAccess === true ||
+    process.env.PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST === 'true';
 
   // 判定是否本机请求
   const ip = req.ip || req.connection?.remoteAddress || '';
@@ -90,6 +195,21 @@ export function requireApiToken(req, res, next) {
   }
   if (m[1].trim() !== token) {
     return res.status(401).json({ error: 'invalid_token', message: 'Token does not match server token' });
+  }
+  return next();
+}
+
+/** 仅本机豁免：用于"前端 UI 查询/重置 token"等敏感操作 */
+export function requireLocalhost(req, res, next) {
+  const ip = req.ip || req.connection?.remoteAddress || '';
+  const isLocalhost =
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip === '' ||
+    ip.startsWith('::ffff:127.');
+  if (!isLocalhost) {
+    return res.status(403).json({ error: 'localhost_only', message: 'This endpoint is only available on localhost' });
   }
   return next();
 }

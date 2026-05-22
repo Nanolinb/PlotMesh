@@ -5,6 +5,69 @@
 
 ---
 
+## [1.6.2] — 2026-05-22
+
+> 一周冲刺：让 PlotMesh "像一个应用"。状态灯 + 平移操作全面优化 + 完整的右键菜单（含 C+A 加入分组、跨画布粘贴）+ 远端访问开关 + macOS 自启脚本 + Docker 部署文件（NAS/团队场景）。
+
+### Added · 新增
+
+#### 启动体验
+- **Sidebar 顶部 Server 状态灯**：5s 一次 GET /health，🟢/🔴/🟡 三态；离线时点击弹引导卡（复制启动命令、立即检测、提示 launchd 自启）
+- **macOS 自启脚本** `scripts/install-autostart.sh`：一行命令把 server 注册成 launchd LaunchAgent，登录自启 + 崩溃自动拉起；含 `--status` / `--uninstall` 子命令
+- **Docker 部署支持**：`Dockerfile.server` + `Dockerfile.client` + `docker-compose.yml` + `docs/DEPLOY.md` 群晖部署指南（注：v1.6.2 client 仍硬编码 localhost，nginx 反代框架已就绪，等 v1.6.3 改前端 url 即可团队可用）
+- **远端访问开关**：API 配置 → 外部 AI 接入 tab 底部新增 toggle；开启后 server 监听 0.0.0.0、所有请求强制 token；持久化到 `~/.plotmesh/server-config.json`，支持 `PLOTMESH_REMOTE_ACCESS=true/false` env 覆盖
+
+#### 画布操作
+- **平移操作改造**：取消 panOnDrag=右键；新增 **Space + 左键** / **中键拖** = 平移（鼠标 / 触摸板模式都支持）；右键彻底解放给菜单
+- **输入模式按钮**：底部"鼠标 / 触摸板"二选一（首次按 platform 检测默认值），取代 v1.6.0 的 panButton + trackpadMode 两个按钮
+- **完整右键菜单 v1**（位置感知）：
+  - 选区操作：复制 ⌘C / 剪切 ⌘X / 改名 F2（单选）/ 存为常用 / 删除 Delete
+  - 创建/查看：新建节点 ▶ / 粘贴到此处 ⌘V / 全选 ⌘A / 居中视图
+  - 分组：Group / **加入分组「<名字>」**（C+A 策略）/ 解散「<名字>」
+  - 快捷键提示用灰色文字右对齐
+- **C+A 加入分组**：选区里有"自由节点 + 1 个目标 group"时，在 group 上右键 → 加入；多个 group 同时选中时禁用
+- **跨画布粘贴**：复制时同步写系统剪贴板（`__plotmeshClipboard` JSON marker）；粘贴时优先读系统剪贴板
+
+#### 配置弹窗整合
+- API 配置弹窗加 tab：「🤖 大模型 API Key」/「🔑 外部 AI 接入」；ApiTokenPanel 加 `embedded` mode 适配弹窗内嵌（字号/按钮放大）
+- Sidebar 不再挂"外部 AI 接入"面板，节省空间
+- Sidebar 去掉冗余的"🧩 节点面板"H2 大标题
+
+### Changed · 改进
+- localhost 豁免规则现在受 `server-config.json:remoteAccess` 控制，不再仅靠 env
+
+### File Changes · 文件变更
+- 新增：`client/src/components/ServerStatusIndicator.tsx`、`server/src/utils/serverConfig.js`、`scripts/install-autostart.sh`、`Dockerfile.server`、`Dockerfile.client`、`docker-compose.yml`、`docs/DEPLOY.md`
+- 改：`client/src/components/Canvas.tsx`（+ ~280 行：右键菜单 v1、attachFreeToGroup、pasteFromAnywhere、inputMode 三选一）、`client/src/components/ApiKeyConfigModal.tsx`（tab 切换）、`client/src/components/ApiTokenPanel.tsx`（embedded + 远端访问 toggle）、`client/src/components/Sidebar.tsx`（去 H2 + 移除 ApiTokenPanel）、`server/src/middleware/apiToken.js`（remoteAccess 联动）、`server/src/index.js`（HOST 切换）、`server/src/routes/canvas.js`（server-config 路由）
+
+---
+
+## [1.6.1] — 2026-05-22
+
+> token 体验稳固：默认持久化到磁盘，重启不丢；前端侧栏新增 "🔑 外部 AI 接入" 面板可查看/复制/重置。
+
+### Changed · 改进
+
+- **API token 持久化**（`server/src/middleware/apiToken.js`）：
+  - 解析优先级 `env > ~/.plotmesh/api-token > 自动生成`
+  - 启动自动生成时直接写盘到 `~/.plotmesh/api-token`（mode 0600），重启沿用同一个 token
+  - 受 `PLOTMESH_DATA_DIR` 影响，可指向同步盘跨设备共享
+  - 启动 banner 区分来源：`env / file / generated`，并打印重置方法
+
+### Added · 新增
+
+- **重置入口**（多种）：
+  - REST：`GET /api/canvas/auth/token` 查询、`POST /api/canvas/auth/reset-token` 重置（仅本机访问）
+  - 启动参数：`PLOTMESH_RESET_TOKEN=true npm start` 启动时强制换 token
+  - 当 `PLOTMESH_API_TOKEN` env 已设：reset 返回 409 `env_token_locked`（env 永远赢）
+- **前端侧栏面板** `<ApiTokenPanel>`（`client/src/components/ApiTokenPanel.tsx`）：
+  - 默认折叠，沉到 sidebar 底部
+  - 掩码显示 + 眼睛切换 + 一键复制 + 一键重置
+  - 来源标签（env 蓝 / file 绿 / generated 黄），env token 自动禁用重置按钮
+- `server/.env.example` 补充 `PLOTMESH_API_TOKEN / PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST / PLOTMESH_DATA_DIR` 说明
+
+---
+
 ## [1.6.0] — 2026-05-22
 
 > 把 PlotMesh 升级成"可被外部 AI 操作的工作台"。新增 SwimlaneNode 项目泳道；TimelineNode 形态重做（横轴贯穿 + 双模缩放 + cut/handle 合二为一）；分叉节点自动派生 OutputNode + 互不遮挡布局；LLM 版本下拉；触摸板模式（Mac 友好）；执行日志底部抽屉。最大特性：完整的 REST API + MCP server（14 工具）+ 触发运行调度（前端 polling worker），让 codex/kimi/Claude Desktop 等 AI 客户端能搭画布、改节点、跑画布、看结果。

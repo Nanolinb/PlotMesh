@@ -39,3 +39,7 @@ plotmesh-*.png
 
 # TypeScript incremental
 *.tsbuildinfo
+
+# v1.6.2 Docker 部署
+data/
+uploads/

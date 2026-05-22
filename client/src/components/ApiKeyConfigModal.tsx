@@ -1,17 +1,15 @@
 /**
- * ApiKeyConfigModal · 大模型 API Key 配置弹窗
+ * ApiKeyConfigModal · API 配置弹窗（v1.6.2 起含两类）
  * ---------------------------------------------------------------
- * 让用户在前端可视化地填入 5 家厂商的 API Key（DeepSeek / GPT / Claude / GLM / 混元）。
+ * Tab 1：🤖 大模型 API Key — 5 家厂商的 LLM 配置（写到 server/.env）
+ * Tab 2：🔑 外部 AI 接入 — server token 查询/复制/重置（v1.6.2 从 sidebar 搬来）
  *
- * 重要：Key 不会留在浏览器，而是 POST 到 /api/llm/config 由后端写入 server/.env
- * 文件 — 这样既避免泄露，又能让后端在调用 LLM 时直接读取。
- *
- * 行为细节：
- *  - 加载弹窗时从 GET /api/llm/config 拉一次现有配置，仅显示是否已配置（****）
- *  - 用户每改一个输入框 → debounce 后写回；不显式"保存"按钮，少一次操作
- *  - 后端为安全起见返回时不会把真实 Key 回传，只回 has_xxx 布尔状态
+ * 重要：
+ *  - 大模型 Key 不会留在浏览器，POST 到 /api/llm/config 由后端写 server/.env
+ *  - 外部 AI 接入的 token 持久化在 ~/.plotmesh/api-token，重启不丢
  */
 import { useEffect, useState } from 'react';
+import ApiTokenPanel from './ApiTokenPanel';
 
 type ModelInfo = {
   id: string;
@@ -44,6 +42,10 @@ const KEY_HINTS: Record<string, { url: string; tip: string }> = {
  * - 支持显示/隐藏明文、测试连接、官网链接
  */
 export default function ApiKeyConfigModal({ open, onClose }: Props) {
+  // v1.6.2 起：两类配置切 tab
+  type Tab = 'llm' | 'external';
+  const [tab, setTab] = useState<Tab>('llm');
+
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [edits, setEdits] = useState<Record<string, string>>({});
@@ -165,11 +167,51 @@ export default function ApiKeyConfigModal({ open, onClose }: Props) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" style={{ width: 580, maxWidth: '94vw' }} onClick={(e) => e.stopPropagation()}>
-        <h3>🔑 大模型 API 配置</h3>
-        <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
-          填入后点击「保存」会立即生效并写入 <code>server/.env</code>，无需重启。
-          已保存的 Key 不会以明文回显，可以点 👁 切换查看你刚输入的内容。
-        </p>
+        <h3 style={{ marginBottom: 12 }}>⚙️ API 配置</h3>
+
+        {/* Tab 切换 */}
+        <div
+          style={{
+            display: 'flex',
+            gap: 4,
+            marginBottom: 14,
+            borderBottom: '1px solid var(--border-color)',
+          }}
+        >
+          {([
+            { key: 'llm', label: '🤖 大模型 API Key', desc: '调用 LLM 的密钥（写入 server/.env）' },
+            { key: 'external', label: '🔑 外部 AI 接入', desc: 'codex / kimi / Claude Desktop 操作画布的 token' },
+          ] as Array<{ key: Tab; label: string; desc: string }>).map((t) => {
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                title={t.desc}
+                style={{
+                  padding: '8px 14px',
+                  background: 'transparent',
+                  border: 'none',
+                  borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                  color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  fontWeight: active ? 600 : 400,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  marginBottom: -1,
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {tab === 'llm' && (
+          <>
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              填入后点击「保存」会立即生效并写入 <code>server/.env</code>，无需重启。
+              已保存的 Key 不会以明文回显，可以点 👁 切换查看你刚输入的内容。
+            </p>
 
         {error && (
           <div style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--danger)', padding: '8px 10px', borderRadius: 6, fontSize: 12, marginBottom: 10 }}>
@@ -348,6 +390,19 @@ export default function ApiKeyConfigModal({ open, onClose }: Props) {
             }}
           >
             {toast.text}
+          </div>
+        )}
+          </>
+        )}
+
+        {tab === 'external' && (
+          <div style={{ paddingBottom: 8 }}>
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+              外部 AI 客户端（codex / kimi / Claude Desktop / curl 脚本）通过此 token 调用画布 API。
+              token 持久化在 <code>~/.plotmesh/api-token</code>，重启不丢；
+              localhost 默认豁免鉴权，远端必须携带 <code>Authorization: Bearer &lt;token&gt;</code>。
+            </p>
+            <ApiTokenPanel embedded />
           </div>
         )}
 

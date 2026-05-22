@@ -9,6 +9,8 @@
  *   - 远端：Authorization: Bearer <token>
  *
  * 路由清单：
+ *   GET    /api/canvas/auth/token              查询当前 token（仅本机）
+ *   POST   /api/canvas/auth/reset-token        重置 token（仅本机；env token 不可重置）
  *   GET    /api/canvas/list                    列出所有画布（含已软删/默认过滤）
  *   GET    /api/canvas/types                   节点类型 + 默认 data schema
  *   GET    /api/canvas/:id                     读画布全量
@@ -26,11 +28,58 @@
  */
 import { Router } from 'express';
 import { readPayload, mutateStore } from '../utils/storeIO.js';
-import { requireApiToken } from '../middleware/apiToken.js';
+import {
+  requireApiToken,
+  requireLocalhost,
+  getApiToken,
+  getTokenSource,
+  resetApiToken,
+} from '../middleware/apiToken.js';
+import { getServerConfig, updateServerConfig } from '../utils/serverConfig.js';
 
 const router = Router();
 
-// 全部路由都要 token（localhost 自动豁免）
+// ─── Auth 子路由（仅本机访问，前端 UI 与本地脚本用） ────────────
+// 这两条**不能**走 requireApiToken：让前端在不知道 token 时也能查/重置
+// 安全模型：requireLocalhost 严格限制只允许 127.0.0.1 / ::1
+router.get('/auth/token', requireLocalhost, (_req, res) => {
+  res.json({
+    token: getApiToken(),
+    source: getTokenSource(), // 'env' | 'file' | 'generated'
+    canReset: getTokenSource() !== 'env', // env token 不能从 API 重置
+  });
+});
+
+router.post('/auth/reset-token', requireLocalhost, (_req, res) => {
+  const result = resetApiToken();
+  if (!result.ok) {
+    return res.status(409).json(result);
+  }
+  return res.json({
+    ok: true,
+    token: result.token,
+    source: getTokenSource(),
+  });
+});
+
+// v1.6.2 server 行为开关（远端访问等）
+router.get('/auth/server-config', requireLocalhost, (_req, res) => {
+  res.json(getServerConfig());
+});
+
+router.patch('/auth/server-config', requireLocalhost, (req, res) => {
+  const patch = {};
+  if (typeof req.body?.remoteAccess === 'boolean') {
+    patch.remoteAccess = req.body.remoteAccess;
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: 'no_changes', message: '至少传一个可更新字段（如 remoteAccess: boolean）' });
+  }
+  const cfg = updateServerConfig(patch);
+  res.json({ ok: true, config: cfg, restartRequired: true });
+});
+
+// 全部业务路由（在 auth 之后注册）都要 token；localhost 自动豁免
 router.use(requireApiToken);
 
 /** 工具：生成节点/边 id */

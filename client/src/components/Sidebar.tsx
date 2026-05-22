@@ -12,6 +12,7 @@
 import { useState } from 'react';
 import type { NodePackage, PackageGroup } from '../types/nodes';
 import { useNodeStore, deleteRecentCanvas, type RecentCanvas } from '../store/nodes';
+import ServerStatusIndicator from './ServerStatusIndicator';
 
 interface SidebarProps {
   packages: NodePackage[];
@@ -211,18 +212,18 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
 
   return (
     <div className="sidebar" onClick={onSidebarClick}>
-      {/* 产品品牌区：左上角 logo 占位 + 产品名（先英文 PlotMesh） */}
+      {/* 产品品牌区：左上角 logo 占位 + 产品名 + server 状态灯 */}
       <div className="app-brand" title="PlotMesh">
         <div className="app-brand-logo" aria-hidden="true">
           {/* TODO: 这里替换成真正的 logo（SVG / IMG）。当前为占位方块。 */}
           <span className="app-brand-logo-placeholder">P</span>
         </div>
-        <div className="app-brand-name">PlotMesh</div>
+        <div className="app-brand-name" style={{ flex: 1 }}>PlotMesh</div>
+        {/* v1.6.2 server 在线状态指示灯 + 弹出引导 */}
+        <ServerStatusIndicator />
       </div>
 
-      <div className="sidebar-header">
-        <h2>🧩 节点面板</h2>
-      </div>
+      {/* v1.6.2：去掉"节点面板"大标题（产品名 + 状态灯 + 子分类已经够清楚了） */}
 
       {/* 节点类型列表 */}
       <div className="sidebar-section">
@@ -340,7 +341,7 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
         const recents = recentCanvases;
         if (recents.length === 0) return null;
         return (
-          <div className="sidebar-section" style={{ borderTop: '1px solid var(--border, #e2e8f0)', marginTop: 'auto' }}>
+          <div className="sidebar-section" style={{ borderTop: '1px solid var(--border-color, #e2e8f0)', marginTop: 'auto' }}>
             <div className="sidebar-section-header">
               <h3>🕘 最近画布</h3>
             </div>
@@ -385,6 +386,9 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
           </div>
         );
       })()}
+
+      {/* v1.6.2：原 sidebar 底部的"外部 AI 接入"面板已搬到 toolbar → API 配置弹窗，
+          这里保留 marginTop: auto 让最近画布沉底（如果有） */}
     </div>
   );
 }
