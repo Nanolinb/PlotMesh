@@ -1055,8 +1055,14 @@ export default function Canvas() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
+    // v1.6.4：优先用当前画布的命名，再附加时间戳（多次导出可区分）
+    // 文件名清理：替换文件系统不友好的字符（/ \ : * ? " < > |）+ 折叠空白
+    const rawName = (useNodeStore.getState().activeCanvasName || '').trim();
+    const safeName = rawName
+      ? rawName.replace(/[/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').slice(0, 60)
+      : 'workflow';
     const timestamp = new Date().toISOString().replace(/[:T.]/g, '-').substring(0, 19);
-    const filename = `workflow-${timestamp}.json`;
+    const filename = `${safeName}-${timestamp}.json`;
     a.download = filename;
     document.body.appendChild(a);
     a.click();

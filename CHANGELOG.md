@@ -5,6 +5,16 @@
 
 ---
 
+## [1.6.4] — 2026-05-22
+
+### Fixed · 修复
+- **画布导出文件名用画布命名**：以前永远是 `workflow-{timestamp}.json`（v1.5.0 之前的遗留），现在用当前活动画布的名字 + 时间戳。例如画布「我的剧本 v3」导出 `我的剧本 v3-2026-05-22-22-08-12.json`。文件系统不友好字符（`/ \ : * ? " < > |`）替换为 `_`；空名时 fallback 到 `workflow`。
+
+### File Changes
+- 改：`client/src/components/Canvas.tsx`（`handleExport`）
+
+---
+
 ## [1.6.3] — 2026-05-22
 
 > 打通 Docker 部署的"最后一公里"：前端 API base url 全部改成相对路径，团队成员可直接通过 `http://<NAS-IP>:8080/` 访问 web 客户端，nginx 反代 `/api/*` `/health` `/uploads/*` 到 server 容器。
