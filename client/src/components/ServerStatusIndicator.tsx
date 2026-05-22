@@ -18,7 +18,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 
-const HEALTH_URL = 'http://localhost:3001/health';
+// v1.6.3：相对路径（Vite proxy 把 /health 转给 :3001，nginx 反代同理）
+// /health 不在 /api/* 下，所以要专门给 vite/nginx 加一条转发规则
+const HEALTH_URL = '/health';
 const POLL_INTERVAL_MS = 5000;
 const TIMEOUT_MS = 3000;
 
@@ -39,7 +41,16 @@ async function ping(): Promise<PingResult> {
     const r = await fetch(HEALTH_URL, { signal: ctrl.signal });
     clearTimeout(timer);
     if (!r.ok) return { status: 'offline', error: `HTTP ${r.status}` };
-    const data = await r.json().catch(() => ({}));
+    // v1.6.3：必须返回 JSON 且含 status:'ok'，否则可能是 dev server 兜底返回 index.html
+    let data: any = null;
+    try {
+      data = await r.json();
+    } catch {
+      return { status: 'offline', error: '响应非 JSON（dev proxy 未配 /health？）' };
+    }
+    if (data?.status !== 'ok') {
+      return { status: 'offline', error: `status=${data?.status}` };
+    }
     return {
       status: 'online',
       latencyMs: Math.round(performance.now() - t0),
@@ -193,7 +204,7 @@ export default function ServerStatusIndicator() {
 
             {result.status === 'online' && (
               <div style={{ color: 'var(--text-secondary, #64748b)' }}>
-                <div>地址：localhost:3001</div>
+                <div>地址：{window.location.host}</div>
                 <div>延迟：{result.latencyMs}ms</div>
                 <div>时间：{result.serverTime ? new Date(result.serverTime).toLocaleTimeString('zh-CN') : '—'}</div>
               </div>
@@ -202,7 +213,7 @@ export default function ServerStatusIndicator() {
             {result.status === 'offline' && (
               <>
                 <div style={{ color: '#ef4444', marginBottom: 8 }}>
-                  无法连接到 localhost:3001。<br />
+                  无法连接到后端 API。<br />
                   外部 AI 接入、画布同步、大模型调用都不可用。
                 </div>
                 <div style={{ marginBottom: 6, fontWeight: 600 }}>启动命令：</div>

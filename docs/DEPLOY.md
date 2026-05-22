@@ -1,16 +1,15 @@
 # 部署到群晖 / Linux Docker
 
 PlotMesh 从 v1.6.2 起提供 Docker 部署支持，方便给身边团队尝试用。
+**v1.6.3 起前端 API base url 已参数化（相对路径），团队成员可直接通过 NAS URL 访问 web 客户端**。
 
-## 现状（v1.6.2）
+## 现状（v1.6.3）
 
 | 组件 | 状态 |
 |---|---|
 | `Dockerfile.server` | ✅ 可用 |
-| `Dockerfile.client` | ⚠️ 镜像可构建，但前端**硬编码** `http://localhost:3001`，不能直接给 LAN 用户用（详见下方"已知限制"） |
-| `docker-compose.yml` | ✅ 起容器没问题，仅生产可用度受 client 限制 |
-
-**短期建议**：v1.6.2 阶段先用 docker 跑 server，team 成员仍用 client 的 dev 模式（npm run dev），通过指向你 NAS 的 server URL 访问。等 v1.6.3 把前端 API base url 参数化，就可以直接 client+server 双容器给团队。
+| `Dockerfile.client` | ✅ 可用（前端走相对路径，nginx `/api/*` `/health` `/uploads/*` 反代到 server） |
+| `docker-compose.yml` | ✅ 可用 |
 
 ---
 
@@ -46,15 +45,13 @@ docker compose up -d --build  # 重启
 ### 3. 拿到 token
 ```bash
 docker exec plotmesh-server cat /data/api-token
-# 或者
-curl http://<NAS-IP>:3001/api/canvas/auth/token
-# 注意：远端访问开启时，curl 也要带 token；建议用 docker exec 拿
 ```
 
 把这个 token 发给团队成员，他们配 codex / kimi / Claude Desktop 时填入。
 
 ### 4. 团队成员访问
-- **web 客户端**：等 v1.6.3 修好硬编码 url 后即可 `http://<NAS-IP>:8080/`
+- **web 客户端**：直接 `http://<NAS-IP>:8080/`（v1.6.3 起可用）
+  - 第一次进入 → API 配置 → 外部 AI 接入 → 可看到 token + 远端访问开关已自动开
 - **MCP 客户端（codex / kimi）**：填 server 地址 `http://<NAS-IP>:3001` + token
 
 ---
@@ -91,18 +88,13 @@ GLM_API_KEY=xxxxxxxxxxxx
 
 ---
 
-## 已知限制
-
-### 前端 url 硬编码
-`client/src/components/ApiTokenPanel.tsx`、`ServerStatusIndicator.tsx`、`store/runWorker.ts` 等多处直接写了 `http://localhost:3001`。在容器化部署里：
-
-- 团队用户访问 `http://<NAS-IP>:8080/` 时，这些代码仍在请求 `localhost:3001` → 401 / 失败
-- 需要 v1.6.3 把所有前端 fetch 改成相对路径 `/api/...`，让 nginx 反代生效
-
-**临时方案**：v1.6.2 阶段，team 成员各自 clone 代码本地 `npm run dev`，但把 `localhost:3001` 改成 `<NAS-IP>:3001`。把 NAS server 当作"共享后端"，所有人前端在自己 Mac 上跑。
+## 注意
 
 ### macOS 不要用此 docker-compose
 你自己 Mac 上跑 server 还是用 `npm start` 或者 `bash scripts/install-autostart.sh`。Docker 是给 NAS / Linux 服务器用的。
+
+### 多用户隔离限制
+v1.6.3 仍然是**单 store.json 多用户共享**的形态——所有团队成员看到同一份画布数据。如果需要"每人独立画布空间"，目前的临时方案是给每个用户跑一个独立 container（用不同端口和 ./data 目录）。等 v1.8 多租户路径上线后会原生支持。
 
 ---
 

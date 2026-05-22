@@ -5,6 +5,30 @@
 
 ---
 
+## [1.6.3] — 2026-05-22
+
+> 打通 Docker 部署的"最后一公里"：前端 API base url 全部改成相对路径，团队成员可直接通过 `http://<NAS-IP>:8080/` 访问 web 客户端，nginx 反代 `/api/*` `/health` `/uploads/*` 到 server 容器。
+
+### Changed · 改进
+- **前端 API 调用全部走相对路径**：
+  - `ApiTokenPanel.tsx` `API_BASE = '/api/canvas/auth'`（原 `http://localhost:3001/...`）
+  - `ServerStatusIndicator.tsx` `HEALTH_URL = '/health'`（原 `http://localhost:3001/health`）
+  - 其他地方早就是相对路径，不动
+- **Vite dev proxy 增加规则**：原本只有 `/api`，现在也代理 `/health` `/uploads` 到 :3001（dev 体验跟生产一致）
+- **状态灯判定加固**：以前 `r.ok` 就算 online，现在还要检查 `r.json().status === 'ok'`，避免 dev server 兜底 index.html 被误判
+
+### Fixed · 修复
+- 团队成员通过 `http://<NAS-IP>:8080/` 访问时，前端不会再尝试直连 `localhost:3001` 失败
+
+### Docker 部署文档更新
+- `docs/DEPLOY.md`：去掉 v1.6.2 的"已知限制"段落，改为标记可用
+- `docker-compose.yml`：去掉"短期建议"注释；image tag 升到 1.6.3
+
+### File Changes
+- 改：`client/src/components/ApiTokenPanel.tsx`、`client/src/components/ServerStatusIndicator.tsx`、`client/vite.config.ts`、`docs/DEPLOY.md`、`docker-compose.yml`、`CHANGELOG.md`、两个 `package.json`
+
+---
+
 ## [1.6.2] — 2026-05-22
 
 > 一周冲刺：让 PlotMesh "像一个应用"。状态灯 + 平移操作全面优化 + 完整的右键菜单（含 C+A 加入分组、跨画布粘贴）+ 远端访问开关 + macOS 自启脚本 + Docker 部署文件（NAS/团队场景）。

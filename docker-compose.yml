@@ -14,11 +14,8 @@
 #   3. 浏览器访问 http://<NAS-IP>:8080/
 #   4. 第一次进入 → 打开 sidebar API 配置 → 外部 AI 接入 → token 自动生成
 #
-# ⚠️ 已知限制（v1.6.2）：前端代码里硬编码了 http://localhost:3001 调用
-#   server。Docker 部署需要前端改成相对路径（VITE_API_BASE）+ 同源 nginx 反代。
-#   这里 docker-compose 已经配好 nginx 反代，但**前端代码改造尚未完成**。
-#   要等 v1.6.3 才能直接通过 docker 部署给团队用。
-#   现阶段你想测试容器化，可以先把 server 容器跑起来，client 还用 npm run dev。
+# v1.6.3 起前端走相对路径，nginx 反代 /api/* /health /uploads/* 到 server，
+# 团队成员可以直接通过 NAS URL 用 web 客户端。
 
 version: "3.9"
 
@@ -27,7 +24,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
-    image: plotmesh-server:1.6.2
+    image: plotmesh-server:1.6.3
     container_name: plotmesh-server
     restart: unless-stopped
     environment:
@@ -53,7 +50,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.client
-    image: plotmesh-client:1.6.2
+    image: plotmesh-client:1.6.3
     container_name: plotmesh-client
     restart: unless-stopped
     depends_on:

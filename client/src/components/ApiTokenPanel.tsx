@@ -19,7 +19,8 @@
  */
 import { useEffect, useState, useCallback } from 'react';
 
-const API_BASE = 'http://localhost:3001/api/canvas/auth';
+// v1.6.3：相对路径，让 Vite dev proxy（dev）和 nginx 反代（生产/Docker）都生效
+const API_BASE = '/api/canvas/auth';
 
 type Source = 'env' | 'file' | 'generated';
 
@@ -204,7 +205,7 @@ export default function ApiTokenPanel({ embedded = false }: Props) {
           获取失败：{err}
           <br />
           <span style={{ fontSize: fontHelp, color: 'var(--text-muted, #94a3b8)' }}>
-            请确认 server 在 :3001 运行
+            请确认 server 已运行
           </span>
         </div>
       )}
