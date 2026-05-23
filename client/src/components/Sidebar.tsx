@@ -36,6 +36,9 @@ const NODE_TYPES = [
   { type: 'output', label: '📤 输出', description: '预览/下载/复制/腾讯文档' },
   { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
   { type: 'swimlane', label: '🏊 项目泳道', description: '横向泳道 / 项目时序' },
+  // v1.7 P2-A 跨画布引用
+  { type: 'crossOutput', label: '🌐 跨画布输出', description: '把内容投递到另一个画布的 crossInput' },
+  { type: 'crossInput', label: '🌐 跨画布输入', description: '接收远端 crossOutput 的回写' },
 ];
 
 export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {

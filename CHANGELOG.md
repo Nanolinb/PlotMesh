@@ -5,6 +5,49 @@
 
 ---
 
+## [1.7.0-alpha.2] — 2026-05-23
+
+> v1.7 P2-A 跨画布引用 (Cross-Canvas Reference) 第一版。新增 `crossOutput` / `crossInput` 两个节点类型 + server 自动投递与 cascade 触发。这是"总控画布"模式的底座。
+
+### Added · 新增
+
+#### 跨画布引用核心
+- **`server/src/runner/crossCanvas.js`**：connections 表（store.json 新增字段 `connections[]`），1 对 1 关系存储；`createConnection / deleteConnection / deliverOutput` API
+- **`server/src/runner/runCanvas.js`**：crossOutput 跑完后自动调 `deliverOutput`；同画布连线检测自动 cascade 触发远端画布；traceDepth ≤ 10 防循环
+- **`server/src/runner/nodeRunners.js`**：新增 `runCrossOutput` / `runCrossInput`；crossInput status=waiting 时跳过下游推进
+- **`POST /api/canvas/connections`** / `GET /connections` / `GET /connections/by-src` / `GET /connections/by-dst` / `DELETE /connections/:id`
+- **`POST /api/canvas/:id/run`** 重构成 `runCanvasJob` 内部 helper，支持 cascade 递归触发
+
+#### 前端节点
+- **`client/src/components/nodes/CrossOutputNode.tsx`**：节点显示当前去向 chip 🌐 → 画布X；点"配置目标画布"打开选画布弹窗（自动建/接收已有 crossInput 二选一）
+- **`client/src/components/nodes/CrossInputNode.tsx`**：节点显示来源 chip 🌐 ← 画布Y（readonly）；上次收到时间；text 预览；"解除关联"按钮
+- 注册到 `nodeTypes` + Sidebar 节点列表
+
+### 设计要点
+- 同画布 crossOutput → crossInput 连线 = "我在等结果"自动 cascade 触发开关（用户的核心洞察）
+- 多对多场景靠用户在画布内连边实现，跨画布层面只有 1 对 1
+- `sourceCanvasId/sourceNodeId` server 自动填，readonly（用户不能手改 source 关系）
+- 文档：`docs/USER-GUIDE.md` 详细记录"总控画布"用法
+
+### 已验证（e2e）
+- 建 A/B 两画布，A.crossOutput 配 B（自动 create B.crossInput）
+- A 内连 textPrompt → crossOutput → crossInput（"我在等"）
+- B 内连 crossInput → textTransform(prepend) → crossOutput → A.crossInput
+- 触发 A 运行 → B 自动 cascade → 数据回写 A
+- 全链：`任务参数` → `[B 已处理] 任务参数` ✅
+- 节点状态实时更新：waiting → received
+
+### 待办（P1 第二刀，下次开干）
+- SSE 推送进度（外部触发场景）
+- 弱化定时触发
+- 同步"总控画布"用法到腾讯文档产品文档（当前 connector 离线）
+
+### Versions
+- server: 1.7.0-alpha.1 → 1.7.0-alpha.2
+- client: 1.7.0-alpha.1 → 1.7.0-alpha.2
+
+---
+
 ## [1.7.0-alpha.1] — 2026-05-23
 
 > v1.7 P1 第一刀：server runner 双引擎。前端 ▶️ 仍走前端引擎（0 延迟，不动）；server 端新增独立 runner 服务于 MCP/外部 API/未来定时触发等"无前端"场景。runs 持久化到 `~/.plotmesh/runs/`，LRU 100 条。

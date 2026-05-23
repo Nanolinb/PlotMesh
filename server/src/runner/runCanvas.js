@@ -11,6 +11,7 @@
  * 必须跟前端 executeFlow 1:1 对齐。
  */
 import { runNode } from './nodeRunners.js';
+import { deliverOutput } from './crossCanvas.js';
 
 const FILE_PREFIX = '__PM_FILE__\n';
 
@@ -32,7 +33,11 @@ function parsePort(id) {
  *   onNodeStatus?: (nodeId:string, status:string, dataPatch?:any) => void,
  *   onNodeData?: (nodeId:string, dataPatch:any) => void,
  *   subsetIds?: Set<string>,
- *   ctx?: any
+ *   ctx?: any,
+ *   canvasId?: string,        // v1.7 P2-A：本次运行的画布 id（crossOutput 投递时需要）
+ *   traceId?: string,         // 跨画布触发链路 id（循环检测）
+ *   traceDepth?: number,      // 触发深度，每次 cascade +1，超过 10 就停
+ *   onCrossDelivery?: (info: {srcNodeId:string, dstCanvasId:string, dstNodeId:string, hasInternalWaitEdge: boolean})=>void
  * }} options
  */
 export async function runCanvas(canvas, options = {}) {
@@ -41,6 +46,10 @@ export async function runCanvas(canvas, options = {}) {
   const setData = options.onNodeData || (() => {});
   const subsetIds = options.subsetIds;
   const ctx = options.ctx || {};
+  const srcCanvasId = options.canvasId;
+  const traceId = options.traceId || `trace-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const traceDepth = options.traceDepth || 0;
+  const onCrossDelivery = options.onCrossDelivery || (() => {});
 
   const allNodesRaw = canvas.nodes || [];
   const allEdgesRaw = canvas.edges || [];
@@ -153,6 +162,13 @@ export async function runCanvas(canvas, options = {}) {
         log(`  ❌ ${r.error}`);
         setStatus(nodeId, 'error', { error: r.error });
         results.set(nodeId, '');
+      } else if (r.status === 'waiting') {
+        // crossInput 还没收到数据，跳过下游
+        log(`  ⏳ 等待跨画布回写`);
+        setStatus(nodeId, 'waiting');
+        results.set(nodeId, '');
+        // 跳过下游推进
+        continue;
       } else {
         // splitter：分发 segments 到端口
         if (r.segments) {
@@ -169,6 +185,27 @@ export async function runCanvas(canvas, options = {}) {
         setStatus(nodeId, r.status, r.dataPatch);
         if (r.dataPatch) setData(nodeId, r.dataPatch);
         log(`  ✅ ${typeof r.output === 'string' ? `${r.output.length} 字符` : 'ok'}`);
+
+        // v1.7 P2-A：crossOutput 节点跑完后投递到远端 crossInput
+        if (data?.type === 'crossOutput' && srcCanvasId) {
+          try {
+            const deliver = deliverOutput(srcCanvasId, nodeId, r.output ?? '');
+            if (deliver.delivered) {
+              log(`  🌐 已投递到 ${deliver.dstCanvasId} / ${deliver.dstNodeId}（等待开关：${deliver.hasInternalWaitEdge ? '开' : '关'}）`);
+              onCrossDelivery({
+                srcNodeId: nodeId,
+                dstCanvasId: deliver.dstCanvasId,
+                dstNodeId: deliver.dstNodeId,
+                hasInternalWaitEdge: deliver.hasInternalWaitEdge,
+                content: r.output ?? '',
+              });
+            } else {
+              log(`  ⚠️ 跨画布投递跳过（${deliver.reason}），可能尚未配置目标画布`);
+            }
+          } catch (de) {
+            log(`  ❌ 跨画布投递失败：${de.message}`);
+          }
+        }
       }
     } catch (e) {
       errors.push({ nodeId, error: e.message });

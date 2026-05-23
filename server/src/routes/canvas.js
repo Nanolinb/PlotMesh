@@ -39,6 +39,14 @@ import { getServerConfig, updateServerConfig } from '../utils/serverConfig.js';
 // v1.7 P1：server runner 双引擎
 import { runCanvas } from '../runner/runCanvas.js';
 import { saveRun, getRun, listRuns } from '../runner/runStore.js';
+// v1.7 P2-A：跨画布引用
+import {
+  listConnections,
+  findConnectionBySrc,
+  findConnectionByDst,
+  createConnection,
+  deleteConnection,
+} from '../runner/crossCanvas.js';
 
 const router = Router();
 
@@ -167,6 +175,16 @@ const NODE_TYPES_SCHEMA = {
     defaultData: { type: 'webLink', label: '🔗 Web 链接', url: '', status: 'idle' },
     notes: 'url 是 docs.qq.com 时自动走 MCP；可填 tencentDocsToken',
   },
+  crossOutput: {
+    description: '跨画布输出（v1.7 P2-A）：把上游内容投递到另一个画布的 crossInput',
+    defaultData: { type: 'crossOutput', label: '🌐 跨画布输出', output: '', status: 'idle' },
+    notes: '配 connection 后投递；同画布连到 crossInput = 自动触发远端运行（"我在等"开关）',
+  },
+  crossInput: {
+    description: '跨画布输入（v1.7 P2-A）：接收远端画布 crossOutput 的回写',
+    defaultData: { type: 'crossInput', label: '🌐 跨画布输入', text: '', status: 'waiting' },
+    notes: 'sourceCanvasId/sourceNodeId 由 server 自动填，readonly；用户不能手改 source',
+  },
   group: {
     description: '分组容器（把多个节点装一起）',
     defaultData: { type: 'group', label: '功能组', collapsed: false, childCount: 0, status: 'idle' },
@@ -179,6 +197,59 @@ const NODE_TYPES_SCHEMA = {
 // =============================================================
 router.get('/types', (_req, res) => {
   res.json({ types: NODE_TYPES_SCHEMA });
+});
+
+// =============================================================
+// v1.7 P2-A：跨画布引用（Cross-Canvas Reference）
+// 必须放在 /:id 之前，否则会被 /:id 拦截
+// =============================================================
+
+// GET /api/canvas/connections  → 列所有 connections
+// GET /api/canvas/connections?canvasId=xxx → 按画布筛选（asSrc + asDst）
+router.get('/connections', (req, res) => {
+  if (req.query.canvasId) {
+    res.json(listConnections(String(req.query.canvasId)));
+  } else {
+    const p = readPayload();
+    res.json({ connections: p.connections || [] });
+  }
+});
+
+// GET /api/canvas/connections/by-src?canvasId=&nodeId= → 查某 src 节点的关联
+router.get('/connections/by-src', (req, res) => {
+  const c = findConnectionBySrc(String(req.query.canvasId), String(req.query.nodeId));
+  res.json({ connection: c || null });
+});
+
+// GET /api/canvas/connections/by-dst?canvasId=&nodeId=
+router.get('/connections/by-dst', (req, res) => {
+  const c = findConnectionByDst(String(req.query.canvasId), String(req.query.nodeId));
+  res.json({ connection: c || null });
+});
+
+// POST /api/canvas/connections
+// body: { srcCanvasId, srcNodeId, dstCanvasId, dstNodeId? }
+router.post('/connections', (req, res) => {
+  const { srcCanvasId, srcNodeId, dstCanvasId, dstNodeId } = req.body || {};
+  if (!srcCanvasId || !srcNodeId || !dstCanvasId) {
+    return res.status(400).json({ error: 'missing_field', need: ['srcCanvasId', 'srcNodeId', 'dstCanvasId'] });
+  }
+  try {
+    const result = createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId || null);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    return res.status(400).json({ error: 'create_failed', message: e.message });
+  }
+});
+
+// DELETE /api/canvas/connections/:connId
+router.delete('/connections/:connId', (req, res) => {
+  try {
+    const removed = deleteConnection(req.params.connId);
+    res.json({ ok: true, removed });
+  } catch (e) {
+    return res.status(404).json({ error: 'not_found', message: e.message });
+  }
 });
 
 // =============================================================
@@ -467,59 +538,59 @@ function ensureRunsArray(payload) {
   if (!Array.isArray(payload.runs)) payload.runs = [];
 }
 
-// POST /api/canvas/:id/run  → 触发运行（v1.7 P1：server 直接执行）
-// body: { reason?: string, hint?: string, subset?: string[]/* 可选：只跑这些 nodeId */ }
-// 返回：202 { jobId, status: 'running' }；运行完成后 GET /:id/runs/:jobId 拿结果
-router.post('/:id/run', async (req, res) => {
-  const { reason, hint, subset, trigger } = req.body || {};
+/**
+ * 内部函数：在 server 端跑一次画布。POST /:id/run 和跨画布 cascade 都用它。
+ * @param {string} canvasId
+ * @param {{trigger?:string, traceId?:string, traceDepth?:number, subset?:string[], reason?:string}} opts
+ * @returns Promise<{jobId, status, run}>
+ */
+async function runCanvasJob(canvasId, opts = {}) {
   const now = Date.now();
   const jobId = `run-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  const canvasId = req.params.id;
+  const traceId = opts.traceId || `trace-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const traceDepth = opts.traceDepth || 0;
 
-  // 1. 先把画布 snapshot 拿出来（避免运行期被改）
-  let canvas;
-  try {
-    const payload = readPayload();
-    const c = (payload.canvases || []).find((x) => x.id === canvasId && !x.deleted);
-    if (!c) return res.status(404).json({ error: 'canvas_not_found' });
-    canvas = { nodes: c.nodes || [], edges: c.edges || [] };
-  } catch (e) {
-    return res.status(500).json({ error: 'internal', message: e.message });
+  // 拿 snapshot
+  const payload = readPayload();
+  const c = (payload.canvases || []).find((x) => x.id === canvasId && !x.deleted);
+  if (!c) {
+    return { jobId, status: 'failed', error: 'canvas_not_found' };
   }
+  const canvas = { nodes: c.nodes || [], edges: c.edges || [] };
 
-  // 2. 起 run 记录
+  // 起 run 记录
   const run = {
     jobId,
     canvasId,
     status: 'running',
-    trigger: trigger || 'api',
-    reason: reason || null,
-    hint: hint || null,
+    trigger: opts.trigger || 'api',
+    reason: opts.reason || null,
+    traceId,
+    traceDepth,
     requestedAt: now,
     startedAt: now,
     logs: [],
     results: {},
     errors: [],
-    nodeStatus: {}, // nodeId → 'running' | 'success' | 'error'
+    nodeStatus: {},
+    cascadeTriggered: [], // 此次 run 触发了哪些 cascade 子 run
   };
   saveRun(run);
 
-  // 3. 异步跑（202 立刻返回）
-  res.status(202).json({ jobId, status: 'running' });
-
-  const subsetIds = Array.isArray(subset) && subset.length ? new Set(subset) : undefined;
+  const subsetIds = Array.isArray(opts.subset) && opts.subset.length ? new Set(opts.subset) : undefined;
 
   try {
     const result = await runCanvas(canvas, {
       subsetIds,
+      canvasId,
+      traceId,
+      traceDepth,
       onLog: (msg) => {
-        const line = `[${new Date().toISOString()}] ${msg}`;
-        run.logs.push(line);
+        run.logs.push(`[${new Date().toISOString()}] ${msg}`);
       },
       onNodeStatus: (nodeId, status, dataPatch) => {
         run.nodeStatus[nodeId] = status;
         if (dataPatch) {
-          // 把 dataPatch 也写到 store.json 的 canvas.nodes 上（让前端拉到时看到状态）
           try {
             mutateStore((payload) => {
               const c = (payload.canvases || []).find((x) => x.id === canvasId);
@@ -532,11 +603,8 @@ router.post('/:id/run', async (req, res) => {
               };
               c.updatedAt = Date.now();
             });
-          } catch {
-            /* 静默：写盘失败不致命 */
-          }
+          } catch {/* swallow */}
         } else {
-          // 只更新 status
           try {
             mutateStore((payload) => {
               const c = (payload.canvases || []).find((x) => x.id === canvasId);
@@ -549,16 +617,33 @@ router.post('/:id/run', async (req, res) => {
               };
               c.updatedAt = Date.now();
             });
-          } catch {
-            /* ignore */
-          }
+          } catch {/* swallow */}
         }
       },
-      onNodeData: () => {
-        // dataPatch 已经在 onNodeStatus 里写盘了，这里是 noop
+      onNodeData: () => {/* noop */},
+      onCrossDelivery: async (info) => {
+        // 同画布连线触发：远端画布自动跑
+        if (!info.hasInternalWaitEdge) return;
+        if (traceDepth >= 10) {
+          run.logs.push(`[${new Date().toISOString()}]  ⚠️ 跨画布 cascade 已达深度上限 10，停止递归（防循环）`);
+          return;
+        }
+        try {
+          // 异步触发，不 await（让当前 run 继续完成自己的下游）
+          const subRun = await runCanvasJob(info.dstCanvasId, {
+            trigger: 'cross-cascade',
+            traceId,
+            traceDepth: traceDepth + 1,
+            reason: `cross from ${canvasId}/${info.srcNodeId}`,
+          });
+          run.cascadeTriggered.push({ canvasId: info.dstCanvasId, jobId: subRun.jobId, status: subRun.status });
+          run.logs.push(`[${new Date().toISOString()}]  🌐 触发远端画布 ${info.dstCanvasId} → 子 jobId=${subRun.jobId}`);
+          saveRun(run);
+        } catch (e) {
+          run.logs.push(`[${new Date().toISOString()}]  ❌ 触发远端画布失败：${e.message}`);
+        }
       },
       ctx: {
-        // 让 runner 内部知道自己 server 的 base url（webLink/llm 调本地 /api/web-fetch / /api/llm/chat）
         webFetchUrl: `http://localhost:${process.env.PORT || 3001}/api/web-fetch`,
         llmChatUrl: `http://localhost:${process.env.PORT || 3001}/api/llm/chat`,
       },
@@ -574,6 +659,32 @@ router.post('/:id/run', async (req, res) => {
     run.completedAt = Date.now();
     saveRun(run);
   }
+
+  return { jobId, status: run.status, run };
+}
+
+// POST /api/canvas/:id/run  → 触发运行（v1.7 P1：server 直接执行；P2-A：支持跨画布 cascade）
+router.post('/:id/run', async (req, res) => {
+  const { reason, hint, subset, trigger } = req.body || {};
+  void hint;
+  const canvasId = req.params.id;
+
+  // 简单验证画布存在
+  const payload = readPayload();
+  const c = (payload.canvases || []).find((x) => x.id === canvasId && !x.deleted);
+  if (!c) return res.status(404).json({ error: 'canvas_not_found' });
+
+  // 异步开跑，202 立即返回
+  const jobId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  res.status(202).json({ jobId: 'pending-async', status: 'running' });
+
+  // 走内部 helper
+  runCanvasJob(canvasId, {
+    trigger: trigger || 'api',
+    reason: reason || null,
+    subset,
+  }).catch(() => {/* 已在 runCanvasJob 内处理写盘 */});
+  void jobId;
 });
 
 // GET /api/canvas/:id/runs/:jobId  → 查运行状态（v1.7 P1：从 runStore 取）

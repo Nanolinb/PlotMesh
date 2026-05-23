@@ -248,6 +248,30 @@ export function runFileUploadStub() {
   };
 }
 
+/**
+ * crossOutput：把上游内容投递到远端画布的 crossInput
+ * - upstream0 是上游内容
+ * - 实际投递逻辑在 runCanvas 里调用 crossCanvas.deliverOutput；这里只把 output 写到 data.output
+ *   让 runCanvas 拿到后做投递（避免节点函数依赖 store 模块，保持纯函数）
+ */
+export function runCrossOutput(node, upstream) {
+  const t = stripFilePrefix(upstream || '');
+  return { output: t, status: 'success', dataPatch: { output: t } };
+}
+
+/**
+ * crossInput：作为 source（接收远端结果）—— 在执行时返回 data.text 当上游
+ * 如果 status=waiting（还没收到），返回空字符串 + 标记 waiting
+ */
+export function runCrossInput(node) {
+  const text = node.data?.text || '';
+  const status = node.data?.status || 'waiting';
+  if (status === 'waiting' && !text) {
+    return { output: '', status: 'waiting' };
+  }
+  return { output: text, status: 'success' };
+}
+
 /** 入口：根据节点类型分发 */
 export async function runNode(node, upstreamList, ctx) {
   const type = node.data?.type || node.type;
@@ -271,6 +295,10 @@ export async function runNode(node, upstreamList, ctx) {
       return runLLM(node, upstreamList, ctx);
     case 'fileUpload':
       return runFileUploadStub();
+    case 'crossOutput':
+      return runCrossOutput(node, upstream0);
+    case 'crossInput':
+      return runCrossInput(node);
     default:
       return { output: '', status: 'error', error: `不支持的节点类型: ${type}` };
   }

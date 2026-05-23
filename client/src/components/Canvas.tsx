@@ -42,6 +42,9 @@ import SwimlaneNode from './nodes/SwimlaneNode';
 import TimelineNode from './nodes/TimelineNode';
 import SplitterNode, { splitText as splitTextHelper } from './nodes/SplitterNode';
 import WebLinkNode from './nodes/WebLinkNode';
+// v1.7 P2-A：跨画布引用
+import CrossOutputNode from './nodes/CrossOutputNode';
+import CrossInputNode from './nodes/CrossInputNode';
 import Sidebar from './Sidebar';
 // v1.6 切片 3：外部 AI 通过 REST/MCP 触发的运行任务，前端 worker 5s 拉一次跑画布
 // eslint-disable-next-line import/order
@@ -64,6 +67,9 @@ const nodeTypes = {
   webLink: WebLinkNode,
   // v1.6.0-β SwimlaneNode（独立类型；想下线删此行 + 顶部 import 即可）
   swimlane: SwimlaneNode,
+  // v1.7 P2-A 跨画布引用
+  crossOutput: CrossOutputNode,
+  crossInput: CrossInputNode,
 };
 
 let idCounter = 0;
@@ -136,6 +142,20 @@ function getDefaultData(type: string): any {
       outputLayout: 'right-vertical',     // 'right-vertical'（右侧纵向）| 'bottom-horizontal'（底部横向）
       outputLabelMode: 'index',           // 'index'（编号 #1#2）| 'preview'（用首段前 8 字）
       derivedOutputIds: [],               // 已派生 output 节点的 id 列表（增量补齐 / 删多余用）
+    };
+    case 'crossOutput': return {
+      type: 'crossOutput',
+      label: '🌐 跨画布输出',
+      output: '',
+      status: 'idle',
+      // targetCanvasId / targetCanvasName / targetNodeId 由"配置目标画布"弹窗填
+    };
+    case 'crossInput': return {
+      type: 'crossInput',
+      label: '🌐 跨画布输入',
+      text: '',
+      status: 'waiting',
+      // sourceCanvasId / sourceNodeId 由 server 自动填，readonly
     };
     default: return { type: 'textPrompt', label: '', text: '', promptNumber: 0, status: 'idle' };
   }
