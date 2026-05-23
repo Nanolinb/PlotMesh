@@ -214,32 +214,52 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   const visibleItems = sortedItems.filter((rec) => !closedIds.has(rec.id) || rec.id === activeCanvasId);
   const hiddenCount = sortedItems.length - visibleItems.length;
 
-  // v1.7：滚动可达性检测（左右按钮显示控制）
+  // v1.7：滚动可达性检测（左右按钮启用/禁用）
+  const [isOverflowing, setIsOverflowing] = useState(false);
   const updateScrollable = () => {
     const el = scrollRef.current;
     if (!el) return;
+    const overflow = el.scrollWidth > el.clientWidth + 1;
+    setIsOverflowing(overflow);
     setCanScrollLeft(el.scrollLeft > 4);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+    setCanScrollRight(overflow && el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
   };
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // 多次延迟测量，等 tab DOM 渲染完毕（首次挂载 scrollWidth 可能还是 0）
     updateScrollable();
+    const t1 = setTimeout(updateScrollable, 50);
+    const t2 = setTimeout(updateScrollable, 200);
     const onScroll = () => updateScrollable();
     el.addEventListener('scroll', onScroll, { passive: true });
-    // wheel 转横滚（用户用滚轮也能左右翻页签）
+
+    // v1.7：wheel 事件统一拦截，转横滚
+    // - macOS 触摸板双指横向滑动 → deltaX，直接累加到 scrollLeft
+    // - macOS 触摸板/鼠标滚轮垂直滚动 → deltaY，也转成横滚（页签里向上滚没意义）
+    // - 设 passive:false 才能 preventDefault 阻止页面整体竖滚
     const onWheel = (e: WheelEvent) => {
-      // 只在垂直滚动时拦截转换为横滚
-      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-        el.scrollLeft += e.deltaY;
+      const dx = e.deltaX;
+      const dy = e.deltaY;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        // 已经是横向（触摸板双指水平）—— 让浏览器原生滚（horizontal default 行为已生效）
+        // 但有些场景浏览器不会自动横滚，强制处理一下
+        el.scrollLeft += dx;
+        e.preventDefault();
+      } else if (Math.abs(dy) > 0) {
+        // 垂直 → 转横向
+        el.scrollLeft += dy;
         e.preventDefault();
       }
     };
     el.addEventListener('wheel', onWheel, { passive: false });
+
     // 容器变化（窗口缩放）也重测
     const ro = new ResizeObserver(updateScrollable);
     ro.observe(el);
     return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
       el.removeEventListener('scroll', onScroll);
       el.removeEventListener('wheel', onWheel as any);
       ro.disconnect();
@@ -304,13 +324,18 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
         ≡
       </button>
 
-      {/* v1.7：左滚按钮（仅在能左滚时显示） */}
-      {canScrollLeft && (
+      {/* v1.7：左滚按钮（溢出时显示；启用/禁用根据 canScrollLeft） */}
+      {isOverflowing && (
         <button
           className="canvas-tabs-icon-btn"
           onClick={() => scrollByDir(-1)}
-          title="向左滚动"
-          style={{ flexShrink: 0 }}
+          disabled={!canScrollLeft}
+          title={canScrollLeft ? '向左滚动' : '已到最左'}
+          style={{
+            flexShrink: 0,
+            opacity: canScrollLeft ? 1 : 0.35,
+            cursor: canScrollLeft ? 'pointer' : 'not-allowed',
+          }}
         >
           ‹
         </button>
@@ -389,13 +414,18 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
         </button>
       </div>
 
-      {/* v1.7：右滚按钮（仅在能右滚时显示） */}
-      {canScrollRight && (
+      {/* v1.7：右滚按钮（溢出时显示；启用/禁用根据 canScrollRight） */}
+      {isOverflowing && (
         <button
           className="canvas-tabs-icon-btn"
           onClick={() => scrollByDir(1)}
-          title="向右滚动"
-          style={{ flexShrink: 0 }}
+          disabled={!canScrollRight}
+          title={canScrollRight ? '向右滚动' : '已到最右'}
+          style={{
+            flexShrink: 0,
+            opacity: canScrollRight ? 1 : 0.35,
+            cursor: canScrollRight ? 'pointer' : 'not-allowed',
+          }}
         >
           ›
         </button>
