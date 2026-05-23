@@ -46,6 +46,7 @@ import {
   findConnectionByDst,
   createConnection,
   deleteConnection,
+  deliverOutput,
 } from '../runner/crossCanvas.js';
 
 const router = Router();
@@ -249,6 +250,40 @@ router.delete('/connections/:connId', (req, res) => {
     res.json({ ok: true, removed });
   } catch (e) {
     return res.status(404).json({ error: 'not_found', message: e.message });
+  }
+});
+
+// v1.7 P2-A：前端 ▶️ 跑到 crossOutput 时调这里 → server 写入 dst.crossInput；
+// 如同画布连线（"我在等"开关开），还自动 cascade 触发远端画布运行
+// body: { srcCanvasId, srcNodeId, content }
+router.post('/cross-deliver', async (req, res) => {
+  const { srcCanvasId, srcNodeId, content } = req.body || {};
+  if (!srcCanvasId || !srcNodeId) {
+    return res.status(400).json({ error: 'missing_field', need: ['srcCanvasId', 'srcNodeId'] });
+  }
+  try {
+    const deliver = deliverOutput(srcCanvasId, srcNodeId, content || '');
+    if (!deliver.delivered) {
+      return res.json({ delivered: false, reason: deliver.reason });
+    }
+    let cascadeTriggered = false;
+    if (deliver.hasInternalWaitEdge) {
+      // 异步触发远端画布，立即返回（前端不等远端跑完）
+      runCanvasJob(deliver.dstCanvasId, {
+        trigger: 'cross-cascade',
+        reason: `cross from ${srcCanvasId}/${srcNodeId}`,
+      }).catch(() => {/* swallow */});
+      cascadeTriggered = true;
+    }
+    res.json({
+      delivered: true,
+      dstCanvasId: deliver.dstCanvasId,
+      dstNodeId: deliver.dstNodeId,
+      hasInternalWaitEdge: deliver.hasInternalWaitEdge,
+      cascadeTriggered,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'internal', message: e.message });
   }
 });
 

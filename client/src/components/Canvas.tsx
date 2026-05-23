@@ -52,7 +52,7 @@ import { startRunWorker, stopRunWorker, type RunHooks } from '../store/runWorker
 import ApiKeyConfigModal from './ApiKeyConfigModal';
 import CanvasManager from './CanvasManager';
 import CanvasTabs from './CanvasTabs';
-import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, type RecentCanvas } from '../store/nodes';
+import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, flushRemoteSyncNow, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
   fileUpload: FileUploadNode,
@@ -1491,6 +1491,72 @@ export default function Canvas() {
           upstream = stripFilePrefix(upstream);
           results.set(nodeId, upstream);
           storeUpdateNodeData(nodeId, { status: 'success', output: upstream });
+        }
+
+        // v1.7 P2-A：crossOutput → 投递到远端 crossInput（异步 POST 给 server）
+        // 前端 ▶️ 跑到这里时，调 server 的 POST /api/canvas/:id/cross-deliver 让 server 写到 dst
+        if (data.type === 'crossOutput') {
+          let upstream = '';
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
+          upstream = stripFilePrefix(upstream);
+          results.set(nodeId, upstream);
+          // 立即标记 running，发出后变 success
+          storeUpdateNodeData(nodeId, { status: 'running', output: upstream });
+          try {
+            // 先 flush 本地最新画布到 server（确保 server 拿到最新边/节点）
+            await flushRemoteSyncNow();
+            const activeId = useNodeStore.getState().activeCanvasId;
+            const r = await fetch('/api/canvas/cross-deliver', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                srcCanvasId: activeId,
+                srcNodeId: nodeId,
+                content: upstream,
+              }),
+            });
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.message || `HTTP ${r.status}`);
+            if (d.delivered) {
+              storeUpdateNodeData(nodeId, {
+                status: 'success',
+                output: upstream,
+                lastDeliveredAt: Date.now(),
+              });
+              // cascade：对方画布如果"我在等"开关开了（同画布有 crossOutput→crossInput 边），
+              // server 已经自动触发了；这边只需要 reload 远端画布看结果
+              if (d.cascadeTriggered) {
+                // 等 1.5s 让远端跑完，再 reload 当前画布看 crossInput 是否已被写入
+                setTimeout(async () => {
+                  try {
+                    const { reloadCanvasFromServer } = await import('../store/nodes');
+                    await reloadCanvasFromServer(activeId!);
+                  } catch {/* swallow */}
+                }, 1500);
+              }
+            } else {
+              storeUpdateNodeData(nodeId, {
+                status: 'error',
+                error: d.reason || '未配置目标画布',
+              });
+            }
+          } catch (e: any) {
+            storeUpdateNodeData(nodeId, {
+              status: 'error',
+              error: e?.message || String(e),
+            });
+          }
+        }
+
+        // crossInput：作为上游源，把 data.text 当作输出
+        if (data.type === 'crossInput') {
+          const text = data.text || '';
+          results.set(nodeId, text);
+          if (data.status === 'received' || text) {
+            storeUpdateNodeData(nodeId, { status: 'received' });
+          } else {
+            storeUpdateNodeData(nodeId, { status: 'waiting' });
+          }
         }
 
         // 时间轴：把上游文本写到 data.upstreamText 让节点 UI 自己解析时间点；
