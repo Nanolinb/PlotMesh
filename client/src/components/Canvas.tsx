@@ -2667,20 +2667,25 @@ export default function Canvas() {
           </button>
 
           {/* v1.7：折叠/展开次要按钮（API 配置 / 存常用 / 导入导出 / 主题） */}
-          <div style={{ position: 'relative', flexShrink: 0 }}>
+          <div style={{ position: 'relative', flexShrink: 0, display: 'flex', gap: 4 }}>
+            {/* 展开/折叠 总开关：始终一个按钮在外面 */}
             <button
               className="toolbar-btn"
-              onClick={() => {
-                if (toolbarCompact) {
-                  setShowCompactMenu((v) => !v);
-                } else {
-                  toggleToolbarCompact();
-                }
-              }}
-              title={toolbarCompact ? '展开次要按钮（API 配置 / 导入导出 / 主题）' : '折叠次要按钮腾出空间'}
+              onClick={toggleToolbarCompact}
+              title={toolbarCompact ? '展开次要按钮' : '折叠次要按钮腾出空间'}
             >
-              {toolbarCompact ? '⋯' : '«'}
+              {toolbarCompact ? '»' : '«'}
             </button>
+            {/* 紧凑模式下额外加一个 ⋯ 弹菜单按钮 */}
+            {toolbarCompact && (
+              <button
+                className="toolbar-btn"
+                onClick={() => setShowCompactMenu((v) => !v)}
+                title="访问折叠的次要按钮"
+              >
+                ⋯
+              </button>
+            )}
             {toolbarCompact && showCompactMenu && (
               <>
                 <div

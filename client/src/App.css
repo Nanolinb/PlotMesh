@@ -328,7 +328,11 @@ body {
 .canvas-container {
   position: relative;
   flex: 1;
+  /* v1.7：min-width:0 + overflow:hidden 防止节点画布把整个容器撑出窗口，
+     从而保证 MiniMap/toolbar/页签 都能正确定位在画布右下角 */
+  min-width: 0;
   height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
