@@ -292,10 +292,48 @@ export async function flushRemoteSyncNow(): Promise<boolean> {
     clearTimeout(remoteSyncTimer);
     remoteSyncTimer = null;
   }
+  // v1.7 P2-A 修复：遇到 409 conflict 自动重试。原 runRemoteSync 单次失败就放弃，
+  // 但跨画布配置场景必须确保推送成功，否则 server 找不到刚建的节点。
+  // 实现：直接调底层 syncAdapter，conflict 时先拉远端 version，再用新 base 重试。
   try {
-    await runRemoteSync();
-    return true;
-  } catch {
+    const {
+      isSkipThisSession,
+      getKnownRemoteVersion,
+      setKnownRemoteVersion,
+      computeLocalSummary,
+      pushSnapshot,
+      fetchRemoteMeta,
+    } = await import('./syncAdapter');
+    if (isSkipThisSession()) return false;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { payload, summary } = await computeLocalSummary();
+      const result = await pushSnapshot(getKnownRemoteVersion(), payload, {
+        canvasCount: summary.canvasCount,
+        nodeCount: summary.nodeCount,
+        sizeBytes: summary.sizeBytes,
+      });
+      if (result.ok) {
+        setKnownRemoteVersion(result.version);
+        return true;
+      }
+      if (result.conflict) {
+        // server 自己写了一次（比如 server runner / cross-deliver 改了节点 status），
+        // 拉新 version 再 PUT 一次（最多 3 次）
+        const meta = await fetchRemoteMeta();
+        if (meta && meta.exists && typeof meta.version === 'number') {
+          setKnownRemoteVersion(meta.version);
+          continue;
+        }
+        return false;
+      }
+      // 其他错（网络等）
+      console.warn('[plotmesh] flushRemoteSyncNow 失败：', result.error);
+      return false;
+    }
+    return false;
+  } catch (e) {
+    console.warn('[plotmesh] flushRemoteSyncNow 异常：', e);
     return false;
   }
 }
