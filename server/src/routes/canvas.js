@@ -36,6 +36,9 @@ import {
   resetApiToken,
 } from '../middleware/apiToken.js';
 import { getServerConfig, updateServerConfig } from '../utils/serverConfig.js';
+// v1.7 P1：server runner 双引擎
+import { runCanvas } from '../runner/runCanvas.js';
+import { saveRun, getRun, listRuns } from '../runner/runStore.js';
 
 const router = Router();
 
@@ -464,55 +467,134 @@ function ensureRunsArray(payload) {
   if (!Array.isArray(payload.runs)) payload.runs = [];
 }
 
-// POST /api/canvas/:id/run  → 触发运行；返回 { jobId }
-// body: { reason?: string, hint?: string }（hint 是给执行器的可选提示，目前不读）
-router.post('/:id/run', (req, res) => {
-  const { reason, hint } = req.body || {};
+// POST /api/canvas/:id/run  → 触发运行（v1.7 P1：server 直接执行）
+// body: { reason?: string, hint?: string, subset?: string[]/* 可选：只跑这些 nodeId */ }
+// 返回：202 { jobId, status: 'running' }；运行完成后 GET /:id/runs/:jobId 拿结果
+router.post('/:id/run', async (req, res) => {
+  const { reason, hint, subset, trigger } = req.body || {};
   const now = Date.now();
   const jobId = `run-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  let result;
+  const canvasId = req.params.id;
+
+  // 1. 先把画布 snapshot 拿出来（避免运行期被改）
+  let canvas;
   try {
-    result = mutateStore((payload) => {
-      const c = findCanvas(payload, req.params.id);
-      if (!c) throw new Error('canvas_not_found');
-      ensureRunsArray(payload);
-      payload.runs.push({
-        jobId,
-        canvasId: req.params.id,
-        status: 'pending',
-        requestedAt: now,
-        reason: reason || null,
-        hint: hint || null,
-        log: [],
-        results: {},
-      });
-    });
+    const payload = readPayload();
+    const c = (payload.canvases || []).find((x) => x.id === canvasId && !x.deleted);
+    if (!c) return res.status(404).json({ error: 'canvas_not_found' });
+    canvas = { nodes: c.nodes || [], edges: c.edges || [] };
   } catch (e) {
-    if (e.message === 'canvas_not_found') return res.status(404).json({ error: 'canvas_not_found' });
     return res.status(500).json({ error: 'internal', message: e.message });
   }
-  res.status(202).json({ jobId, status: 'pending', store: result });
+
+  // 2. 起 run 记录
+  const run = {
+    jobId,
+    canvasId,
+    status: 'running',
+    trigger: trigger || 'api',
+    reason: reason || null,
+    hint: hint || null,
+    requestedAt: now,
+    startedAt: now,
+    logs: [],
+    results: {},
+    errors: [],
+    nodeStatus: {}, // nodeId → 'running' | 'success' | 'error'
+  };
+  saveRun(run);
+
+  // 3. 异步跑（202 立刻返回）
+  res.status(202).json({ jobId, status: 'running' });
+
+  const subsetIds = Array.isArray(subset) && subset.length ? new Set(subset) : undefined;
+
+  try {
+    const result = await runCanvas(canvas, {
+      subsetIds,
+      onLog: (msg) => {
+        const line = `[${new Date().toISOString()}] ${msg}`;
+        run.logs.push(line);
+      },
+      onNodeStatus: (nodeId, status, dataPatch) => {
+        run.nodeStatus[nodeId] = status;
+        if (dataPatch) {
+          // 把 dataPatch 也写到 store.json 的 canvas.nodes 上（让前端拉到时看到状态）
+          try {
+            mutateStore((payload) => {
+              const c = (payload.canvases || []).find((x) => x.id === canvasId);
+              if (!c || !Array.isArray(c.nodes)) return;
+              const idx = c.nodes.findIndex((n) => n.id === nodeId);
+              if (idx < 0) return;
+              c.nodes[idx] = {
+                ...c.nodes[idx],
+                data: { ...c.nodes[idx].data, ...dataPatch, status },
+              };
+              c.updatedAt = Date.now();
+            });
+          } catch {
+            /* 静默：写盘失败不致命 */
+          }
+        } else {
+          // 只更新 status
+          try {
+            mutateStore((payload) => {
+              const c = (payload.canvases || []).find((x) => x.id === canvasId);
+              if (!c || !Array.isArray(c.nodes)) return;
+              const idx = c.nodes.findIndex((n) => n.id === nodeId);
+              if (idx < 0) return;
+              c.nodes[idx] = {
+                ...c.nodes[idx],
+                data: { ...c.nodes[idx].data, status },
+              };
+              c.updatedAt = Date.now();
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      },
+      onNodeData: () => {
+        // dataPatch 已经在 onNodeStatus 里写盘了，这里是 noop
+      },
+      ctx: {
+        // 让 runner 内部知道自己 server 的 base url（webLink/llm 调本地 /api/web-fetch / /api/llm/chat）
+        webFetchUrl: `http://localhost:${process.env.PORT || 3001}/api/web-fetch`,
+        llmChatUrl: `http://localhost:${process.env.PORT || 3001}/api/llm/chat`,
+      },
+    });
+    run.results = result.results;
+    run.errors = result.errors;
+    run.status = result.ok ? 'succeeded' : 'failed';
+    run.completedAt = Date.now();
+    saveRun(run);
+  } catch (e) {
+    run.status = 'failed';
+    run.errors.push({ nodeId: null, error: e.message });
+    run.completedAt = Date.now();
+    saveRun(run);
+  }
 });
 
-// GET /api/canvas/:id/runs/:jobId  → 查运行状态
+// GET /api/canvas/:id/runs/:jobId  → 查运行状态（v1.7 P1：从 runStore 取）
 router.get('/:id/runs/:jobId', (req, res) => {
-  const p = readPayload();
-  const job = (p.runs || []).find((r) => r.jobId === req.params.jobId && r.canvasId === req.params.id);
-  if (!job) return res.status(404).json({ error: 'job_not_found' });
-  res.json({ job });
+  const run = getRun(req.params.jobId);
+  if (!run || run.canvasId !== req.params.id) {
+    return res.status(404).json({ error: 'job_not_found' });
+  }
+  res.json({ job: run });
 });
 
-// GET /api/canvas/:id/runs  → 列出该画布下所有 job（debug 用，按 requestedAt 倒序）
+// GET /api/canvas/:id/runs  → 列出该画布的最近运行（默认 20 条，元数据，不含 logs/results）
 router.get('/:id/runs', (req, res) => {
-  const p = readPayload();
-  const jobs = (p.runs || [])
-    .filter((r) => r.canvasId === req.params.id)
-    .sort((a, b) => b.requestedAt - a.requestedAt);
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const jobs = listRuns(req.params.id, limit);
   res.json({ jobs });
 });
 
 // =============================================================
-// 给前端 polling worker 用的内部接口（不需要鉴权额外限制，已经过 token 中间件）
+// v1.6 前端 polling worker 接口（v1.7 P1 起前端不再用，但暂留兼容）
+// 未来某版本会删除。新代码走 POST /:id/run（server 直接执行）。
 // =============================================================
 
 // GET /api/canvas/_runs/pending  → 拿所有 pending（前端轮询用）

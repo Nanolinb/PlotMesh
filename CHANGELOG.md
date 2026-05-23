@@ -5,6 +5,45 @@
 
 ---
 
+## [1.7.0-alpha.1] — 2026-05-23
+
+> v1.7 P1 第一刀：server runner 双引擎。前端 ▶️ 仍走前端引擎（0 延迟，不动）；server 端新增独立 runner 服务于 MCP/外部 API/未来定时触发等"无前端"场景。runs 持久化到 `~/.plotmesh/runs/`，LRU 100 条。
+
+### Added · 新增
+
+#### server runner（双引擎共存）
+- **`server/src/runner/nodeRunners.js`**：7 个节点的 server 端执行函数（textPrompt/textTransform/condition/splitter/output/llm/webLink），逻辑跟前端 Canvas.tsx:executeFlow 1:1 对齐
+- **`server/src/runner/splitText.js`**：splitter 节点的切片函数镜像（auto/json-array/numbered/list/delimiter/regex 6 种模式）
+- **`server/src/runner/runCanvas.js`**：拓扑排序 + 调度，处理折叠 group / condition 分支跳过 / splitter 端口分发
+- **`server/src/runner/runStore.js`**：runs 持久化到 `~/.plotmesh/runs/<jobId>.json`，LRU 100 条
+
+#### POST /api/canvas/:id/run 改为 server 直接执行
+- 旧行为（v1.6）：写 pending job → 前端 polling worker 抢锁来跑（必须前端开着）
+- 新行为：server 直接 `runCanvas`，202 异步返回，运行期间持续写 store.json 节点状态
+- GET /:id/runs/:jobId 从 runStore 取
+- GET /:id/runs?limit=N 列表只返回元数据（不含 logs/results）
+
+#### 前端
+- 前端 ▶️ 行为完全不变（保 0 延迟，阶段性验证不被拖累）
+- 前端 polling worker (`runWorker.ts`) 不再启动（保留代码备查，回滚一行注释即可）
+
+### Changed
+- server 1.6.4 → 1.7.0-alpha.1
+- client 1.6.4 → 1.7.0-alpha.1
+
+### 已验证
+- textPrompt → textTransform(trim) → output：18→14 字符正确，status=succeeded
+- textPrompt → splitter(auto) → 3 outputs：编号列表分成「苹果/香蕉/橙子」，端口 out__0/1/2 分发正确
+- runs 持久化文件 `~/.plotmesh/runs/run-*.json` 写盘成功
+- 节点 status 实时回写 store.json
+
+### 待办（P1 第二刀）
+- SSE 推送进度（仅外部触发场景，不影响前端 ▶️）
+- 弱化版定时触发
+- 然后 P2 跨画布引用
+
+---
+
 ## [1.6.4] — 2026-05-22
 
 ### Fixed · 修复

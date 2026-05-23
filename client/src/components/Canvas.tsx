@@ -1889,7 +1889,11 @@ export default function Canvas() {
       }
     };
     const getActive = () => useNodeStore.getState().activeCanvasId || null;
-    startRunWorker(runner, getActive);
+    // v1.7 P1：server runner 双引擎 — POST /api/canvas/:id/run 现在直接由 server 执行，
+    // 不再写 pending job。前端 polling worker 因此变成空跑，故停用。
+    // 代码保留备查，runWorker.ts 文件未删；如需回滚到 v1.6 流程，把下行取消注释即可。
+    // startRunWorker(runner, getActive);
+    void runner; void getActive;
     return () => stopRunWorker();
   }, []);
 
