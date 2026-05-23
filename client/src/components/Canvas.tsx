@@ -2218,8 +2218,18 @@ export default function Canvas() {
           />
           <Controls />
           <MiniMap
+            position="bottom-right"
+            pannable
+            zoomable
             nodeColor={() => '#6366f1'}
-            style={{ background: theme === 'dark' ? '#0b1220' : '#f8fafc' }}
+            style={{
+              background: theme === 'dark' ? '#0b1220' : '#f8fafc',
+              width: 180,
+              height: 120,
+              // v1.7：避免和 toolbar 重叠 + 紧贴右下角
+              right: 12,
+              bottom: 12,
+            }}
           />
         </ReactFlow>
 
