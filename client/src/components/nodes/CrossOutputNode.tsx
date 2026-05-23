@@ -12,7 +12,7 @@
  */
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
-import { useNodeStore } from '../../store/nodes';
+import { useNodeStore, flushRemoteSyncNow } from '../../store/nodes';
 
 type Props = {
   id: string;
@@ -198,6 +198,11 @@ function CrossTargetPicker({ srcCanvasId, srcNodeId, currentTargetCanvasId, onCl
     setSubmitting(true);
     setErr('');
     try {
+      // v1.7 P2-A 关键修复：先把本地 IDB 强制 flush 到 server，
+      // 否则刚拖出来的 crossOutput 节点 server 还没拿到（防抖 2s），
+      // POST /connections 会报 src_node_not_found
+      await flushRemoteSyncNow();
+
       const body: any = {
         srcCanvasId,
         srcNodeId,
@@ -220,6 +225,15 @@ function CrossTargetPicker({ srcCanvasId, srcNodeId, currentTargetCanvasId, onCl
         targetCanvasName: targetCanvas?.name || selectedCanvasId,
         targetNodeId: dstNodeId,
       } as any);
+      // server 端在 dst 画布上自动建了 crossInput 节点，需要把 server 最新画布拉回前端
+      // （否则切到 dst 画布看不到自动建的 crossInput）
+      // 这里先 reload，让 server 的画布数据覆盖本地
+      try {
+        const { reloadCanvasFromServer } = await import('../../store/nodes');
+        if (typeof reloadCanvasFromServer === 'function') {
+          await reloadCanvasFromServer(selectedCanvasId);
+        }
+      } catch { /* 没有此 API 就跳过；下次切画布时会拉到 */ }
       onConnected();
     } catch (e: any) {
       setErr(`配置失败：${e.message}`);

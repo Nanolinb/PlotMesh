@@ -280,6 +280,66 @@ function scheduleRemoteSync() {
   }, REMOTE_SYNC_DEBOUNCE_MS);
 }
 
+/**
+ * v1.7 P2-A：强制立即推送本地快照到 server（不等防抖）。
+ * 用于跨画布配置等\"必须 server 已知最新节点\"的场景，避免出现
+ * src_node_not_found 错误（节点刚在前端建好，server 还没拿到）。
+ *
+ * @returns 推送是否成功（同步等待返回）
+ */
+export async function flushRemoteSyncNow(): Promise<boolean> {
+  if (remoteSyncTimer) {
+    clearTimeout(remoteSyncTimer);
+    remoteSyncTimer = null;
+  }
+  try {
+    await runRemoteSync();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * v1.7 P2-A：从 server 拉一个画布的最新数据覆盖本地 IDB + store。
+ * 用于跨画布配置后看到 server 自动建的 crossInput 节点。
+ *
+ * @param canvasId 要刷新的画布 id
+ */
+export async function reloadCanvasFromServer(canvasId: string): Promise<boolean> {
+  try {
+    const r = await fetch(`/api/canvas/${canvasId}`);
+    if (!r.ok) return false;
+    const data = await r.json();
+    const c = data?.canvas;
+    if (!c) return false;
+    const { putCanvas } = await import('./storage');
+    await putCanvas({
+      id: c.id,
+      name: c.name,
+      nodes: c.nodes || [],
+      edges: c.edges || [],
+      createdAt: c.createdAt || Date.now(),
+      updatedAt: c.updatedAt || Date.now(),
+      lastOpenedAt: c.lastOpenedAt,
+      thumbnail: c.thumbnail,
+      viewport: c.viewport,
+    } as any);
+    // 如果该画布是当前活动画布，同步刷新 store 内存中的 nodes/edges
+    const state = useNodeStore.getState();
+    if (state.activeCanvasId === canvasId) {
+      useNodeStore.setState({
+        nodes: c.nodes || [],
+        edges: c.edges || [],
+      });
+    }
+    return true;
+  } catch (e) {
+    console.warn('[plotmesh] reloadCanvasFromServer 失败：', e);
+    return false;
+  }
+}
+
 /** 真正执行远端推送（fire-and-forget；失败只 console.warn） */
 async function runRemoteSync() {
   try {
