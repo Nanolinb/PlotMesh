@@ -2002,6 +2002,46 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     // 2) 灌入目标画布
     let target = await getCanvas(canvasId);
     const now = Date.now();
+
+    // v1.7 P2-A：切画布时**对含 crossInput/crossOutput 的画布**先从 server reload 一次，
+    // 因为这些节点的 text/output/status 是 server 单方面写的，本地 IDB 可能比 server 旧。
+    // 这是\"切去再切回看到旧数据\"问题的根本修复。
+    try {
+      const hasCrossNodes = (target?.nodes || []).some(
+        (n: any) => n?.data?.type === 'crossInput' || n?.data?.type === 'crossOutput',
+      );
+      if (hasCrossNodes) {
+        // 异步拉 server 端最新数据并合并 crossInput/crossOutput 节点的 data
+        try {
+          const r = await fetch(`/api/canvas/${canvasId}`);
+          if (r.ok) {
+            const remote = (await r.json())?.canvas;
+            if (remote && Array.isArray(remote.nodes)) {
+              const remoteNodeMap = new Map<string, any>();
+              remote.nodes.forEach((n: any) => remoteNodeMap.set(n.id, n));
+              if (target) {
+                target = {
+                  ...target,
+                  nodes: target.nodes.map((n: any) => {
+                    const remoteN = remoteNodeMap.get(n.id);
+                    if (
+                      remoteN &&
+                      (n?.data?.type === 'crossInput' || n?.data?.type === 'crossOutput')
+                    ) {
+                      // 用 server 的 data 覆盖本地的（server 是这俩节点 data 的权威源）
+                      return { ...n, data: { ...n.data, ...remoteN.data } };
+                    }
+                    return n;
+                  }),
+                };
+                await putCanvas(target);
+              }
+            }
+          }
+        } catch {/* swallow */}
+      }
+    } catch {/* swallow */}
+
     if (!target) {
       target = {
         id: canvasId,

@@ -951,11 +951,13 @@ body {
 .canvas-toolbar.bottom {
   position: absolute;
   top: auto;
-  right: 12px;
+  /* v1.7：留出 MiniMap 的空间（默认 200×150 在右下角），避开重叠 */
+  right: calc(220px + env(safe-area-inset-right, 0px));
   bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   /* 留出左下角给 React Flow 的缩放控件 */
   left: calc(60px + env(safe-area-inset-left, 0px));
-  max-width: calc(100% - 80px);
+  /* v1.7：max-width 减去 minimap 占的空间，避免溢出 */
+  max-width: calc(100% - 300px);
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
@@ -965,6 +967,16 @@ body {
   padding: 0;
   box-shadow: none;
   gap: 6px;
+}
+
+/* v1.7：窄屏（< 900px）时把 toolbar 挪到 MiniMap 上方，避免被挤压 */
+@media (max-width: 900px) {
+  .canvas-toolbar.bottom {
+    right: 12px;
+    left: 60px;
+    bottom: calc(170px + env(safe-area-inset-bottom, 0px));
+    max-width: calc(100% - 80px);
+  }
 }
 
 /* 操作提示胶囊：放在底部 toolbar 最左边，与按钮同高 */

@@ -65,6 +65,20 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   const [closedIds, setClosedIds] = useState<Set<string>>(() => loadClosedSet());
   // v1.7：右键菜单
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; rec: CanvasRecord } | null>(null);
+  // v1.7：横滚 ref + 左右按钮显示状态
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  // v1.7：拖拽排序
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  // v1.7：自定义 tab 顺序（持久化到 LS）
+  const [tabOrder, setTabOrder] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('plotmesh-tab-order');
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
 
   const refresh = async () => {
     try {
@@ -187,8 +201,97 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   };
 
   // 渲染时过滤掉 closed 的；但 active 画布永远显示（即使在 closed 里）
-  const visibleItems = items.filter((rec) => !closedIds.has(rec.id) || rec.id === activeCanvasId);
-  const hiddenCount = items.length - visibleItems.length;
+  // 同时按 tabOrder 排序（v1.7 拖拽排序结果）
+  const sortedItems = (() => {
+    const orderMap = new Map<string, number>();
+    tabOrder.forEach((id, idx) => orderMap.set(id, idx));
+    return [...items].sort((a, b) => {
+      const ai = orderMap.has(a.id) ? orderMap.get(a.id)! : 1e9 + (a.createdAt || 0);
+      const bi = orderMap.has(b.id) ? orderMap.get(b.id)! : 1e9 + (b.createdAt || 0);
+      return ai - bi;
+    });
+  })();
+  const visibleItems = sortedItems.filter((rec) => !closedIds.has(rec.id) || rec.id === activeCanvasId);
+  const hiddenCount = sortedItems.length - visibleItems.length;
+
+  // v1.7：滚动可达性检测（左右按钮显示控制）
+  const updateScrollable = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 4);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  };
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    updateScrollable();
+    const onScroll = () => updateScrollable();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    // wheel 转横滚（用户用滚轮也能左右翻页签）
+    const onWheel = (e: WheelEvent) => {
+      // 只在垂直滚动时拦截转换为横滚
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        el.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    // 容器变化（窗口缩放）也重测
+    const ro = new ResizeObserver(updateScrollable);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      el.removeEventListener('wheel', onWheel as any);
+      ro.disconnect();
+    };
+  }, [visibleItems.length]);
+
+  const scrollByDir = (dir: 1 | -1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * 220, behavior: 'smooth' });
+  };
+
+  // v1.7：拖拽排序
+  const handleDragStart = (id: string, e: React.DragEvent) => {
+    setDraggingId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    // 必须设置 dataTransfer 才能跨 chromium 触发 dragover
+    try { e.dataTransfer.setData('text/plain', id); } catch {/* ignore */}
+  };
+  const handleDragOver = (id: string, e: React.DragEvent) => {
+    if (!draggingId) return;
+    e.preventDefault();
+    if (id !== draggingId) setDragOverId(id);
+  };
+  const handleDrop = (targetId: string, e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggingId || draggingId === targetId) {
+      setDraggingId(null);
+      setDragOverId(null);
+      return;
+    }
+    // 计算新顺序
+    const ids = sortedItems.map((c) => c.id);
+    const fromIdx = ids.indexOf(draggingId);
+    const toIdx = ids.indexOf(targetId);
+    if (fromIdx < 0 || toIdx < 0) {
+      setDraggingId(null);
+      setDragOverId(null);
+      return;
+    }
+    const next = [...ids];
+    next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, draggingId);
+    setTabOrder(next);
+    try { localStorage.setItem('plotmesh-tab-order', JSON.stringify(next)); } catch {/* ignore */}
+    setDraggingId(null);
+    setDragOverId(null);
+  };
+  const handleDragEnd = () => {
+    setDraggingId(null);
+    setDragOverId(null);
+  };
 
   return (
     <div className="canvas-tabs-bar">
@@ -201,11 +304,25 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
         ≡
       </button>
 
+      {/* v1.7：左滚按钮（仅在能左滚时显示） */}
+      {canScrollLeft && (
+        <button
+          className="canvas-tabs-icon-btn"
+          onClick={() => scrollByDir(-1)}
+          title="向左滚动"
+          style={{ flexShrink: 0 }}
+        >
+          ‹
+        </button>
+      )}
+
       {/* 横向滚动区 */}
-      <div className="canvas-tabs-scroll">
+      <div className="canvas-tabs-scroll" ref={scrollRef}>
         {visibleItems.map((rec) => {
           const isActive = rec.id === activeCanvasId;
           const isRenaming = renamingId === rec.id;
+          const isDragOver = dragOverId === rec.id && draggingId !== rec.id;
+          const isDragging = draggingId === rec.id;
           // active tab 的显示名优先用 store（避免 IDB 异步写盘期间的短暂滞后）
           const displayName =
             (isActive ? activeCanvasName : rec.name) || '未命名画布';
@@ -213,14 +330,25 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
             <div
               key={rec.id}
               className={`canvas-tab${isActive ? ' active' : ''}`}
+              draggable={!isRenaming}
+              onDragStart={(e) => handleDragStart(rec.id, e)}
+              onDragOver={(e) => handleDragOver(rec.id, e)}
+              onDrop={(e) => handleDrop(rec.id, e)}
+              onDragEnd={handleDragEnd}
               onClick={() => !isRenaming && handleSwitch(rec.id)}
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 beginRename(rec);
               }}
               onContextMenu={(e) => handleContextMenu(rec, e)}
-              title={isRenaming ? '' : `${displayName}（双击重命名 / 右键删除）`}
+              title={isRenaming ? '' : `${displayName}（双击重命名 / 拖拽排序 / 右键删除）`}
               data-canvas-id={rec.id}
+              style={{
+                opacity: isDragging ? 0.4 : 1,
+                ...(isDragOver
+                  ? { boxShadow: 'inset 3px 0 0 0 var(--accent, #6366f1)' }
+                  : null),
+              }}
             >
               {isRenaming ? (
                 <input
@@ -260,6 +388,18 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
           ＋
         </button>
       </div>
+
+      {/* v1.7：右滚按钮（仅在能右滚时显示） */}
+      {canScrollRight && (
+        <button
+          className="canvas-tabs-icon-btn"
+          onClick={() => scrollByDir(1)}
+          title="向右滚动"
+          style={{ flexShrink: 0 }}
+        >
+          ›
+        </button>
+      )}
 
       {/* ▾ 溢出菜单 */}
       <div className="canvas-tabs-overflow" ref={overflowRef}>

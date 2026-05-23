@@ -1523,6 +1523,12 @@ export default function Canvas() {
                 output: upstream,
                 lastDeliveredAt: Date.now(),
               });
+              // v1.7 P2-A：reload 目标画布的 IDB，让用户切过去能看到 crossInput 已收到
+              // （server 已经把 dst.crossInput.text 写好，但前端 IDB 还是旧的）
+              try {
+                const { reloadCanvasFromServer } = await import('../store/nodes');
+                await reloadCanvasFromServer(d.dstCanvasId);
+              } catch {/* swallow */}
               // cascade：对方画布如果"我在等"开关开了（同画布有 crossOutput→crossInput 边），
               // server 已经自动触发了；这边只需要 reload 远端画布看结果
               if (d.cascadeTriggered) {
@@ -1531,6 +1537,8 @@ export default function Canvas() {
                   try {
                     const { reloadCanvasFromServer } = await import('../store/nodes');
                     await reloadCanvasFromServer(activeId!);
+                    // 主画布也重新 reload 一次（如果远端 cascade 又跑回来）
+                    if (d.dstCanvasId) await reloadCanvasFromServer(d.dstCanvasId);
                   } catch {/* swallow */}
                 }, 1500);
               }
