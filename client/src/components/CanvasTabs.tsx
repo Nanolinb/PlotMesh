@@ -8,9 +8,10 @@
  *   - 溢出策略：横向滚动 + ▾ 溢出菜单（点击挑选画布）
  *   - id 锚定：重命名只改 name，跨画布引用走 id 不受影响
  *
- * 删除策略（v1.5.x，跨画布引用尚未落地）：
- *   - 调用 store.deleteCanvasById：当前是直删；后续 v1.x 接入 findCrossCanvasReferences 时
- *     先做引用检测、再执行删除/拒绝/换 placeholder。
+ * v1.7 起的关闭/删除策略（Chrome 风格）：
+ *   - ✕ 按钮：**关闭页签**（画布数据保留，写到 localStorage 'plotmesh-closed-tabs'），
+ *     画布仍能在 ≡ 抽屉/最近列表里重新打开
+ *   - 右键 tab → 弹菜单：重新打开关闭的 / 删除画布（带二次确认 + 不可撤销红字）
  *
  * 数据来源：
  *   - 直接 listCanvases() 从 IDB 读全部，过滤掉 'recent-' 快照前缀。
@@ -20,6 +21,24 @@ import { useEffect, useRef, useState } from 'react';
 import { useNodeStore } from '../store/nodes';
 import { listCanvases } from '../store/storage';
 import type { Canvas as CanvasRecord } from '../types/db';
+
+const CLOSED_TABS_KEY = 'plotmesh-closed-tabs';
+
+function loadClosedSet(): Set<string> {
+  try {
+    const raw = localStorage.getItem(CLOSED_TABS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveClosedSet(s: Set<string>) {
+  try {
+    localStorage.setItem(CLOSED_TABS_KEY, JSON.stringify(Array.from(s)));
+  } catch {/* ignore */}
+}
 
 interface CanvasTabsProps {
   /** 打开高级管理抽屉的回调（≡ 按钮使用） */
@@ -42,6 +61,10 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   const [renameDraft, setRenameDraft] = useState('');
   const [showOverflow, setShowOverflow] = useState(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
+  // v1.7：关闭的页签集合（只是隐藏 tab，画布数据保留）
+  const [closedIds, setClosedIds] = useState<Set<string>>(() => loadClosedSet());
+  // v1.7：右键菜单
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; rec: CanvasRecord } | null>(null);
 
   const refresh = async () => {
     try {
@@ -60,17 +83,28 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCanvasId, activeCanvasName, recentCanvasesSig]);
 
-  // 点外部关闭溢出菜单
+  // 切到一个 active 画布时，自动从 closed 集合移除（你打开了它，就不应该被隐藏）
   useEffect(() => {
-    if (!showOverflow) return;
+    if (activeCanvasId && closedIds.has(activeCanvasId)) {
+      const next = new Set(closedIds);
+      next.delete(activeCanvasId);
+      setClosedIds(next);
+      saveClosedSet(next);
+    }
+  }, [activeCanvasId, closedIds]);
+
+  // 点外部关闭溢出菜单 + 右键菜单
+  useEffect(() => {
+    if (!showOverflow && !ctxMenu) return;
     const onDocClick = (e: MouseEvent) => {
       if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
         setShowOverflow(false);
       }
+      setCtxMenu(null);
     };
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
-  }, [showOverflow]);
+  }, [showOverflow, ctxMenu]);
 
   const handleSwitch = async (id: string) => {
     if (id === activeCanvasId) return;
@@ -96,13 +130,65 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
     }
   };
 
-  const handleDelete = async (rec: CanvasRecord, e: React.MouseEvent) => {
+  /**
+   * v1.7：✕ = 关闭页签（不删数据）
+   *   - 把 id 加进 closedIds，从 tab bar 隐藏
+   *   - 如果关的是当前 active，自动切到列表里下一个未关闭的画布
+   */
+  const handleClose = async (rec: CanvasRecord, e: React.MouseEvent) => {
     e.stopPropagation();
-    // TODO(v2.0-β)：findCrossCanvasReferences(rec.id) 后再决定是否真删
-    const ok = confirm(`确定删除画布「${rec.name || '未命名'}」？\n此操作不可撤销。`);
+    const next = new Set(closedIds);
+    next.add(rec.id);
+    setClosedIds(next);
+    saveClosedSet(next);
+    // 如果关的是当前 active → 切到下一个可见画布
+    if (rec.id === activeCanvasId) {
+      const visible = items.filter((c) => !next.has(c.id) && c.id !== rec.id);
+      if (visible.length > 0) {
+        await switchActiveCanvas(visible[0].id);
+      } else {
+        // 所有画布都被关了 → 新建一个空画布（不至于让用户看到空白）
+        await createNewCanvas();
+      }
+    }
+  };
+
+  /**
+   * v1.7：右键菜单 = "重新打开关闭的画布" / "删除画布（不可撤销）"
+   */
+  const handleContextMenu = (rec: CanvasRecord, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY, rec });
+  };
+
+  const handleDelete = async (rec: CanvasRecord) => {
+    setCtxMenu(null);
+    const ok = confirm(
+      `⚠ 确定要永久删除画布「${rec.name || '未命名'}」吗？\n\n` +
+        `这会从磁盘清掉所有节点和边数据，30 天内可在回收站恢复。\n` +
+        `（如果只想从顶部页签隐藏，请用 ✕ 按钮 / 关闭页签）`,
+    );
     if (!ok) return;
     await deleteCanvasById(rec.id);
+    // 同时从 closedIds 移除（删都删了，不需要再"隐藏"）
+    if (closedIds.has(rec.id)) {
+      const next = new Set(closedIds);
+      next.delete(rec.id);
+      setClosedIds(next);
+      saveClosedSet(next);
+    }
   };
+
+  const reopenAll = () => {
+    setClosedIds(new Set());
+    saveClosedSet(new Set());
+    setCtxMenu(null);
+  };
+
+  // 渲染时过滤掉 closed 的；但 active 画布永远显示（即使在 closed 里）
+  const visibleItems = items.filter((rec) => !closedIds.has(rec.id) || rec.id === activeCanvasId);
+  const hiddenCount = items.length - visibleItems.length;
 
   return (
     <div className="canvas-tabs-bar">
@@ -117,7 +203,7 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
 
       {/* 横向滚动区 */}
       <div className="canvas-tabs-scroll">
-        {items.map((rec) => {
+        {visibleItems.map((rec) => {
           const isActive = rec.id === activeCanvasId;
           const isRenaming = renamingId === rec.id;
           // active tab 的显示名优先用 store（避免 IDB 异步写盘期间的短暂滞后）
@@ -132,7 +218,8 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
                 e.stopPropagation();
                 beginRename(rec);
               }}
-              title={isRenaming ? '' : `${displayName}（双击重命名）`}
+              onContextMenu={(e) => handleContextMenu(rec, e)}
+              title={isRenaming ? '' : `${displayName}（双击重命名 / 右键删除）`}
               data-canvas-id={rec.id}
             >
               {isRenaming ? (
@@ -154,8 +241,8 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
               {!isRenaming && (
                 <button
                   className="canvas-tab-close"
-                  onClick={(e) => handleDelete(rec, e)}
-                  title="关闭画布"
+                  onClick={(e) => handleClose(rec, e)}
+                  title="关闭页签（画布数据保留，可从 ▾ 重新打开）"
                 >
                   ✕
                 </button>
@@ -179,35 +266,127 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
         <button
           className="canvas-tabs-icon-btn"
           onClick={() => setShowOverflow((v) => !v)}
-          title="所有画布"
+          title={hiddenCount > 0 ? `所有画布（${hiddenCount} 个已关闭）` : '所有画布'}
+          style={hiddenCount > 0 ? { position: 'relative' } : undefined}
         >
           ▾
+          {hiddenCount > 0 && (
+            <span
+              style={{
+                position: 'absolute',
+                top: 2,
+                right: 2,
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#f59e0b',
+              }}
+            />
+          )}
         </button>
         {showOverflow && (
           <div className="canvas-tabs-overflow-menu">
             {items.length === 0 && (
               <div className="canvas-tabs-overflow-empty">暂无画布</div>
             )}
+            {hiddenCount > 0 && (
+              <button
+                className="canvas-tabs-overflow-item"
+                onClick={reopenAll}
+                title="把所有关闭的页签重新打开"
+                style={{ color: 'var(--accent, #6366f1)', fontWeight: 600 }}
+              >
+                ↺ 重新打开所有关闭的页签（{hiddenCount}）
+              </button>
+            )}
             {items.map((rec) => {
               const isActive = rec.id === activeCanvasId;
+              const isClosed = closedIds.has(rec.id) && !isActive;
               return (
                 <button
                   key={rec.id}
                   className={`canvas-tabs-overflow-item${isActive ? ' active' : ''}`}
                   onClick={() => {
                     setShowOverflow(false);
+                    // 点已关闭的画布 → 自动重新打开
+                    if (isClosed) {
+                      const next = new Set(closedIds);
+                      next.delete(rec.id);
+                      setClosedIds(next);
+                      saveClosedSet(next);
+                    }
                     handleSwitch(rec.id);
                   }}
-                  title={rec.name || '未命名画布'}
+                  title={
+                    isClosed
+                      ? `${rec.name || '未命名画布'}（已关闭，点击重新打开）`
+                      : rec.name || '未命名画布'
+                  }
+                  style={isClosed ? { opacity: 0.55 } : undefined}
                 >
-                  {isActive ? '● ' : ''}
+                  {isActive ? '● ' : isClosed ? '○ ' : ''}
                   {rec.name || '未命名画布'}
+                  {isClosed ? ' ·已关闭' : ''}
                 </button>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* 右键菜单 */}
+      {ctxMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: Math.min(ctxMenu.x, window.innerWidth - 220),
+            top: Math.min(ctxMenu.y, window.innerHeight - 100),
+            zIndex: 9999,
+            minWidth: 200,
+            background: 'var(--bg-card, #fff)',
+            border: '1px solid var(--border-color, #e2e8f0)',
+            borderRadius: 8,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+            padding: '6px 0',
+            fontSize: 13,
+            userSelect: 'none',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            style={{ padding: '7px 14px', cursor: 'pointer' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            onClick={() => {
+              if (ctxMenu) beginRename(ctxMenu.rec);
+              setCtxMenu(null);
+            }}
+          >
+            🏷 重命名
+          </div>
+          <div
+            style={{ padding: '7px 14px', cursor: 'pointer' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            onClick={(e) => {
+              if (ctxMenu) handleClose(ctxMenu.rec, e);
+              setCtxMenu(null);
+            }}
+          >
+            ✕ 关闭页签（保留数据）
+          </div>
+          <div style={{ height: 1, background: 'var(--border-color, #e2e8f0)', margin: '4px 0' }} />
+          <div
+            style={{ padding: '7px 14px', cursor: 'pointer', color: '#ef4444' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(239,68,68,0.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            onClick={() => ctxMenu && handleDelete(ctxMenu.rec)}
+            title="永久删除画布数据"
+          >
+            🗑 删除画布（不可撤销）
+          </div>
+        </div>
+      )}
     </div>
   );
 }
