@@ -176,6 +176,22 @@ function stripRuntimeFields(nodes: any[]): any[] {
   return nodes.map((n) => {
     if (!n.data) return n;
     const cleanedData: any = { ...n.data };
+    const nodeType = n.data?.type || n.type;
+
+    // v1.7 P2-A 例外：crossInput / crossOutput 的"运行时字段"实际是跨画布通信的
+    // 关键状态，切画布时不能丢。否则切一下页签所有跨画布数据就都清零了。
+    //
+    // crossInput  保留：text（远端写入的内容）、receivedAt、status（waiting/received）
+    //                  这些是 server 通过 deliverOutput 写过来的"事实"，不是本地输出
+    // crossOutput 保留：targetCanvasId/targetCanvasName/targetNodeId（关联配置）、
+    //                  output（已投递的内容备查）、status、lastDeliveredAt
+    if (nodeType === 'crossInput' || nodeType === 'crossOutput') {
+      // 不清 output / status / text；除非真正的临时字段（streamOutput）
+      if ('streamOutput' in cleanedData) cleanedData.streamOutput = '';
+      // status / output / text / 其他字段全部保留
+      return { ...n, data: cleanedData };
+    }
+
     if ('output' in cleanedData) cleanedData.output = '';
     if ('streamOutput' in cleanedData) cleanedData.streamOutput = '';
     if ('error' in cleanedData) cleanedData.error = undefined;
