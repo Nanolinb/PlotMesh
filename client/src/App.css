@@ -765,6 +765,12 @@ body {
   border-bottom: 1px solid var(--border-color);
   z-index: 11;
   user-select: none;
+  /* v1.7：限制宽度不被子元素撑出，触发 .canvas-tabs-scroll 的 overflow */
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  /* min-width: 0 让 flex 子项可以收缩 */
+  min-width: 0;
 }
 
 .canvas-tabs-icon-btn {
@@ -1157,8 +1163,8 @@ body {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  /* 抬高到底部 toolbar 之上，避免与"自动保存"等右侧菜单重叠 */
-  bottom: 90px !important;
+  /* v1.7：贴右下角；toolbar 自己已避开 MiniMap 的空间 */
+  bottom: 12px !important;
   right: 12px !important;
 }
 

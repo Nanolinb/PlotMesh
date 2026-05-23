@@ -271,6 +271,16 @@ export default function Canvas() {
   const [rfInstance, setRfInstance] = useState<any>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [showLog, setShowLog] = useState(false);
+  // v1.7：底部 toolbar 是否折叠次要按钮（API 配置/画布导入导出/主题）到 ⋯ 菜单
+  const [toolbarCompact, setToolbarCompact] = useState<boolean>(() => {
+    return localStorage.getItem('plotmesh-toolbar-compact') === '1';
+  });
+  const toggleToolbarCompact = () => {
+    const next = !toolbarCompact;
+    setToolbarCompact(next);
+    localStorage.setItem('plotmesh-toolbar-compact', next ? '1' : '0');
+  };
+  const [showCompactMenu, setShowCompactMenu] = useState(false);
   const [runLog, setRunLog] = useState<string[]>([]);
 
   // 内部剪贴板（不污染系统剪贴板）。
@@ -2612,10 +2622,15 @@ export default function Canvas() {
           </button>
           <button className="toolbar-btn" onClick={() => storeUndo()} title="撤销 (Cmd+Z)">↶ 撤销</button>
           <button className="toolbar-btn" onClick={() => storeRedo()} title="重做 (Cmd+Shift+Z)">↷ 重做</button>
-          <button className="toolbar-btn" onClick={() => setShowApiConfig(true)} title="配置大模型 API Key">🔑 API 配置</button>
-          <button className="toolbar-btn" onClick={() => openSaveDialog()} title="将选中节点（或整个画布）存为常用功能">📦 存常用功能</button>
-          <button className="toolbar-btn" onClick={handleExport} title="把当前画布导出为 .json 文件（同时保存到最近画布）">⬇️ 画布导出</button>
-          <button className="toolbar-btn" onClick={handleImportClick} title="从 .json 文件导入画布；若当前画布非空，会先存到最近画布">⬆️ 画布导入</button>
+          {/* v1.7：次要按钮（紧凑模式下折到 ⋯ 菜单里） */}
+          {!toolbarCompact && (
+            <>
+              <button className="toolbar-btn" onClick={() => setShowApiConfig(true)} title="配置大模型 API Key">🔑 API 配置</button>
+              <button className="toolbar-btn" onClick={() => openSaveDialog()} title="将选中节点（或整个画布）存为常用功能">📦 存常用功能</button>
+              <button className="toolbar-btn" onClick={handleExport} title="把当前画布导出为 .json 文件（同时保存到最近画布）">⬇️ 画布导出</button>
+              <button className="toolbar-btn" onClick={handleImportClick} title="从 .json 文件导入画布；若当前画布非空，会先存到最近画布">⬆️ 画布导入</button>
+            </>
+          )}
           <input
             ref={importInputRef}
             type="file"
@@ -2638,16 +2653,77 @@ export default function Canvas() {
           >
             {inputMode === 'mouse' ? '🖱️ 鼠标' : '🖲️ 触摸板'}
           </button>
-          <button
-            className="toolbar-btn"
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-            title={theme === 'light' ? '切换到夜间模式' : '切换到白天模式'}
-          >
-            {theme === 'light' ? '🌙 夜晚' : '☀️ 白天'}
-          </button>
+          {!toolbarCompact && (
+            <button
+              className="toolbar-btn"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              title={theme === 'light' ? '切换到夜间模式' : '切换到白天模式'}
+            >
+              {theme === 'light' ? '🌙 夜晚' : '☀️ 白天'}
+            </button>
+          )}
           <button className="toolbar-btn danger" onClick={() => { if (confirm('确定清空？')) { storePushHistory(); storeReset(); } }}>
             🗑️ 清空
           </button>
+
+          {/* v1.7：折叠/展开次要按钮（API 配置 / 存常用 / 导入导出 / 主题） */}
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <button
+              className="toolbar-btn"
+              onClick={() => {
+                if (toolbarCompact) {
+                  setShowCompactMenu((v) => !v);
+                } else {
+                  toggleToolbarCompact();
+                }
+              }}
+              title={toolbarCompact ? '展开次要按钮（API 配置 / 导入导出 / 主题）' : '折叠次要按钮腾出空间'}
+            >
+              {toolbarCompact ? '⋯' : '«'}
+            </button>
+            {toolbarCompact && showCompactMenu && (
+              <>
+                <div
+                  onClick={() => setShowCompactMenu(false)}
+                  style={{ position: 'fixed', inset: 0, zIndex: 998 }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 'calc(100% + 6px)',
+                    right: 0,
+                    zIndex: 999,
+                    minWidth: 160,
+                    background: 'var(--bg-card, #fff)',
+                    border: '1px solid var(--border-color, #e2e8f0)',
+                    borderRadius: 8,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                    padding: '4px 0',
+                    fontSize: 13,
+                  }}
+                >
+                  {[
+                    { label: '🔑 API 配置', onClick: () => setShowApiConfig(true) },
+                    { label: '📦 存常用功能', onClick: () => openSaveDialog() },
+                    { label: '⬇️ 画布导出', onClick: handleExport },
+                    { label: '⬆️ 画布导入', onClick: handleImportClick },
+                    { label: theme === 'light' ? '🌙 切换夜晚' : '☀️ 切换白天', onClick: () => setTheme(theme === 'light' ? 'dark' : 'light') },
+                    { label: '« 展开次要按钮', onClick: () => toggleToolbarCompact() },
+                  ].map((it) => (
+                    <div
+                      key={it.label}
+                      onClick={() => { it.onClick(); setShowCompactMenu(false); }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      style={{ padding: '7px 14px', cursor: 'pointer' }}
+                    >
+                      {it.label}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
 
           {/* 自动保存间隔选择器 + 状态指示器 */}
           <div
@@ -2658,9 +2734,11 @@ export default function Canvas() {
               marginLeft: 'auto',
               fontSize: 11,
               color: 'var(--text-muted, #94a3b8)',
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
             }}
           >
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title="设置画布自动保存的间隔；选择「关闭」可完全停掉自动保存（页面关闭前仍会刷盘一次）">
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="设置画布自动保存的间隔；选择「关闭」可完全停掉自动保存（页面关闭前仍会刷盘一次）">
               自动保存
               <select
                 value={autosaveMin}

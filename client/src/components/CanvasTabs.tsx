@@ -220,6 +220,10 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
     const el = scrollRef.current;
     if (!el) return;
     const overflow = el.scrollWidth > el.clientWidth + 1;
+    // 调试：临时打日志看为什么没溢出
+    if (visibleItems.length > 3) {
+      console.debug('[CanvasTabs] scrollW=', el.scrollWidth, 'clientW=', el.clientWidth, 'overflow=', overflow, 'tabs=', visibleItems.length);
+    }
     setIsOverflowing(overflow);
     setCanScrollLeft(el.scrollLeft > 4);
     setCanScrollRight(overflow && el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
