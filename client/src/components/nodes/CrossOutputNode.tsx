@@ -198,15 +198,28 @@ function CrossTargetPicker({ srcCanvasId, srcNodeId, currentTargetCanvasId, onCl
     setSubmitting(true);
     setErr('');
     try {
-      // v1.7 P2-A 关键修复：先把本地 IDB 强制 flush 到 server，
-      // 否则刚拖出来的 crossOutput 节点 server 还没拿到（防抖 2s），
-      // POST /connections 会报 src_node_not_found
-      await flushRemoteSyncNow();
+      // v1.7 P2-A 关键修复：先把本地 IDB 强制 flush 到 server。
+      // 即使 flush 失败也不阻塞 —— POST /connections 带 srcNodeFallback 兜底，
+      // server 端找不到节点会用 fallback 自动 create。
+      console.log('[plotmesh] CrossOutput 配置：开始 flushRemoteSyncNow...');
+      const flushed = await flushRemoteSyncNow();
+      console.log('[plotmesh] CrossOutput 配置：flushRemoteSyncNow 返回', flushed);
+
+      // 拿到当前 src 节点的完整数据，作为 server 兜底用
+      const allNodes = useNodeStore.getState().nodes as any[];
+      const srcNode = allNodes.find((n) => n.id === srcNodeId);
+      const srcNodeFallback = srcNode ? {
+        id: srcNode.id,
+        type: srcNode.type,
+        position: srcNode.position,
+        data: srcNode.data,
+      } : null;
 
       const body: any = {
         srcCanvasId,
         srcNodeId,
         dstCanvasId: selectedCanvasId,
+        srcNodeFallback,
       };
       if (mode === 'pick' && pickedNodeId) body.dstNodeId = pickedNodeId;
       const r = await fetch('/api/canvas/connections', {

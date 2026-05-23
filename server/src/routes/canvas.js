@@ -229,14 +229,16 @@ router.get('/connections/by-dst', (req, res) => {
 });
 
 // POST /api/canvas/connections
-// body: { srcCanvasId, srcNodeId, dstCanvasId, dstNodeId? }
+// body: { srcCanvasId, srcNodeId, dstCanvasId, dstNodeId?, srcNodeFallback? }
+//   - srcNodeFallback: 当 server 上还没有 srcNode 时（前端 IDB 同步未完成的赛跑场景）
+//     用此对象自动 create 一份 src 节点。结构 = {id, type, position, data}
 router.post('/connections', (req, res) => {
-  const { srcCanvasId, srcNodeId, dstCanvasId, dstNodeId } = req.body || {};
+  const { srcCanvasId, srcNodeId, dstCanvasId, dstNodeId, srcNodeFallback } = req.body || {};
   if (!srcCanvasId || !srcNodeId || !dstCanvasId) {
     return res.status(400).json({ error: 'missing_field', need: ['srcCanvasId', 'srcNodeId', 'dstCanvasId'] });
   }
   try {
-    const result = createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId || null);
+    const result = createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId || null, srcNodeFallback || null);
     res.json({ ok: true, ...result });
   } catch (e) {
     return res.status(400).json({ error: 'create_failed', message: e.message });

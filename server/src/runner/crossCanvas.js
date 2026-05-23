@@ -68,10 +68,13 @@ export function findConnectionByDst(dstCanvasId, dstNodeId) {
  * @param {string} srcNodeId
  * @param {string} dstCanvasId
  * @param {string|null} dstNodeId  传 null 则自动创建
- * @returns {{connection, createdNode?: any}}
+ * @param {object|null} srcNodeFallback  v1.7 P2-A：当 src 节点不在 server 上时（前端
+ *   IDB 同步还没完成的赛跑场景），用此对象自动 create 一份。结构 = { id, type, position, data }
+ * @returns {{connection, createdNode?: any, srcNodeCreated?: boolean}}
  */
-export function createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId = null) {
+export function createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId = null, srcNodeFallback = null) {
   let createdNode = null;
+  let srcNodeCreated = false;
   let conn = null;
   mutateStore((payload) => {
     ensureConnections(payload);
@@ -79,8 +82,31 @@ export function createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId 
     if (!dstCanvas) throw new Error(`dst_canvas_not_found: ${dstCanvasId}`);
     const srcCanvas = (payload.canvases || []).find((c) => c.id === srcCanvasId && !c.deleted);
     if (!srcCanvas) throw new Error(`src_canvas_not_found: ${srcCanvasId}`);
-    const srcNode = (srcCanvas.nodes || []).find((n) => n.id === srcNodeId);
-    if (!srcNode) throw new Error(`src_node_not_found: ${srcNodeId}`);
+    let srcNode = (srcCanvas.nodes || []).find((n) => n.id === srcNodeId);
+    if (!srcNode) {
+      // v1.7 P2-A 兜底：前端同步还没到 → 用 srcNodeFallback 自动 create
+      if (srcNodeFallback && srcNodeFallback.id === srcNodeId) {
+        const fallback = {
+          id: srcNodeFallback.id,
+          type: srcNodeFallback.type || 'crossOutput',
+          position: srcNodeFallback.position || { x: 100, y: 100 },
+          data: {
+            type: 'crossOutput',
+            label: '🌐 跨画布输出',
+            output: '',
+            status: 'idle',
+            ...(srcNodeFallback.data || {}),
+          },
+        };
+        if (!Array.isArray(srcCanvas.nodes)) srcCanvas.nodes = [];
+        srcCanvas.nodes.push(fallback);
+        srcCanvas.updatedAt = Date.now();
+        srcNode = fallback;
+        srcNodeCreated = true;
+      } else {
+        throw new Error(`src_node_not_found: ${srcNodeId}`);
+      }
+    }
     if ((srcNode.data?.type || srcNode.type) !== 'crossOutput') {
       throw new Error(`src_node_must_be_crossOutput`);
     }
@@ -163,7 +189,7 @@ export function createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId 
     };
     payload.connections.push(conn);
   });
-  return { connection: conn, createdNode };
+  return { connection: conn, createdNode, srcNodeCreated };
 }
 
 /**

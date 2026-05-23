@@ -358,6 +358,14 @@ export async function flushRemoteSyncNow(): Promise<boolean> {
     } = await import('./syncAdapter');
     if (isSkipThisSession()) return false;
 
+    // v1.7 P2-A 修复：刷新页面后 knownRemoteVersion 是 0，前端启动时虽然有 hydrate 流程，
+    // 但 hydrate 完成时机和用户操作时机赛跑：用户可能先点配置。所以这里**主动拉一次 meta**
+    // 拿到最新 version 再 push，避免 409。
+    const meta0 = await fetchRemoteMeta();
+    if (meta0 && meta0.exists && typeof meta0.version === 'number') {
+      setKnownRemoteVersion(meta0.version);
+    }
+
     for (let attempt = 0; attempt < 3; attempt++) {
       const { payload, summary } = await computeLocalSummary();
       const result = await pushSnapshot(getKnownRemoteVersion(), payload, {
@@ -367,9 +375,11 @@ export async function flushRemoteSyncNow(): Promise<boolean> {
       });
       if (result.ok) {
         setKnownRemoteVersion(result.version);
+        console.log(`[plotmesh] flushRemoteSyncNow ✓ 推送成功 version=${result.version} (attempt ${attempt + 1})`);
         return true;
       }
       if (result.conflict) {
+        console.warn(`[plotmesh] flushRemoteSyncNow conflict (attempt ${attempt + 1}/3) current=${result.current.version}`);
         // server 自己写了一次（比如 server runner / cross-deliver 改了节点 status），
         // 拉新 version 再 PUT 一次（最多 3 次）
         const meta = await fetchRemoteMeta();
@@ -383,6 +393,7 @@ export async function flushRemoteSyncNow(): Promise<boolean> {
       console.warn('[plotmesh] flushRemoteSyncNow 失败：', result.error);
       return false;
     }
+    console.warn('[plotmesh] flushRemoteSyncNow 重试 3 次仍 conflict，放弃');
     return false;
   } catch (e) {
     console.warn('[plotmesh] flushRemoteSyncNow 异常：', e);
