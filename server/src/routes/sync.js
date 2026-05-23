@@ -230,12 +230,25 @@ router.put('/snapshot', (req, res) => {
     });
   }
 
+  // v1.7 P2-A 修复：前端 SnapshotPayload 不含 connections（前端不管这块），
+  // 但 server 端有自己的 connections（跨画布关联）。如果直接用前端 payload 覆盖，
+  // server 的 connections 会被擦掉。这里把旧 payload 的 connections 合并进新 payload。
+  let mergedPayload = payload;
+  try {
+    if (current && current.payload && Array.isArray(current.payload.connections)) {
+      // 只在前端 payload 没带 connections 时才用 server 旧的（防止用户真的想清空）
+      if (!Array.isArray(payload.connections)) {
+        mergedPayload = { ...payload, connections: current.payload.connections };
+      }
+    }
+  } catch {/* swallow */}
+
   const next = {
     version: currentVersion + 1,
     updatedAt: new Date().toISOString(),
     ownerHint: null, // v2.0 升级填 uid
     summary: summary || null,
-    payload,
+    payload: mergedPayload,
   };
 
   try {

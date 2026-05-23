@@ -109,9 +109,39 @@ function CrossOutputNode({ id, data, selected }: Props) {
           </button>
 
           {data.output && (
-            <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)', maxHeight: 60, overflow: 'hidden' }}>
-              <strong>已投递：</strong>{String(data.output).slice(0, 80)}
-              {String(data.output).length > 80 ? '…' : ''}
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 10,
+                color:
+                  data.status === 'error'
+                    ? '#ef4444'
+                    : data.status === 'success'
+                    ? 'var(--success, #22c55e)'
+                    : 'var(--text-muted)',
+                maxHeight: 60,
+                overflow: 'hidden',
+                lineHeight: 1.4,
+              }}
+            >
+              {data.status === 'error' ? (
+                <>
+                  <strong>❌ 投递失败：</strong>{String((data as any).error || '未知错误')}
+                </>
+              ) : data.status === 'success' ? (
+                <>
+                  <strong>✓ 已投递：</strong>{String(data.output).slice(0, 80)}
+                  {String(data.output).length > 80 ? '…' : ''}
+                </>
+              ) : data.status === 'running' ? (
+                <>
+                  <strong>⏳ 投递中：</strong>{String(data.output).slice(0, 80)}
+                </>
+              ) : (
+                <>
+                  <strong>待投递：</strong>{String(data.output).slice(0, 80)}
+                </>
+              )}
             </div>
           )}
         </div>
