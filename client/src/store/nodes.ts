@@ -268,6 +268,42 @@ function flushActiveCanvasToIDB(
   })();
 }
 
+/**
+ * v1.7 P2-A：等待版本的 IDB flush。同步等待 putCanvas 写完，
+ * 给 flushRemoteSyncNow 用，确保推送 server 时 IDB 里有最新节点。
+ */
+async function flushActiveCanvasToIDBAsync(
+  canvasId: string,
+  nodes: any[],
+  edges: any[],
+  name?: string
+): Promise<void> {
+  const cleanNodes = stripRuntimeFields(nodes);
+  writePendingFlush(canvasId, cleanNodes, edges);
+  try {
+    const existing = await getCanvas(canvasId);
+    const now = Date.now();
+    const rec: CanvasRecord = {
+      id: canvasId,
+      workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+      projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+      name: name ?? existing?.name ?? '未命名画布',
+      nodes: cleanNodes,
+      edges,
+      viewport: existing?.viewport,
+      thumbnail: existing?.thumbnail,
+      lastOpenedAt: existing?.lastOpenedAt ?? now,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await putCanvas(rec);
+    clearPendingFlush();
+  } catch (e) {
+    console.warn('[plotmesh] flushActiveCanvasToIDBAsync 失败：', e);
+    throw e;
+  }
+}
+
 // v1.5.1：远端推送防抖
 let remoteSyncTimer: ReturnType<typeof setTimeout> | null = null;
 const REMOTE_SYNC_DEBOUNCE_MS = 2000;
@@ -292,9 +328,25 @@ export async function flushRemoteSyncNow(): Promise<boolean> {
     clearTimeout(remoteSyncTimer);
     remoteSyncTimer = null;
   }
-  // v1.7 P2-A 修复：遇到 409 conflict 自动重试。原 runRemoteSync 单次失败就放弃，
-  // 但跨画布配置场景必须确保推送成功，否则 server 找不到刚建的节点。
-  // 实现：直接调底层 syncAdapter，conflict 时先拉远端 version，再用新 base 重试。
+
+  // v1.7 P2-A 关键修复：必须先把当前 store 的 nodes/edges 写到 IDB，否则 syncAdapter
+  // 拉的是旧的 IDB 快照（saveCanvasDraft 是几分钟一次的 autosave，刚拖的新节点根本
+  // 还没落 IDB → 推送给 server 也是没新节点的旧快照 → server 永远找不到节点）。
+  try {
+    const state = useNodeStore.getState();
+    if (state.activeCanvasId) {
+      await flushActiveCanvasToIDBAsync(
+        state.activeCanvasId,
+        state.nodes as any,
+        state.edges as any,
+      );
+    }
+  } catch (e) {
+    console.warn('[plotmesh] flushRemoteSyncNow: 落 IDB 失败：', e);
+  }
+
+  // 遇到 409 conflict 自动重试。原 runRemoteSync 单次失败就放弃（防抖场景下 OK），
+  // 但 flush 场景必须确保推送成功，否则 server 找不到刚建的节点。
   try {
     const {
       isSkipThisSession,
