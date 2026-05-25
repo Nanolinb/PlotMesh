@@ -559,6 +559,13 @@ body {
   min-width: 240px;
 }
 
+/* v1.7 alpha：柱状图节点 SVG 320px + padding 8+8 = 336px。
+   给柱图单独放宽到 360，避免 SVG 溢出节点背景。 */
+.node-card.bar-chart-node {
+  max-width: 360px;
+  min-width: 340px;
+}
+
 /* Header 的圆角用内部 clip 实现 */
 .node-card .node-header {
   border-top-left-radius: 6px;

@@ -2262,8 +2262,16 @@ export default function Canvas() {
           // 但 allNodes 是开头快照。所以这里要从 store 实时读最新 data。
           const liveNodes = useNodeStore.getState().nodes as any[];
           const upstreamNodes: any[] = [];
+          // v1.7-alpha 后期：layout 端口（橙色）单独收集成布局参考字符串
+          let layoutRaw = '';
           filteredEdges.forEach((e: any) => {
             if (e.target !== nodeId) return;
+            if (e.targetHandle === 'layout') {
+              const v = readResultForEdge(e) || '';
+              const t = stripFilePrefix(v);
+              if (t) layoutRaw = t;
+              return;
+            }
             const src = liveNodes.find((n: any) => n.id === e.source);
             if (src) upstreamNodes.push(src);
           });
@@ -2286,23 +2294,28 @@ export default function Canvas() {
               status: 'error',
               panels: [],
               output: '',
-              error: '上游没有可用的图形（饼图/自由图形 需先成功运行）',
+              error: '上游没有可用的图形（饼图/柱状/自由图形 需先成功运行）',
             } as any);
             log(`  ❌ 仪表盘：上游无 SVG`);
           } else {
             const d = data as any;
+            // 解析 layout（如有）
+            const { parseLayout } = await import('../utils/dashboardLayout');
+            const layoutIn = layoutRaw ? parseLayout(layoutRaw) : null;
             const html = buildDashboardHtml(panels, {
               title: (d.gridTitle || '').trim() || (d.label || '仪表盘'),
               columns: d.columns || 2,
               theme: d.theme || 'light',
+              layout: layoutIn,
             });
             results.set(nodeId, html);
             storeUpdateNodeData(nodeId, {
               status: 'success',
               panels,
+              layoutIn: layoutIn || undefined,
               output: html,
             } as any);
-            log(`  📊 仪表盘合成 ${panels.length} 张图 → HTML ${html.length} 字符`);
+            log(`  📊 仪表盘合成 ${panels.length} 张图 → HTML ${html.length} 字符${layoutIn ? `（布局 ${layoutIn.rows}×${layoutIn.cols}）` : ''}`);
           }
         }
 

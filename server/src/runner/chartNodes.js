@@ -769,9 +769,17 @@ export function runDashboard(node, _upstreamList, ctx = {}) {
   // 需要从 liveNodes（runCanvas 注入）拿上游节点的 data.svg
   const liveNodes = ctx.liveNodes || [];
   const byHandle = ctx.upstreamByHandle || {};
-  // 收集所有上游 source id
+  // v1.7-alpha 后期：layout 端口单独收集成布局参考字符串（不当数据 panel）
+  let layoutRaw = '';
+  const layoutItems = byHandle.layout || [];
+  for (const item of layoutItems) {
+    const v = stripFilePrefix(item.value || '');
+    if (v) layoutRaw = v;
+  }
+  // 收集所有非 layout 端口的上游 source id
   const sourceIds = [];
-  for (const list of Object.values(byHandle)) {
+  for (const [handle, list] of Object.entries(byHandle)) {
+    if (handle === 'layout') continue;
     for (const item of list) sourceIds.push(item.sourceId);
   }
   const seen = new Set();
@@ -786,15 +794,83 @@ export function runDashboard(node, _upstreamList, ctx = {}) {
     panels.push({ title: src.data?.label || sid, svg });
   }
   if (panels.length === 0) {
-    return { output: '', status: 'error', error: '上游没有可用的图形（饼图/自由图形 需先成功运行）' };
+    return { output: '', status: 'error', error: '上游没有可用的图形（饼图/柱状/自由图形 需先成功运行）' };
   }
   const d = node.data || {};
+  const layout = layoutRaw ? parseLayout(layoutRaw) : null;
   const html = buildDashboardHtml(panels, {
     title: (d.gridTitle || '').trim() || (d.label || '仪表盘'),
     columns: d.columns || 2,
     theme: d.theme || 'light',
+    layout,
   });
-  return { output: html, status: 'success', dataPatch: { panels, output: html } };
+  return {
+    output: html,
+    status: 'success',
+    dataPatch: { panels, layoutIn: layout || undefined, output: html },
+  };
+}
+
+/** 解析仪表盘 layout 字符串（与 client/src/utils/dashboardLayout.ts:parseLayout 对齐） */
+function parseLayout(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const text = raw.trim();
+  if (!text) return null;
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  let matrix = null;
+  // Markdown 表格
+  if (lines.some((l) => /^\|.+\|$/.test(l))) {
+    matrix = [];
+    for (const line of lines) {
+      if (!/^\|.+\|$/.test(line)) continue;
+      if (/^\|\s*[:\- ]+\s*\|/.test(line)) continue;
+      const cells = line.split('|').slice(1, -1).map(normalizeLayoutId);
+      if (cells.length > 0) matrix.push(cells);
+    }
+  } else if (lines.every((l) => /^["'].*["']$/.test(l))) {
+    // CSS grid-template-areas
+    matrix = lines.map((l) => {
+      const inner = l.replace(/^["']|["']$/g, '');
+      return inner.split(/\s+/).filter(Boolean).map(normalizeLayoutId);
+    });
+  } else {
+    // 行式简写
+    matrix = lines.map((l) => l.split(/\s+/).filter(Boolean).map(normalizeLayoutId));
+  }
+  if (!matrix || !matrix.length) return null;
+  const maxCols = Math.max(...matrix.map((r) => r.length));
+  if (maxCols === 0) return null;
+  const padded = matrix.map((row) => {
+    while (row.length < maxCols) row.push('.');
+    return row;
+  });
+  const ids = [];
+  for (const row of padded) {
+    for (const cell of row) {
+      if (cell !== '.' && !ids.includes(cell)) ids.push(cell);
+    }
+  }
+  return {
+    rows: padded.length,
+    cols: maxCols,
+    matrix: padded,
+    ids,
+    gridTemplateAreas: padded.map((row) => `"${row.join(' ')}"`).join(' '),
+  };
+}
+
+function normalizeLayoutId(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '.';
+  let s = trimmed.replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, '_');
+  if (/[\u4e00-\u9fa5]/.test(s)) {
+    let hash = 0;
+    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) | 0;
+    s = `c${Math.abs(hash).toString(36)}`;
+  }
+  if (/^\d/.test(s)) s = 'c' + s;
+  return s;
 }
 
 /** 与 client/src/components/nodes/DashboardNode.tsx:buildDashboardHtml 对齐 */
@@ -807,12 +883,18 @@ function buildDashboardHtml(panels, opts = {}) {
   const cardBorder = theme === 'dark' ? '#2d2d2d' : '#e2e8f0';
   const title = opts.title || '仪表盘';
   const safeTitle = String(title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const layout = opts.layout || null;
   const cards = panels.map((p, i) => {
     const cardTitle = p.title
       ? String(p.title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       : `图 ${i + 1}`;
-    return `<div class="card"><div class="card-title">${cardTitle}</div><div class="card-body">${p.svg}</div></div>`;
+    const cellId = layout ? layout.ids[i] : null;
+    const styleAttr = cellId ? ` style="grid-area:${cellId};"` : '';
+    return `<div class="card"${styleAttr}><div class="card-title">${cardTitle}</div><div class="card-body">${p.svg}</div></div>`;
   }).join('\n');
+  const gridStyle = layout
+    ? `grid-template-columns:repeat(${layout.cols},1fr);grid-template-areas:${layout.gridTemplateAreas};`
+    : `grid-template-columns:repeat(${cols},1fr);`;
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -823,8 +905,8 @@ function buildDashboardHtml(panels, opts = {}) {
   body{margin:0;padding:32px;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:${bg};color:${fg};}
   .dashboard{max-width:1280px;margin:0 auto;}
   h1{margin:0 0 24px;font-size:24px;font-weight:600;}
-  .grid{display:grid;grid-template-columns:repeat(${cols},1fr);gap:16px;}
-  @media (max-width:768px){.grid{grid-template-columns:1fr;}}
+  .grid{display:grid;${gridStyle}gap:16px;}
+  @media (max-width:768px){.grid{grid-template-columns:1fr;grid-template-areas:none;}.card{grid-area:auto !important;}}
   .card{background:${cardBg};border:1px solid ${cardBorder};border-radius:8px;padding:16px;overflow:hidden;}
   .card-title{font-size:14px;font-weight:600;margin-bottom:12px;color:${fg};opacity:.85;}
   .card-body{width:100%;text-align:center;}

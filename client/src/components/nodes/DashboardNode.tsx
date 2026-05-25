@@ -17,6 +17,7 @@
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect } from 'react';
 import { useNodeStore } from '../../store/nodes';
+import { applyLayoutToPanels, type ParsedLayout } from '../../utils/dashboardLayout';
 
 interface Props {
   id: string;
@@ -27,7 +28,7 @@ interface Props {
 /** 给定 SVG 数组，拼出完整 HTML 文档 */
 export function buildDashboardHtml(
   panels: Array<{ title?: string; svg: string }>,
-  opts: { title?: string; columns?: number; theme?: 'light' | 'dark' } = {},
+  opts: { title?: string; columns?: number; theme?: 'light' | 'dark'; layout?: ParsedLayout | null } = {},
 ): string {
   const cols = Math.max(1, Math.min(4, opts.columns ?? 2));
   const theme = opts.theme ?? 'light';
@@ -39,15 +40,25 @@ export function buildDashboardHtml(
   const safeTitle = String(title)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const cards = panels.map((p, i) => {
+  // v1.7-alpha 后期：layout 模式按 cell ID 给每张 card 设 grid-area
+  const layout = opts.layout || null;
+  const decoratedPanels = layout ? applyLayoutToPanels(panels, layout) : panels.map((p) => ({ ...p }));
+
+  const cards = decoratedPanels.map((p: any, i: number) => {
     const cardTitle = p.title
       ? String(p.title).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       : `图 ${i + 1}`;
-    return `<div class="card">
+    const styleAttr = p.gridArea ? ` style="grid-area: ${p.gridArea};"` : '';
+    return `<div class="card"${styleAttr}>
   <div class="card-title">${cardTitle}</div>
   <div class="card-body">${p.svg}</div>
 </div>`;
   }).join('\n');
+
+  // grid 容器样式：layout 模式 vs 列数模式
+  const gridStyle = layout
+    ? `grid-template-columns: repeat(${layout.cols}, 1fr); grid-template-areas: ${layout.gridTemplateAreas};`
+    : `grid-template-columns: repeat(${cols}, 1fr);`;
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -74,11 +85,12 @@ export function buildDashboardHtml(
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(${cols}, 1fr);
+    ${gridStyle}
     gap: 16px;
   }
   @media (max-width: 768px) {
-    .grid { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: 1fr; grid-template-areas: none; }
+    .card { grid-area: auto !important; }
   }
   .card {
     background: ${cardBg};
@@ -144,10 +156,14 @@ function DashboardNode({ id, data, selected }: Props) {
   const status = data.status || 'idle';
   const errorMsg = data.error || '';
   const panels: Array<{ title?: string; svg: string }> = data.panels || [];
+  // v1.7-alpha 后期：layout 由上游 layout 端口流入，executeFlow 写到 data.layoutIn
+  const layoutIn: ParsedLayout | null = data.layoutIn || null;
 
   return (
     <div className={`node-card dashboard-node ${selected ? 'selected' : ''}`} data-status={status}>
-      <Handle type="target" position={Position.Left} id="data" style={{ background: '#06b6d4' }} title="接 N 个图形节点（饼图 / 自由图形）" />
+      {/* 双输入：上=数据（图形节点），下=布局（Markdown 表 / grid-template-areas） */}
+      <Handle type="target" position={Position.Left} id="data" style={{ top: '35%', background: '#06b6d4' }} title="接 N 个图形节点（饼图 / 柱状 / 自由图形）" />
+      <Handle type="target" position={Position.Left} id="layout" style={{ top: '70%', background: '#f59e0b' }} title="布局参考（Markdown 表格 / grid-template-areas / 行式空格分隔）" />
       <Handle type="source" position={Position.Right} title="HTML 文档（接 Output 节点导出 web）" />
 
       <div className="node-header" style={{ background: 'linear-gradient(135deg, #06b6d4, #6366f1)' }}>
@@ -221,13 +237,48 @@ function DashboardNode({ id, data, selected }: Props) {
             </div>
             <ul style={{ margin: 0, padding: '0 0 0 16px', maxHeight: 100, overflowY: 'auto' }}>
               {panels.map((p, i) => (
-                <li key={i} style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.title || `图 ${i + 1}`}</li>
+                <li key={i} style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  {p.title || `图 ${i + 1}`}
+                  {layoutIn && layoutIn.ids[i] && (
+                    <span style={{ marginLeft: 6, padding: '0 4px', background: 'rgba(245,158,11,0.15)', color: '#d97706', borderRadius: 3 }}>
+                      → {layoutIn.ids[i]}
+                    </span>
+                  )}
+                </li>
               ))}
             </ul>
           </div>
         ) : (
           <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '20px 8px', textAlign: 'center' }}>
-            把多个图形节点（饼图 / 自由图形）接到这里
+            把多个图形节点（饼图 / 柱状 / 自由图形）接到这里
+          </div>
+        )}
+
+        {/* 布局参考预览 */}
+        {layoutIn && (
+          <div style={{ marginTop: 6, padding: '6px 8px', background: 'rgba(245,158,11,0.08)', borderRadius: 4, fontSize: 10 }}>
+            <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>
+              🎨 布局：{layoutIn.rows} × {layoutIn.cols}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${layoutIn.cols}, 1fr)`, gap: 2 }}>
+              {layoutIn.matrix.flat().map((cell: string, i: number) => (
+                <div
+                  key={i}
+                  style={{
+                    background: cell === '.' ? 'rgba(0,0,0,0.05)' : 'rgba(99,102,241,0.15)',
+                    border: '1px dashed rgba(99,102,241,0.3)',
+                    borderRadius: 2,
+                    padding: '2px 4px',
+                    fontSize: 9,
+                    textAlign: 'center',
+                    color: cell === '.' ? 'var(--text-muted)' : '#4f46e5',
+                  }}
+                  title={cell === '.' ? '空 cell' : `cell ID: ${cell}`}
+                >
+                  {cell === '.' ? ' ' : cell.slice(0, 8)}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

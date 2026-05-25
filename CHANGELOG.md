@@ -5,6 +5,29 @@
 
 ---
 
+## [1.7.0-alpha.4] — 2026-05-25
+
+> 仪表盘节点支持自定义布局（Markdown 表格 / grid-template-areas / 行式简写）+ 柱状图节点宽度修复。
+
+### Added · 新增
+
+- **仪表盘 `layout` 端口**（橙色，左下 70%）：接受三种布局语法
+  - Markdown 表格（重复 cell ID = 跨列跨行）
+  - CSS `grid-template-areas`（带引号的行）
+  - 行式简写（空格分隔）
+- **`client/src/utils/dashboardLayout.ts`**：`parseLayout()` + `applyLayoutToPanels()`
+  - 中文 cell ID 自动转 hash 短串（CSS 不接受中文标识符）
+  - 各行不等长自动用 `.` 补齐
+- **server runner 同步**：`chartNodes.js:runDashboard` 支持 `layout` 端口分流，`buildDashboardHtml` 输出 `grid-template-areas`
+- **节点 UI 实时预览**：仪表盘 body 显示迷你 grid 预览 + 收集列表加 `→ cellID` 标签
+- 文档：腾讯文档产品文档追加第 12 章「仪表盘布局参考输入」
+
+### Fixed · 修复
+
+- 柱状图 SVG 溢出节点背景框 → `.node-card.bar-chart-node { min-width: 340px; max-width: 360px }`
+
+---
+
 ## [1.7.0-alpha.3] — 2026-05-25
 
 > v1.7 alpha 图形栈完整收口 + 双引擎 SSE/定时。新增 4+1 个节点形成完整可视化数据流。
