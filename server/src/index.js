@@ -59,7 +59,7 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, async () => {
   console.log(`🚀 Server running on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   if (HOST === '0.0.0.0') {
     console.log(`   ↑ 远端访问已开启，LAN 内任意 IP:${PORT} 都能访问（强制 token 鉴权）`);
@@ -68,4 +68,13 @@ app.listen(PORT, HOST, () => {
   }
   // 打印 API token（让用户知道怎么调 /api/canvas/*）
   printApiTokenBanner();
+
+  // v1.7 alpha P1 第二刀：启动定时调度器
+  try {
+    const { startScheduler } = await import('./runner/scheduler.js');
+    const { runCanvasJob } = await import('./routes/canvas.js');
+    startScheduler(runCanvasJob, { scanIntervalMs: 10000 });
+  } catch (e) {
+    console.warn('⚠️  启动 scheduler 失败：', e.message);
+  }
 });

@@ -5,7 +5,82 @@
 
 ---
 
-## [1.7.0-alpha.2] — 2026-05-23
+## [1.7.0-alpha.3] — 2026-05-25
+
+> v1.7 alpha 图形栈完整收口 + 双引擎 SSE/定时。新增 4+1 个节点形成完整可视化数据流。
+
+### Added · 新增
+
+#### 图形与可视化栈（5 个新节点）
+
+- **`📊 数据提取` ExtractNode**（client + server）：通用 LLM 入口，支持「数据/样式」双模式
+  - 数据模式：选「为哪种图准备」自动决定 schema → JSON 数组
+  - 样式模式：固定输出 9 字段样式对象（含 palette、donut、gapDeg、startAngle、labelMode 等）
+  - 模型版本号自动按厂商 + 是否含图片切换（kimi → moonshot-v1-8k-vision-preview 等）
+  - 含图片时前端自动 base64 内联（vision API 不接 localhost URL）
+
+- **`🥧 饼图` PieChartNode**（v1.7 alpha 二轮迭代）：双输入端（蓝 data / 紫 style）
+  - 本地纯 SVG 渲染，0 token
+  - ChartStyle 形态扩展：`donut` / `innerRadiusRatio` / `gapDeg` / `startAngle` / `labelMode (inside/outside/none)`
+  - 数据宽容解析 5 种格式（JSON / Markdown 表 / CSV / 行式自然文本 / 代码块）
+  - 同时输出 JSON + svg 字符串到 `data.svg`（供仪表盘消费）
+
+- **`📊 柱状图` BarChartNode**：与饼图同套路，本地 SVG，0 token
+  - ChartStyle 加 `barOrientation` / `barWidth` / `showAxis` / `axisColor`
+  - 默认竖向 + 横向条形图双模式
+  - 自动 0 / max 刻度标签
+
+- **`🎨 自由图形` GenericChartNode**：vision LLM 看参考图直接吐 SVG
+  - 双输入端（data + reference），能模仿任意形态（含 radial-bar 等设计稿）
+  - 本地 sanitizeSvg 白名单 + DOMParser 二次序列化防注入
+
+- **`📊 仪表盘` DashboardNode**：收集 N 个图形节点的 `data.svg` → 拼 HTML grid
+  - 配置：页面标题 / 列数 1-4 / 主题（白天/夜晚）
+  - 接 OutputNode (format=web) 一键导出网页
+
+#### 双引擎 P1 第二刀：SSE + 定时
+
+- **`server/src/runner/runEvents.js`**：按 jobId 隔离的 EventEmitter 总线（log / node / status / cascade 4 类事件）
+- **`GET /api/canvas/:id/runs/:jobId/stream`**：SSE 实时推送进度（含 snapshot 重放、15s 心跳、终态自动断流）
+- **`POST /api/canvas/:id/run`** 现在预分配 jobId 立即返回，让客户端能立刻订阅 SSE
+- **`server/src/runner/scheduler.js`**：零依赖定时调度器
+  - 表达式：`every:60s` / `every:5m` / `every:1h` / `daily:HH:MM`
+  - 持久化 `~/.plotmesh/schedules.json`，server 重启自动恢复
+  - `setInterval(10s)` 扫描，到期触发 `runCanvasJob({trigger:'cron'})`
+- **`/api/canvas/_schedules` CRUD**：GET / POST / PATCH / DELETE
+- **`SchedulerPanel.tsx`** 前端管理面板（toolbar `⏰ 定时` 按钮）
+  - 创建表单（每隔/每天双模式）
+  - 任务列表表格 + 启用切换 + 删除
+  - 5s 自动刷新看 cron 实际执行
+
+#### Server runner 同步图形栈
+
+- **`server/src/runner/chartNodes.js`**（约 700 行）：4 个图形节点的 server 端实现
+  - `runExtract / runPieChart / runBarChart / runGenericChart / runDashboard`
+  - parsePieData / parseChartStyle / renderPieChartSvg / renderBarChartSvg / sanitizeSvg / buildDashboardHtml 与 client 1:1 对齐
+  - `loadImageAsDataUrl` 优先读本地 uploads 目录（避免 HTTP 内循环）
+- **`runCanvas.js`** 加 `upstreamByHandle`（按 targetHandle 分流）+ `liveNodes` + `setDataPatchCache`（让同 run 内下游能读上游刚写的 dataPatch）
+- group / swimlane / timeline 容器节点改成 stub，不报错
+
+#### UI 体验
+
+- **Sidebar 节点分三类**：📥 数据 / 📝 文本 / 🎨 图形，每类独立折叠（状态存 `localStorage.plotmesh.sidebar.nodeCatCollapsed`）
+- **图形栈共享 ChartStyle**（`client/src/types/chartStyle.ts`）：未来柱图/桑吉等图形节点直接复用
+- **饼图节点宽度自适应**：`max-width: 260px / min-width: 240px`，避免外置标签溢出节点背景
+
+### Fixed · 修复
+
+- 图片 vision LLM 调用：`localhost:3001` URL 在云端 vision API 永远 fetch 不到 → 改为 base64 内联
+- DashboardNode 不能用开头 `allNodes` 快照查上游 svg → 改为 `useNodeStore.getState().nodes` 实时读
+- Express 路由顺序坑：`/_schedules` 必须在 `/:id` 之前注册，否则被吞作 canvasId
+- 重构 ExtractNode 时残留 `${schema}` 引用导致 executeFlow 静默挂掉：catch 内加 `console.error` 才暴露
+
+### Docs · 文档
+
+- 腾讯文档产品文档追加第 11 章（v1.7-alpha 新节点用法 + SSE + 定时 + 双引擎闭环）
+- 新增 skill `plotmesh-add-chart-node` 沉淀"添加新图形节点 5 处注册铁律"
+
+---
 
 > v1.7 P2-A 跨画布引用 (Cross-Canvas Reference) 第一版。新增 `crossOutput` / `crossInput` 两个节点类型 + server 自动投递与 cascade 触发。这是"总控画布"模式的底座。
 

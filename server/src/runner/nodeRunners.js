@@ -19,6 +19,7 @@
  */
 import axios from 'axios';
 import { splitText } from './splitText.js';
+import { runExtract, runPieChart, runBarChart, runGenericChart, runDashboard } from './chartNodes.js';
 
 const FILE_PREFIX = '__PM_FILE__\n';
 
@@ -299,6 +300,22 @@ export async function runNode(node, upstreamList, ctx) {
       return runCrossOutput(node, upstream0);
     case 'crossInput':
       return runCrossInput(node);
+    // v1.7 alpha：图形/可视化栈
+    case 'extract':
+      return runExtract(node, upstreamList, ctx);
+    case 'pieChart':
+      return runPieChart(node, upstreamList, ctx);
+    case 'barChart':
+      return runBarChart(node, upstreamList, ctx);
+    case 'genericChart':
+      return runGenericChart(node, upstreamList, ctx);
+    case 'dashboard':
+      return runDashboard(node, upstreamList, ctx);
+    // group / swimlane / timeline 是布局容器，server 端不需要执行
+    case 'group':
+    case 'swimlane':
+    case 'timeline':
+      return { output: '', status: 'success' };
     default:
       return { output: '', status: 'error', error: `不支持的节点类型: ${type}` };
   }

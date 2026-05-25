@@ -45,6 +45,18 @@ import WebLinkNode from './nodes/WebLinkNode';
 // v1.7 P2-A：跨画布引用
 import CrossOutputNode from './nodes/CrossOutputNode';
 import CrossInputNode from './nodes/CrossInputNode';
+// v1.7 alpha：试验性可视化节点（饼图）
+import PieChartNode, { parsePieData } from './nodes/PieChartNode';
+// v1.7 alpha：柱状图（与饼图同套路，本地 SVG 0 token）
+import BarChartNode from './nodes/BarChartNode';
+// v1.7 alpha：自由图形（LLM 直接吐 SVG，能模仿任何参考图）
+import GenericChartNode, { sanitizeSvg } from './nodes/GenericChartNode';
+// v1.7 alpha：仪表盘（多图形 → HTML grid）
+import DashboardNode, { buildDashboardHtml } from './nodes/DashboardNode';
+// v1.7 alpha：通用 LLM 数据提取节点（自由文本 → 标准 JSON）
+import ExtractNode, { EXTRACT_SCHEMAS, extractJsonValue } from './nodes/ExtractNode';
+// v1.7 alpha：图形样式契约（双输入饼图等用）
+import { parseChartStyle } from './../types/chartStyle';
 import Sidebar from './Sidebar';
 // v1.6 切片 3：外部 AI 通过 REST/MCP 触发的运行任务，前端 worker 5s 拉一次跑画布
 // eslint-disable-next-line import/order
@@ -52,6 +64,8 @@ import { startRunWorker, stopRunWorker, type RunHooks } from '../store/runWorker
 import ApiKeyConfigModal from './ApiKeyConfigModal';
 import CanvasManager from './CanvasManager';
 import CanvasTabs from './CanvasTabs';
+// v1.7 alpha P1 第二刀：定时任务面板
+import SchedulerPanel from './SchedulerPanel';
 import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, flushRemoteSyncNow, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
@@ -70,6 +84,12 @@ const nodeTypes = {
   // v1.7 P2-A 跨画布引用
   crossOutput: CrossOutputNode,
   crossInput: CrossInputNode,
+  // v1.7 alpha 试验性
+  pieChart: PieChartNode,
+  barChart: BarChartNode,
+  extract: ExtractNode,
+  genericChart: GenericChartNode,
+  dashboard: DashboardNode,
 };
 
 let idCounter = 0;
@@ -157,6 +177,52 @@ function getDefaultData(type: string): any {
       status: 'waiting',
       // sourceCanvasId / sourceNodeId 由 server 自动填，readonly
     };
+    case 'pieChart': return {
+      type: 'pieChart',
+      label: '🥧 饼图',
+      slices: [],          // 解析后的 [{label,value}]，由 executeFlow 写入
+      status: 'idle',
+      output: '',          // 透传规整化后的 JSON 字符串
+    };
+    case 'barChart': return {
+      type: 'barChart',
+      label: '📊 柱状图',
+      bars: [],            // 解析后的 [{label,value}]
+      status: 'idle',
+      output: '',
+    };
+    case 'extract': return {
+      type: 'extract',
+      label: '📊 数据提取',
+      mode: 'data',           // 'data' | 'style'
+      dataTarget: 'pie',      // pie / bar / line / sankey / generic
+      model: 'deepseek',
+      customModelName: '',
+      instruction: '',         // 可选的提取指引（领域定制）
+      items: [],
+      status: 'idle',
+      output: '',
+    };
+    case 'genericChart': return {
+      type: 'genericChart',
+      label: '🎨 自由图形',
+      model: 'kimi',
+      customModelName: '',
+      instruction: '',
+      svg: '',
+      status: 'idle',
+      output: '',
+    };
+    case 'dashboard': return {
+      type: 'dashboard',
+      label: '📊 仪表盘',
+      gridTitle: '',
+      columns: 2,
+      theme: 'light',
+      panels: [],            // [{ title, svg }] 收集到的图
+      output: '',            // 完整 HTML 文档
+      status: 'idle',
+    };
     default: return { type: 'textPrompt', label: '', text: '', promptNumber: 0, status: 'idle' };
   }
 }
@@ -189,6 +255,7 @@ export default function Canvas() {
 
   const [showSave, setShowSave] = useState(false);
   const [showApiConfig, setShowApiConfig] = useState(false);
+  const [showScheduler, setShowScheduler] = useState(false);
   const [pkgName, setPkgName] = useState('');
   const [pkgDesc, setPkgDesc] = useState('');
   const [pkgGroup, setPkgGroup] = useState<string>('');
@@ -280,7 +347,6 @@ export default function Canvas() {
     setToolbarCompact(next);
     localStorage.setItem('plotmesh-toolbar-compact', next ? '1' : '0');
   };
-  const [showCompactMenu, setShowCompactMenu] = useState(false);
   const [runLog, setRunLog] = useState<string[]>([]);
 
   // 内部剪贴板（不污染系统剪贴板）。
@@ -1288,8 +1354,27 @@ export default function Canvas() {
 
       // 文件块前缀工具：fileUpload 输出会带 __PM_FILE__ 前缀以便 LLM 节点识别；
       // 但下游若是 output / textTransform / condition 等普通节点，不需要这个前缀。
-      const stripFilePrefix = (s: string) =>
-        typeof s === 'string' && s.startsWith('__PM_FILE__\n') ? s.replace(/^__PM_FILE__\n/, '') : s;
+      // v1.7 alpha：图片清单通过 __PM_IMAGES__\n<json>\n 头另外承载（在 __PM_FILE__ 前面）
+      const stripFilePrefix = (s: string) => {
+        if (typeof s !== 'string') return s;
+        let out = s;
+        const imgMatch = out.match(/^__PM_IMAGES__\n[^\n]*\n/);
+        if (imgMatch) out = out.slice(imgMatch[0].length);
+        if (out.startsWith('__PM_FILE__\n')) out = out.replace(/^__PM_FILE__\n/, '');
+        return out;
+      };
+      // 从带前缀的上游字符串里提取图片清单（多模态节点用）
+      const extractImages = (s: string): { filename: string; name: string; mime: string; url: string }[] => {
+        if (typeof s !== 'string') return [];
+        const m = s.match(/^__PM_IMAGES__\n([^\n]*)\n/);
+        if (!m) return [];
+        try {
+          const arr = JSON.parse(m[1]);
+          return Array.isArray(arr) ? arr : [];
+        } catch {
+          return [];
+        }
+      };
 
       const results = new Map<string, string>();
       // 读取一条上游边对应的结果。
@@ -1319,21 +1404,34 @@ export default function Canvas() {
             results.set(nodeId, '');
             storeUpdateNodeData(nodeId, { status: 'idle' });
           } else {
-            // 用 XML 风格标签把文件内容包起来，向 LLM 明确表示"这是参考资料而不是给你的指令"
+            // 图片文件单独抽出来，放到 __PM_IMAGES__ 头里（多模态节点用）
+            // 文本路径仍走 <document> 标签，对图片只占位说明
+            const isImage = (f: any) => /^image\//.test(String(f.type || '')) || /\.(png|jpg|jpeg|webp|gif)$/i.test(String(f.name || ''));
+            const images = files.filter(isImage).map((f: any) => ({
+              filename: f.filename,
+              name: f.name,
+              mime: f.type || 'image/png',
+              // /uploads/<filename> 是 server static 暴露的；前端调 LLM 时拼上 origin
+              url: `/uploads/${f.filename}`,
+            }));
             const parts = files.map((f: any) => {
               const filenameAttr = (f.name || '').replace(/"/g, '&quot;');
               const body = f.content
                 ? f.content
                 : f.parseError
                   ? `[文件解析失败：${f.parseError}]`
-                  : '[此文件类型暂不支持自动提取文本内容（图片或未知二进制）]';
+                  : isImage(f)
+                    ? `[图片文件，请用多模态模型读取。已附在请求的 image_url 字段]`
+                    : '[此文件类型暂不支持自动提取文本内容（未知二进制）]';
               return `<document filename="${filenameAttr}">\n${body}\n</document>`;
             });
             // 整体再包一层 <documents>，并打上 __PM_FILE__ 前缀让下游 LLM 节点能识别"这是文件块"
-            const wrapped = `__PM_FILE__\n<documents>\n${parts.join('\n')}\n</documents>`;
+            // 如果含图片，前面再加一行 __PM_IMAGES__\n<json>\n —— 下游可选地消费
+            const imageHeader = images.length ? `__PM_IMAGES__\n${JSON.stringify(images)}\n` : '';
+            const wrapped = `${imageHeader}__PM_FILE__\n<documents>\n${parts.join('\n')}\n</documents>`;
             results.set(nodeId, wrapped);
             storeUpdateNodeData(nodeId, { status: 'success' });
-            log(`  📁 ${files.length} 个文件已加载（用 <document> 标签隔离）`);
+            log(`  📁 ${files.length} 个文件已加载${images.length ? `（含 ${images.length} 张图片）` : ''}`);
           }
         }
         if (data.type === 'textPrompt') {
@@ -1703,6 +1801,508 @@ export default function Canvas() {
             log(`  ❌ 文本处理失败：${e.message}`);
             storeUpdateNodeData(nodeId, { status: 'error', error: e.message });
             results.set(nodeId, '');
+          }
+        }
+
+        // 数据提取：调 LLM 把上游自由文本规整成结构化 JSON 数组
+        if (data.type === 'extract') {
+          // 取上游原始字符串（含可能的 __PM_IMAGES__ / __PM_FILE__ 头）
+          let upstreamRaw = '';
+          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstreamRaw = readResultForEdge(e) || upstreamRaw; });
+          // 抽出图片清单 + 剥头得到纯文本
+          const images = extractImages(upstreamRaw);
+          const upstream = stripFilePrefix(upstreamRaw);
+          // 文本和图片至少要有一项
+          const hasText = !!upstream.trim();
+          if (!hasText && images.length === 0) {
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, { status: 'error', error: '上游无输入', items: [] });
+            log(`  ❌ 提取：上游无输入`);
+          } else {
+            const d = data as any;
+            const model = d.model || 'deepseek';
+            // v1.7.0-alpha 重构：mode + dataTarget；保留对老 schema/outputShape 的兼容
+            const mode = d.mode || (d.schema ? 'data' : 'data');
+            const dataTarget = d.dataTarget || (d.schema === 'source-target-value' ? 'sankey' : 'pie');
+            // 老接口透传：schema/customKeys/outputShape 仍然能用
+            const legacySchema = d.schema;
+            const legacyCustomKeys = d.customKeys;
+            const legacyShape = d.outputShape;
+            const instruction = (d.instruction || '').trim();
+            // 计算 keys 和 outputShape
+            let keys: string[];
+            let isObjectShape: boolean;
+            if (mode === 'style') {
+              keys = ['palette', 'background', 'labelColor', 'borderColor', 'donut', 'innerRadiusRatio', 'gapDeg', 'startAngle', 'labelMode'];
+              isObjectShape = true;
+            } else if (legacySchema && legacySchema !== 'custom') {
+              // 老画布走 schema
+              keys = [...(EXTRACT_SCHEMAS[legacySchema]?.keys || ['label', 'value'])];
+              isObjectShape = legacyShape === 'object';
+            } else if (legacySchema === 'custom') {
+              keys = (legacyCustomKeys || 'label,value').split(',').map((k: string) => k.trim()).filter(Boolean);
+              isObjectShape = legacyShape === 'object';
+            } else {
+              // 新接口：用 dataTarget
+              const t = ({
+                pie: ['label', 'value'],
+                bar: ['label', 'value'],
+                line: ['name', 'value'],
+                sankey: ['source', 'target', 'value'],
+                generic: ['name', 'value'],
+              } as Record<string, string[]>)[dataTarget] || ['label', 'value'];
+              keys = t;
+              isObjectShape = false;
+            }
+            if (keys.length < 2) keys.push('value');
+            // 用户 customModelName 优先；若是样式模式 + 留空 + 厂商有 vision 默认 → 自动填
+            const VISION_DEFAULTS: Record<string, string> = {
+              hunyuan: 'hunyuan-vision', glm: 'glm-4v-plus', gpt: 'gpt-4o',
+              claude: 'claude-3-5-sonnet-20241022', kimi: 'moonshot-v1-8k-vision-preview',
+              qwen: 'qwen-vl-plus',
+            };
+            let customModelName: string = (d.customModelName || '').trim();
+            // 含图片时，没填版本号就自动用 vision 默认
+            if (images.length > 0 && !customModelName && VISION_DEFAULTS[model]) {
+              customModelName = VISION_DEFAULTS[model];
+            }
+            // 给 LLM 的样例 —— 数据数组 vs 样式对象
+            const objSample = mode === 'style'
+              ? `{"palette":["#fbbf24","#ef4444","#10b981","#a855f7"],"background":"#1a1a1a","labelColor":"#ffffff","borderColor":"#ffffff","donut":false,"innerRadiusRatio":0,"gapDeg":0,"startAngle":0,"labelMode":"inside"}`
+              : `{${keys.map((k, i) => `"${k}": ${i === keys.length - 1 ? 30 : `"示例"`}`).join(', ')}}`;
+            const sample = isObjectShape ? objSample : `[${objSample}]`;
+            const dataTargetHint = mode === 'data'
+              ? ({ pie: '饼图', bar: '柱状图', line: '折线图', sankey: '桑吉图', generic: '通用键值对' } as Record<string, string>)[dataTarget] || ''
+              : '';
+            const sysPrompt = [
+              mode === 'style'
+                ? '你是一个图表视觉风格抽取助手。从用户给你的图片或文本中，提炼出可用于绘制饼图/环形图的样式参数，以 JSON 对象返回。'
+                : `你是一个数据抽取助手。把用户给你的任意文本（或图片）中蕴含的数据，提炼成一个 JSON 数组${dataTargetHint ? `，用于绘制${dataTargetHint}` : ''}。`,
+              mode === 'style'
+                ? [
+                    '输出对象必须包含以下键：',
+                    '- palette: 数组，至少 3 个 hex 颜色，按图中扇区/数据系列的视觉顺序排列',
+                    '- background: 整体画布背景色 hex',
+                    '- labelColor: 文字颜色 hex',
+                    '- borderColor: 扇区之间分隔线颜色 hex',
+                    '- donut: bool，图是否为环形（中心镂空）',
+                    '- innerRadiusRatio: 0~0.9，环形的内圆/外圆比例（实心饼=0；普通环 0.5~0.6；细环 0.75~0.85）',
+                    '- gapDeg: 0~10，扇区之间的间隙角度（度）',
+                    '- startAngle: 起始角度，0=12 点方向，顺时针递增',
+                    '- labelMode: "inside" | "outside" | "none"。inside 标签在扇区内，outside 在扇区外（带引线），none 不显示',
+                  ].join('\n')
+                : isObjectShape
+                  ? `输出对象必须包含以下键：${keys.map((k) => `"${k}"`).join(', ')}。`
+                  : `每个数组项必须是包含以下键的对象：${keys.map((k) => `"${k}"`).join(', ')}。`,
+              '严格规则：',
+              `1. 只输出 ${isObjectShape ? '原始 JSON 对象' : '原始 JSON 数组'}，不要写任何解释、不要对话词。`,
+              '2. 不要用 markdown 代码块 ```json ``` 包裹，直接输出原始 JSON。',
+              mode === 'style'
+                ? '3. 颜色一律 hex 格式 #RRGGBB。布尔字段用 true/false（不是 "true"）。数值字段用数字。'
+                : '3. 数值字段必须是数字（不要带 % 或单位，把"30%" 写成 30）。',
+              '4. 字符串字段保留原文中文/英文。',
+              isObjectShape
+                ? '5. 如果实在没有可提取的内容，返回 {} 空对象。'
+                : '5. 如果实在没有可提取的数据，返回 [] 空数组。',
+              images.length > 0 ? (mode === 'style'
+                ? '6. 仔细观察图片：① 整体配色与背景；② 图表是不是环形（看中心是否镂空）；③ 扇区之间是否有明显间隙；④ 标签是在扇区里面（带数字 %）还是用引线指到外面。把这些都按上述键如实填入。'
+                : '6. 图片中如包含图表/表格，按图中读出的数据返回；标签按图中文字原样保留。'
+              ) : '',
+              instruction ? `特别指引：${instruction}` : '',
+              `输出形式示例：${sample}`,
+            ].filter(Boolean).join('\n');
+
+            // v1.7 alpha：含图片时，构造 OpenAI 兼容的多模态 messages（content 是数组）
+            // deny 列表：默认版本不支持 vision 的厂商。但如果用户在 customModelName 里写了
+            // 含 "vision" 或 "-vl-" 字样的版本，就视为多模态版，跳过 deny。
+            const VISION_DENY_FAMILIES = ['deepseek'];
+            const looksLikeVisionVer = /vision|-vl-|-4o|claude-3/i.test(customModelName);
+            const denyForImages =
+              images.length > 0 &&
+              VISION_DENY_FAMILIES.includes(model) &&
+              !looksLikeVisionVer;
+            // kimi/glm/qwen/hunyuan 默认版本都不支持 vision，必须填 customModelName
+            const needsVisionVer =
+              images.length > 0 &&
+              !VISION_DENY_FAMILIES.includes(model) &&
+              !customModelName &&
+              ['kimi', 'glm', 'qwen', 'hunyuan'].includes(model);
+
+            if (denyForImages) {
+              const errMsg = `${model} 暂不支持图片输入，请切换到 GLM / GPT / Claude / Qwen / Kimi / 混元（须用各家的多模态版本，如 glm-4v-plus / gpt-4o / claude-3-5-sonnet / qwen-vl-plus / moonshot-v1-8k-vision-preview / hunyuan-vision）`;
+              log(`  ❌ ${errMsg}`);
+              storeUpdateNodeData(nodeId, { status: 'error', error: errMsg, items: [] });
+              results.set(nodeId, '');
+            } else if (needsVisionVer) {
+              const hint = ({
+                kimi: 'moonshot-v1-8k-vision-preview',
+                glm: 'glm-4v-plus',
+                qwen: 'qwen-vl-plus',
+                hunyuan: 'hunyuan-vision',
+              } as Record<string, string>)[model] || 'vision 版本';
+              const errMsg = `${model} 默认版本不支持图片，请在节点的「版本」字段填入 vision 版（如 ${hint}）`;
+              log(`  ❌ ${errMsg}`);
+              storeUpdateNodeData(nodeId, { status: 'error', error: errMsg, items: [] });
+              results.set(nodeId, '');
+            } else {
+              log(`  📊 提取（${model}${customModelName ? `:${customModelName}` : ''} / mode=${mode}${mode === 'data' ? ` / target=${dataTarget}` : ''} / keys=${keys.join(',')}${images.length ? ` / 图 ${images.length} 张` : ''}）`);
+              storeUpdateNodeData(nodeId, { status: 'running' });
+              // 构造用户消息：纯文本走 string，含图片走 OpenAI 兼容 content 数组
+              const userTextParts: string[] = [];
+              if (hasText) userTextParts.push(upstream);
+              if (images.length > 0) userTextParts.push(`参考图片 ${images.length} 张，请从中读取数据。`);
+              const userText = userTextParts.join('\n\n');
+              let userContent: any = userText;
+              if (images.length > 0) {
+                // vision API 大多不接受 localhost URL（公网才能 fetch），所以本地把图片转 base64 内联。
+                // /api/llm/chat 是同源（vite dev server proxy），fetch 自带 credentials。
+                const dataUrls = await Promise.all(
+                  images.map(async (img) => {
+                    try {
+                      // 用相对路径 fetch（同源），通过 vite dev proxy 拿到本地 server 的图片
+                      const path = img.url.startsWith('http')
+                        ? img.url
+                        : (img.url.startsWith('/uploads')
+                          ? `http://localhost:3001${img.url}` // server 没走 vite 代理 /uploads
+                          : img.url);
+                      const r = await fetch(path);
+                      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                      const blob = await r.blob();
+                      const dataUrl: string = await new Promise((res, rej) => {
+                        const fr = new FileReader();
+                        fr.onload = () => res(fr.result as string);
+                        fr.onerror = () => rej(new Error('FileReader failed'));
+                        fr.readAsDataURL(blob);
+                      });
+                      return { ...img, dataUrl };
+                    } catch (e: any) {
+                      log(`  ⚠️ 图片 ${img.name} 读取失败：${e.message}（跳过）`);
+                      return null;
+                    }
+                  }),
+                );
+                const validImgs = dataUrls.filter(Boolean) as Array<{ name: string; mime: string; url: string; dataUrl: string }>;
+                userContent = [
+                  { type: 'text', text: userText },
+                  ...validImgs.map((img) => ({
+                    type: 'image_url',
+                    image_url: { url: img.dataUrl }, // data:image/png;base64,...
+                  })),
+                ];
+              }
+              try {
+                const resp = await fetch('/api/llm/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    model,
+                    customModelName: customModelName || undefined,
+                    messages: [
+                      { role: 'system', content: sysPrompt },
+                      { role: 'user', content: userContent },
+                    ],
+                    temperature: 0.1,   // 提取任务用低温度
+                    stream: false,
+                  }),
+                });
+                if (!resp.ok) {
+                  const err = await resp.json().catch(() => ({ error: resp.statusText }));
+                  throw new Error(err.error || `HTTP ${resp.status}`);
+                }
+                const json = await resp.json();
+                const content = json?.choices?.[0]?.message?.content
+                  || json?.content?.[0]?.text
+                  || json?.output
+                  || '';
+                if (!content) throw new Error('模型返回空内容');
+                const arr = extractJsonValue(content);
+                if (!arr || !arr.length) {
+                  throw new Error(isObjectShape ? '模型输出无法解析为 JSON 对象' : '模型输出无法解析为 JSON 数组');
+                }
+                // 规整：把数值键转 Number；保留原始数据，下游可能要全键
+                const normalized = arr.map((item: any) => {
+                  if (item && typeof item === 'object') {
+                    const out: any = { ...item };
+                    for (const k of keys) {
+                      if (k === 'value' || k === 'count' || k === 'amount') {
+                        const n = Number(out[k]);
+                        if (Number.isFinite(n)) out[k] = n;
+                      }
+                    }
+                    return out;
+                  }
+                  return item;
+                }).filter((x: any) => x && typeof x === 'object');
+
+                // 根据 isObjectShape（前面已根据 mode/dataTarget 确定）决定下游收到数组还是对象
+                const outValue = isObjectShape
+                  ? (normalized[0] || {})
+                  : normalized;
+                const out = JSON.stringify(outValue);
+                results.set(nodeId, out);
+                storeUpdateNodeData(nodeId, { status: 'success', items: normalized, output: out } as any);
+                log(`  ✅ 提取${isObjectShape ? '出 1 个对象' : `出 ${normalized.length} 项`}`);
+              } catch (e: any) {
+                const errMsg = e.message || '提取失败';
+                log(`  ❌ ${errMsg}`);
+                storeUpdateNodeData(nodeId, { status: 'error', error: errMsg, items: [] });
+                results.set(nodeId, '');
+              }
+            }
+          }
+        }
+
+        // 饼图：上游 JSON → 解析为 slices → 节点自渲染 + 透传 JSON 给下游
+        if (data.type === 'pieChart') {
+          // v1.7 alpha：双输入端口
+          //   targetHandle === 'style' → 样式参考；其余（含 null/未指定/'data'）→ 数据
+          let dataUp = '';
+          let styleUp = '';
+          filteredEdges.forEach((e: any) => {
+            if (e.target !== nodeId) return;
+            const v = readResultForEdge(e) || '';
+            if (e.targetHandle === 'style') {
+              styleUp = stripFilePrefix(v) || styleUp;
+            } else {
+              dataUp = stripFilePrefix(v) || dataUp;
+            }
+          });
+          const slices = parsePieData(dataUp);
+          const styleIn = styleUp ? parseChartStyle(styleUp) : null;
+          if (slices && slices.length > 0) {
+            // v1.7 alpha：同时产出 SVG 字符串供 DashboardNode 离屏拼装
+            const { renderPieChartSvg } = await import('../utils/svgRenderers');
+            const svg = renderPieChartSvg(slices, styleIn, {
+              title: (data as any).label || '饼图',
+            });
+            const out = JSON.stringify(slices);
+            results.set(nodeId, out);
+            storeUpdateNodeData(nodeId, {
+              status: 'success',
+              slices,
+              styleIn: styleIn || undefined,
+              output: out,
+              svg,                 // 离屏 SVG 字符串
+            } as any);
+            log(`  🥧 解析出 ${slices.length} 个扇区${styleIn ? ` / 应用样式（palette ${styleIn.palette?.length || 0} 色）` : ''}`);
+          } else {
+            const errMsg = dataUp ? '上游数据不是合法的饼图数据' : '无上游数据输入';
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, { status: 'error', slices: [], error: errMsg } as any);
+            log(`  ❌ 饼图：${errMsg}`);
+          }
+        }
+
+        // 柱状图：与饼图同套路，data + style → 解析 + 渲染 SVG
+        if (data.type === 'barChart') {
+          let dataUp = '';
+          let styleUp = '';
+          filteredEdges.forEach((e: any) => {
+            if (e.target !== nodeId) return;
+            const v = readResultForEdge(e) || '';
+            if (e.targetHandle === 'style') {
+              styleUp = stripFilePrefix(v) || styleUp;
+            } else {
+              dataUp = stripFilePrefix(v) || dataUp;
+            }
+          });
+          const bars = parsePieData(dataUp); // 数据结构相同 [{label,value}]
+          const styleIn = styleUp ? parseChartStyle(styleUp) : null;
+          if (bars && bars.length > 0) {
+            const { renderBarChartSvg } = await import('../utils/svgRenderers');
+            const svg = renderBarChartSvg(bars, styleIn, {
+              title: (data as any).label || '柱状图',
+            });
+            const out = JSON.stringify(bars);
+            results.set(nodeId, out);
+            storeUpdateNodeData(nodeId, {
+              status: 'success',
+              bars,
+              styleIn: styleIn || undefined,
+              output: out,
+              svg,
+            } as any);
+            log(`  📊 解析出 ${bars.length} 个柱条${styleIn ? ` / 样式已应用` : ''}`);
+          } else {
+            const errMsg = dataUp ? '上游数据不是合法的柱状图数据' : '无上游数据输入';
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, { status: 'error', bars: [], error: errMsg } as any);
+            log(`  ❌ 柱状图：${errMsg}`);
+          }
+        }
+
+        // 自由图形：data + reference → LLM → SVG 字符串
+        if (data.type === 'genericChart') {
+          // 双输入：data 端口 + reference 端口（reference 可能含图片）
+          let dataRaw = '';
+          let refRaw = '';
+          filteredEdges.forEach((e: any) => {
+            if (e.target !== nodeId) return;
+            const v = readResultForEdge(e) || '';
+            if (e.targetHandle === 'reference') refRaw = v || refRaw;
+            else dataRaw = v || dataRaw;
+          });
+          const refImages = extractImages(refRaw);
+          const dataText = stripFilePrefix(dataRaw);
+          const refText = stripFilePrefix(refRaw);
+          if (!dataText.trim() && !refText.trim() && refImages.length === 0) {
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, { status: 'error', error: '需要数据 + 参考输入', svg: '' } as any);
+            log(`  ❌ 自由图形：无输入`);
+          } else {
+            const d = data as any;
+            const model = d.model || 'kimi';
+            const VISION_DEFAULTS: Record<string, string> = {
+              hunyuan: 'hunyuan-vision', glm: 'glm-4v-plus', gpt: 'gpt-4o',
+              claude: 'claude-3-5-sonnet-20241022', kimi: 'moonshot-v1-8k-vision-preview',
+              qwen: 'qwen-vl-plus',
+            };
+            let customModelName: string = (d.customModelName || '').trim();
+            if (refImages.length > 0 && !customModelName && VISION_DEFAULTS[model]) {
+              customModelName = VISION_DEFAULTS[model];
+            }
+            const instruction = (d.instruction || '').trim();
+            const sysPrompt = [
+              '你是一个 SVG 图表生成助手。根据用户给的数据 + 视觉参考（图片或样式 JSON），输出一段完整的 SVG 字符串，**模仿参考图的视觉形态**。',
+              '',
+              '严格规则：',
+              '1. 只输出原始 <svg ...>...</svg> 字符串，不要写解释、不要 markdown 代码块。',
+              '2. SVG 必须用 viewBox="0 0 400 280"，方便等比缩放。',
+              '3. 用参考图的配色、形态、布局；用户给的数据是 [{label,value}] 数组，每个数据项对应图中一个元素。',
+              '4. 禁止使用 <script>, <foreignObject>, <iframe>, <object>，禁止 on* 事件属性，禁止 href="javascript:..."。',
+              '5. 文字、标签、图例都直接画在 SVG 里。',
+              '6. 整体配色、扇区/弧/条形的形态应忠实参考图。',
+              '',
+              '可用的 SVG 元素：g, defs, path, rect, circle, ellipse, line, polyline, polygon, text, tspan, linearGradient, radialGradient, stop, pattern, mask, clipPath, filter, feGaussianBlur 等。',
+              instruction ? `特别指引：${instruction}` : '',
+              '',
+              '示例输出格式：',
+              '<svg viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg"><rect width="400" height="280" fill="#0d0d0d"/>...</svg>',
+            ].filter(Boolean).join('\n');
+
+            // 用户消息：数据文字 + 参考图片
+            const userText = `数据：${dataText || '（无）'}\n\n${refText ? `样式参考 JSON：${refText}\n\n` : ''}${refImages.length > 0 ? `参考图片 ${refImages.length} 张如下，请模仿其视觉形态。` : ''}`;
+            log(`  🎨 自由图形（${model}${customModelName ? `:${customModelName}` : ''}${refImages.length ? ` / 图 ${refImages.length} 张` : ''}）`);
+            storeUpdateNodeData(nodeId, { status: 'running' } as any);
+
+            // 含图片：base64 内联
+            let userContent: any = userText;
+            if (refImages.length > 0) {
+              const dataUrls = await Promise.all(
+                refImages.map(async (img) => {
+                  try {
+                    const path = img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`;
+                    const r = await fetch(path);
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    const blob = await r.blob();
+                    const dataUrl: string = await new Promise((res, rej) => {
+                      const fr = new FileReader();
+                      fr.onload = () => res(fr.result as string);
+                      fr.onerror = () => rej(new Error('FileReader failed'));
+                      fr.readAsDataURL(blob);
+                    });
+                    return { ...img, dataUrl };
+                  } catch (e: any) {
+                    log(`  ⚠️ 图片 ${img.name} 读取失败：${e.message}`);
+                    return null;
+                  }
+                }),
+              );
+              const validImgs = dataUrls.filter(Boolean) as Array<{ name: string; dataUrl: string }>;
+              userContent = [
+                { type: 'text', text: userText },
+                ...validImgs.map((img) => ({
+                  type: 'image_url',
+                  image_url: { url: img.dataUrl },
+                })),
+              ];
+            }
+            try {
+              const resp = await fetch('/api/llm/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  model,
+                  customModelName: customModelName || undefined,
+                  messages: [
+                    { role: 'system', content: sysPrompt },
+                    { role: 'user', content: userContent },
+                  ],
+                  temperature: 0.4,
+                  stream: false,
+                }),
+              });
+              if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ error: resp.statusText }));
+                throw new Error(err.error || `HTTP ${resp.status}`);
+              }
+              const json = await resp.json();
+              const content = json?.choices?.[0]?.message?.content
+                || json?.content?.[0]?.text
+                || json?.output
+                || '';
+              if (!content) throw new Error('模型返回空内容');
+              const safeSvg = sanitizeSvg(content);
+              if (!safeSvg) throw new Error('模型返回的不是合法 SVG');
+              results.set(nodeId, safeSvg);
+              storeUpdateNodeData(nodeId, { status: 'success', svg: safeSvg, output: safeSvg } as any);
+              log(`  ✅ 渲染 SVG ${safeSvg.length} 字符`);
+            } catch (e: any) {
+              const errMsg = e.message || '渲染失败';
+              log(`  ❌ ${errMsg}`);
+              storeUpdateNodeData(nodeId, { status: 'error', error: errMsg, svg: '' } as any);
+              results.set(nodeId, '');
+            }
+          }
+        }
+
+        // 仪表盘：收集多个上游图形节点的 SVG → 合成 HTML grid
+        if (data.type === 'dashboard') {
+          // 注意：上游图形节点（饼图/自由图形）刚刚在 executeFlow 内更新了 data.svg，
+          // 但 allNodes 是开头快照。所以这里要从 store 实时读最新 data。
+          const liveNodes = useNodeStore.getState().nodes as any[];
+          const upstreamNodes: any[] = [];
+          filteredEdges.forEach((e: any) => {
+            if (e.target !== nodeId) return;
+            const src = liveNodes.find((n: any) => n.id === e.source);
+            if (src) upstreamNodes.push(src);
+          });
+          // 收集 SVG（去重 by source id，保留连线顺序）
+          const seen = new Set<string>();
+          const panels: Array<{ title: string; svg: string }> = [];
+          for (const src of upstreamNodes) {
+            if (seen.has(src.id)) continue;
+            seen.add(src.id);
+            const svg = src.data?.svg || '';
+            if (!svg || typeof svg !== 'string' || !svg.includes('<svg')) continue;
+            panels.push({
+              title: src.data?.label || src.id,
+              svg,
+            });
+          }
+          if (panels.length === 0) {
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, {
+              status: 'error',
+              panels: [],
+              output: '',
+              error: '上游没有可用的图形（饼图/自由图形 需先成功运行）',
+            } as any);
+            log(`  ❌ 仪表盘：上游无 SVG`);
+          } else {
+            const d = data as any;
+            const html = buildDashboardHtml(panels, {
+              title: (d.gridTitle || '').trim() || (d.label || '仪表盘'),
+              columns: d.columns || 2,
+              theme: d.theme || 'light',
+            });
+            results.set(nodeId, html);
+            storeUpdateNodeData(nodeId, {
+              status: 'success',
+              panels,
+              output: html,
+            } as any);
+            log(`  📊 仪表盘合成 ${panels.length} 张图 → HTML ${html.length} 字符`);
           }
         }
 
@@ -2236,9 +2836,9 @@ export default function Canvas() {
               background: theme === 'dark' ? '#0b1220' : '#f8fafc',
               width: 180,
               height: 120,
-              // v1.7：避免和 toolbar 重叠 + 紧贴右下角
+              // v1.7：右下角 MiniMap 上移让位给自动保存浮层（自动保存浮层在 bottom:12，~28px 高 + 间距）
               right: 12,
-              bottom: 12,
+              bottom: 50,
             }}
           />
         </ReactFlow>
@@ -2626,6 +3226,7 @@ export default function Canvas() {
           {!toolbarCompact && (
             <>
               <button className="toolbar-btn" onClick={() => setShowApiConfig(true)} title="配置大模型 API Key">🔑 API 配置</button>
+              <button className="toolbar-btn" onClick={() => setShowScheduler(true)} title="管理定时任务（server 端按时自动跑画布）">⏰ 定时</button>
               <button className="toolbar-btn" onClick={() => openSaveDialog()} title="将选中节点（或整个画布）存为常用功能">📦 存常用功能</button>
               <button className="toolbar-btn" onClick={handleExport} title="把当前画布导出为 .json 文件（同时保存到最近画布）">⬇️ 画布导出</button>
               <button className="toolbar-btn" onClick={handleImportClick} title="从 .json 文件导入画布；若当前画布非空，会先存到最近画布">⬆️ 画布导入</button>
@@ -2666,124 +3267,80 @@ export default function Canvas() {
             🗑️ 清空
           </button>
 
-          {/* v1.7：折叠/展开次要按钮（API 配置 / 存常用 / 导入导出 / 主题） */}
-          <div style={{ position: 'relative', flexShrink: 0, display: 'flex', gap: 4 }}>
-            {/* 展开/折叠 总开关：始终一个按钮在外面 */}
-            <button
-              className="toolbar-btn"
-              onClick={toggleToolbarCompact}
-              title={toolbarCompact ? '展开次要按钮' : '折叠次要按钮腾出空间'}
-            >
-              {toolbarCompact ? '»' : '«'}
-            </button>
-            {/* 紧凑模式下额外加一个 ⋯ 弹菜单按钮 */}
-            {toolbarCompact && (
-              <button
-                className="toolbar-btn"
-                onClick={() => setShowCompactMenu((v) => !v)}
-                title="访问折叠的次要按钮"
-              >
-                ⋯
-              </button>
-            )}
-            {toolbarCompact && showCompactMenu && (
-              <>
-                <div
-                  onClick={() => setShowCompactMenu(false)}
-                  style={{ position: 'fixed', inset: 0, zIndex: 998 }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    bottom: 'calc(100% + 6px)',
-                    right: 0,
-                    zIndex: 999,
-                    minWidth: 160,
-                    background: 'var(--bg-card, #fff)',
-                    border: '1px solid var(--border-color, #e2e8f0)',
-                    borderRadius: 8,
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
-                    padding: '4px 0',
-                    fontSize: 13,
-                  }}
-                >
-                  {[
-                    { label: '🔑 API 配置', onClick: () => setShowApiConfig(true) },
-                    { label: '📦 存常用功能', onClick: () => openSaveDialog() },
-                    { label: '⬇️ 画布导出', onClick: handleExport },
-                    { label: '⬆️ 画布导入', onClick: handleImportClick },
-                    { label: theme === 'light' ? '🌙 切换夜晚' : '☀️ 切换白天', onClick: () => setTheme(theme === 'light' ? 'dark' : 'light') },
-                    { label: '« 展开次要按钮', onClick: () => toggleToolbarCompact() },
-                  ].map((it) => (
-                    <div
-                      key={it.label}
-                      onClick={() => { it.onClick(); setShowCompactMenu(false); }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(99,102,241,0.1)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                      style={{ padding: '7px 14px', cursor: 'pointer' }}
-                    >
-                      {it.label}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* 自动保存间隔选择器 + 状态指示器 */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginLeft: 'auto',
-              fontSize: 11,
-              color: 'var(--text-muted, #94a3b8)',
-              flexShrink: 0,
-              whiteSpace: 'nowrap',
-            }}
+          {/* v1.7：折叠/展开次要按钮（API 配置 / 存常用 / 导入导出 / 主题）*/}
+          {/* « / » 直接切换显隐，无需弹菜单 */}
+          <button
+            className="toolbar-btn"
+            onClick={toggleToolbarCompact}
+            title={toolbarCompact ? '展开次要按钮' : '折叠次要按钮腾出空间'}
+            style={{ flexShrink: 0 }}
           >
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} title="设置画布自动保存的间隔；选择「关闭」可完全停掉自动保存（页面关闭前仍会刷盘一次）">
-              自动保存
-              <select
-                value={autosaveMin}
-                onChange={(e) => setAutosaveMin(parseInt(e.target.value, 10))}
-                style={{ fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border, #d1d5db)', background: 'transparent', color: 'inherit' }}
+            {toolbarCompact ? '»' : '«'}
+          </button>
+
+          {/* 自动保存指示器已移出 toolbar，作为右下角独立浮层（位于 MiniMap 下方） */}
+        </div>
+
+        {/* v1.7：自动保存浮层 —— 左对齐窗口最右边，位于 MiniMap 下方（与 toolbar 解耦，无背景/无边框） */}
+        <div
+          className="autosave-indicator"
+          style={{
+            position: 'absolute',
+            right: 12,
+            bottom: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 11,
+            color: 'var(--text-muted, #94a3b8)',
+            zIndex: 5,
+            whiteSpace: 'nowrap',
+            pointerEvents: 'auto',
+          }}
+        >
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+            title="设置画布自动保存的间隔；选择「关闭」可完全停掉自动保存（页面关闭前仍会刷盘一次）"
+          >
+            自动保存
+            <select
+              value={autosaveMin}
+              onChange={(e) => setAutosaveMin(parseInt(e.target.value, 10))}
+              style={{ fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border, #d1d5db)', background: 'transparent', color: 'inherit' }}
+            >
+              <option value="0">关闭</option>
+              {[1, 2, 3, 5, 10, 15].map((m) => (
+                <option key={m} value={m}>{m} 分钟</option>
+              ))}
+            </select>
+          </label>
+          {(() => {
+            const text =
+              autosaveMin === 0
+                ? '⏸ 已关闭'
+                : saveStatus === 'saving'
+                  ? '💾 保存中…'
+                  : saveStatus === 'saved'
+                    ? lastSavedAt
+                      ? `✅ ${new Date(lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                      : '✅ 已保存'
+                    : '';
+            if (!text) return null;
+            return (
+              <span
+                title="画布自动保存到本浏览器；下次打开 PlotMesh 自动恢复。「画布导出」才能跨设备/分享。"
+                onClick={() => flushCanvasNow()}
+                style={{
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  opacity: saveStatus === 'saving' ? 0.7 : 1,
+                  transition: 'opacity 0.2s',
+                }}
               >
-                <option value="0">关闭</option>
-                {[1, 2, 3, 5, 10, 15].map((m) => (
-                  <option key={m} value={m}>{m} 分钟</option>
-                ))}
-              </select>
-            </label>
-            {(() => {
-              const text =
-                autosaveMin === 0
-                  ? '⏸ 自动保存已关闭'
-                  : saveStatus === 'saving'
-                    ? '💾 保存中…'
-                    : saveStatus === 'saved'
-                      ? lastSavedAt
-                        ? `✅ 已保存 ${new Date(lastSavedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
-                        : '✅ 已保存'
-                      : '';
-              if (!text) return null;
-              return (
-                <span
-                  title="画布自动保存到本浏览器；下次打开 PlotMesh 自动恢复。「画布导出」才能跨设备/分享。"
-                  onClick={() => flushCanvasNow()}
-                  style={{
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap',
-                    opacity: saveStatus === 'saving' ? 0.7 : 1,
-                    transition: 'opacity 0.2s',
-                  }}
-                >
-                  {text}
-                </span>
-              );
-            })()}
-          </div>
+                {text}
+              </span>
+            );
+          })()}
         </div>
 
         {/* 提示已合并进底部 toolbar 左侧 */}
@@ -2820,6 +3377,7 @@ export default function Canvas() {
 
       {/* API Key 配置对话框 */}
       <ApiKeyConfigModal open={showApiConfig} onClose={() => setShowApiConfig(false)} />
+      <SchedulerPanel open={showScheduler} onClose={() => setShowScheduler(false)} />
 
       {/* v1.5 D3 画布管理抽屉 */}
       <CanvasManager open={showCanvasManager} onClose={() => setShowCanvasManager(false)} />

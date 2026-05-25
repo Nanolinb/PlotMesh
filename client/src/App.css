@@ -552,6 +552,13 @@ body {
   font-size: 11px;
 }
 
+/* v1.7 alpha：饼图节点 SVG 220px + padding 8+8 + 外置标签可能再外延 22px。
+   给饼图单独放宽到 260，避免 SVG 溢出节点背景。 */
+.node-card.pie-chart-node {
+  max-width: 260px;
+  min-width: 240px;
+}
+
 /* Header 的圆角用内部 clip 实现 */
 .node-card .node-header {
   border-top-left-radius: 6px;
@@ -812,16 +819,16 @@ body {
   gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
+  /* 隐藏滚动条 —— 横滚条会遮住页签底边，影响视觉。保留滚动能力，靠 ‹ › 按钮和触摸板手势滚动 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   /* 让 active tab 的底边可以"咬"住下方画布，无下边框 */
   padding-bottom: 0;
 }
 .canvas-tabs-scroll::-webkit-scrollbar {
-  height: 4px;
-}
-.canvas-tabs-scroll::-webkit-scrollbar-thumb {
-  background: var(--border-color);
-  border-radius: 2px;
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .canvas-tab {
@@ -964,13 +971,14 @@ body {
 .canvas-toolbar.bottom {
   position: absolute;
   top: auto;
-  /* v1.7：右边距 = MiniMap 宽度 (180) + 间距 (24) */
-  right: calc(204px + env(safe-area-inset-right, 0px));
+  /* v1.7：右边距避开右下角的 autosave 浮层。
+     autosave 展开后含「自动保存 [select] ✅ HH:MM:SS」约 200px，加 right:12 + 间距 18 = 230px */
+  right: calc(230px + env(safe-area-inset-right, 0px));
   bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   /* 留出左下角给 React Flow 的缩放控件 */
   left: calc(60px + env(safe-area-inset-left, 0px));
-  /* v1.7：max-width 减去 minimap 的宽度，避免溢出 */
-  max-width: calc(100% - 264px);
+  /* v1.7：max-width 减去 autosave 浮层占据的右侧宽度 */
+  max-width: calc(100% - 290px);
   flex-wrap: nowrap; /* 不换行 —— 让 hint 文字自己缩 */
   justify-content: flex-end;
   align-items: center;
@@ -1167,8 +1175,8 @@ body {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  /* v1.7：贴右下角；toolbar 自己已避开 MiniMap 的空间 */
-  bottom: 12px !important;
+  /* v1.7：MiniMap 右下角，上移给自动保存浮层让位（autosave-indicator 在 bottom:12） */
+  bottom: 50px !important;
   right: 12px !important;
 }
 

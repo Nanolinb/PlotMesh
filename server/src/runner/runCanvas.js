@@ -116,6 +116,14 @@ export async function runCanvas(canvas, options = {}) {
   };
 
   const conditionMatched = new Map(); // nodeId → bool
+  // v1.7 alpha：dashboard 节点要读上游 data.svg，但 setData 是异步写入 store；
+  // 这里维护一份本次 run 内的 dataPatch 快照供同 run 内的下游读
+  const setDataPatchCache = new Map(); // nodeId -> 累积 dataPatch
+  const accumulateDataPatch = (nodeId, patch) => {
+    if (!patch) return;
+    const cur = setDataPatchCache.get(nodeId) || {};
+    setDataPatchCache.set(nodeId, { ...cur, ...patch });
+  };
 
   // 给 LLM 节点检测下游 output 的 format
   const computeDownstreamHints = (nodeId) => {
@@ -142,10 +150,18 @@ export async function runCanvas(canvas, options = {}) {
 
     // 收集所有上游
     const upstreamList = [];
+    // v1.7 alpha：按 targetHandle 分流给图形/提取节点（pieChart 的 data/style；
+    // genericChart 的 data/reference；dashboard 多入但都按 source 收 SVG）
+    const upstreamByHandle = {};
     filteredEdges.forEach((e) => {
       if (e.target === nodeId) {
         const v = readResultForEdge(e);
-        if (v !== undefined) upstreamList.push(v);
+        if (v !== undefined) {
+          upstreamList.push(v);
+          const handle = e.targetHandle || 'data';
+          if (!upstreamByHandle[handle]) upstreamByHandle[handle] = [];
+          upstreamByHandle[handle].push({ sourceId: e.source, value: v });
+        }
       }
     });
 
@@ -154,6 +170,13 @@ export async function runCanvas(canvas, options = {}) {
     try {
       const r = await runNode(node, upstreamList, {
         ...ctx,
+        upstreamByHandle,
+        // 让 dashboard 等需要"上游节点完整 data"的节点能拿到（现在 results 只有 output）
+        liveNodes: allNodes.map((n) => ({
+          id: n.id,
+          type: n.type,
+          data: { ...n.data, ...(setDataPatchCache.get(n.id) || {}) },
+        })),
         downstreamHints: data?.type === 'llm' ? computeDownstreamHints(nodeId) : undefined,
       });
 
@@ -183,7 +206,10 @@ export async function runCanvas(canvas, options = {}) {
           log(`  🔀 ${r.matched ? '匹配' : '未匹配'}`);
         }
         setStatus(nodeId, r.status, r.dataPatch);
-        if (r.dataPatch) setData(nodeId, r.dataPatch);
+        if (r.dataPatch) {
+          setData(nodeId, r.dataPatch);
+          accumulateDataPatch(nodeId, r.dataPatch);
+        }
         log(`  ✅ ${typeof r.output === 'string' ? `${r.output.length} 字符` : 'ok'}`);
 
         // v1.7 P2-A：crossOutput 节点跑完后投递到远端 crossInput

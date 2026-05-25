@@ -39,6 +39,7 @@ import { getServerConfig, updateServerConfig } from '../utils/serverConfig.js';
 // v1.7 P1：server runner 双引擎
 import { runCanvas } from '../runner/runCanvas.js';
 import { saveRun, getRun, listRuns } from '../runner/runStore.js';
+import { emitRunEvent, disposeRunBus } from '../runner/runEvents.js';
 // v1.7 P2-A：跨画布引用
 import {
   listConnections,
@@ -191,6 +192,46 @@ const NODE_TYPES_SCHEMA = {
     defaultData: { type: 'group', label: '功能组', collapsed: false, childCount: 0, status: 'idle' },
     notes: '子节点通过 parentId 挂入并设 extent="parent"',
   },
+  pieChart: {
+    description: '饼图节点（v1.7 alpha）：把上游 JSON / 表格 / 行式列表渲染成 SVG 饼图',
+    defaultData: { type: 'pieChart', label: '🥧 饼图', slices: [], status: 'idle', output: '' },
+    notes: '本地解析 [{label,value}] / Markdown 表 / CSV / 行式自然文本，5 种格式宽容',
+  },
+  barChart: {
+    description: '柱状图节点（v1.7 alpha）：本地 SVG 渲染柱条/条形图',
+    defaultData: { type: 'barChart', label: '📊 柱状图', bars: [], status: 'idle', output: '' },
+    notes: '与饼图同套路，[{label,value}] 数据；ChartStyle 支持 barOrientation/barWidth/showAxis/axisColor',
+  },
+  extract: {
+    description: '数据/样式提取节点（v1.7 alpha）：调 LLM 把任意文本/图片规整成 JSON',
+    defaultData: {
+      type: 'extract', label: '📊 数据提取',
+      mode: 'data',           // 'data' | 'style'
+      dataTarget: 'pie',      // pie / bar / line / sankey / generic（mode=data 时）
+      model: 'deepseek',
+      customModelName: '',
+      instruction: '', items: [], status: 'idle', output: '',
+    },
+    notes: 'mode=data → 选 dataTarget；mode=style → 固定输出 {palette,background,labelColor,borderColor}；含图片必须用 vision 模型',
+  },
+  genericChart: {
+    description: '自由图形节点（v1.7 alpha）：LLM 看参考图 + 数据 → 直接输出 SVG，能模仿任意形态',
+    defaultData: {
+      type: 'genericChart', label: '🎨 自由图形',
+      model: 'kimi', customModelName: '',
+      instruction: '', svg: '', status: 'idle', output: '',
+    },
+    notes: '双输入：data 端口接数据，reference 端口接图片或 ChartStyle JSON；含图必须用 vision 版',
+  },
+  dashboard: {
+    description: '仪表盘节点（v1.7 alpha）：收集 N 个图形节点的 SVG，合成 HTML grid 页面',
+    defaultData: {
+      type: 'dashboard', label: '📊 仪表盘',
+      gridTitle: '', columns: 2, theme: 'light',
+      panels: [], output: '', status: 'idle',
+    },
+    notes: '多输入 target 边：每条上游需含 data.svg（饼图/自由图形）；输出完整 HTML 文档',
+  },
 };
 
 // =============================================================
@@ -308,6 +349,71 @@ router.get('/list', (_req, res) => {
       updatedAt: c.updatedAt,
     }));
   res.json({ canvases: out });
+});
+
+// =============================================================
+// v1.7 alpha P1 第二刀：定时任务 CRUD（schedules）
+// 注意：必须在 GET /:id 之前注册，避免 /_schedules 被误吞为 canvasId
+// =============================================================
+import {
+  listSchedules,
+  getSchedule,
+  createSchedule,
+  updateSchedule,
+  deleteSchedule,
+  describeExpr,
+} from '../runner/scheduler.js';
+
+router.get('/_schedules', (_req, res) => {
+  const schedules = listSchedules().map((s) => ({
+    ...s,
+    description: describeExpr(s.expr),
+  }));
+  res.json({ schedules });
+});
+
+router.get('/_schedules/:id', (req, res) => {
+  const s = getSchedule(req.params.id);
+  if (!s) return res.status(404).json({ error: 'schedule_not_found' });
+  res.json({ schedule: { ...s, description: describeExpr(s.expr) } });
+});
+
+router.post('/_schedules', (req, res) => {
+  const { canvasId, name, expr, enabled } = req.body || {};
+  if (!canvasId || !expr) {
+    return res.status(400).json({ error: 'canvasId and expr are required' });
+  }
+  const payload = readPayload();
+  if (!(payload.canvases || []).find((c) => c.id === canvasId && !c.deleted)) {
+    return res.status(404).json({ error: 'canvas_not_found' });
+  }
+  try {
+    const sch = createSchedule({ canvasId, name, expr, enabled });
+    res.json({ schedule: { ...sch, description: describeExpr(sch.expr) } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.patch('/_schedules/:id', (req, res) => {
+  const allowedKeys = ['name', 'expr', 'enabled'];
+  const patch = {};
+  for (const k of allowedKeys) {
+    if (k in (req.body || {})) patch[k] = req.body[k];
+  }
+  try {
+    const next = updateSchedule(req.params.id, patch);
+    if (!next) return res.status(404).json({ error: 'schedule_not_found' });
+    res.json({ schedule: { ...next, description: describeExpr(next.expr) } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.delete('/_schedules/:id', (req, res) => {
+  const ok = deleteSchedule(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'schedule_not_found' });
+  res.json({ ok: true });
 });
 
 // =============================================================
@@ -576,14 +682,16 @@ function ensureRunsArray(payload) {
 }
 
 /**
+/**
  * 内部函数：在 server 端跑一次画布。POST /:id/run 和跨画布 cascade 都用它。
+ * v1.7 alpha：导出供定时调度器调用。
  * @param {string} canvasId
- * @param {{trigger?:string, traceId?:string, traceDepth?:number, subset?:string[], reason?:string}} opts
+ * @param {{trigger?:string, traceId?:string, traceDepth?:number, subset?:string[], reason?:string, jobId?:string}} opts
  * @returns Promise<{jobId, status, run}>
  */
-async function runCanvasJob(canvasId, opts = {}) {
+export async function runCanvasJob(canvasId, opts = {}) {
   const now = Date.now();
-  const jobId = `run-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const jobId = opts.jobId || `run-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const traceId = opts.traceId || `trace-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const traceDepth = opts.traceDepth || 0;
 
@@ -613,6 +721,8 @@ async function runCanvasJob(canvasId, opts = {}) {
     cascadeTriggered: [], // 此次 run 触发了哪些 cascade 子 run
   };
   saveRun(run);
+  // SSE：开始事件
+  emitRunEvent(jobId, 'status', { status: 'running' });
 
   const subsetIds = Array.isArray(opts.subset) && opts.subset.length ? new Set(opts.subset) : undefined;
 
@@ -623,10 +733,13 @@ async function runCanvasJob(canvasId, opts = {}) {
       traceId,
       traceDepth,
       onLog: (msg) => {
-        run.logs.push(`[${new Date().toISOString()}] ${msg}`);
+        const ts = new Date().toISOString();
+        run.logs.push(`[${ts}] ${msg}`);
+        emitRunEvent(jobId, 'log', { ts, msg });
       },
       onNodeStatus: (nodeId, status, dataPatch) => {
         run.nodeStatus[nodeId] = status;
+        emitRunEvent(jobId, 'node', { nodeId, status, dataPatch: dataPatch || null });
         if (dataPatch) {
           try {
             mutateStore((payload) => {
@@ -675,6 +788,7 @@ async function runCanvasJob(canvasId, opts = {}) {
           });
           run.cascadeTriggered.push({ canvasId: info.dstCanvasId, jobId: subRun.jobId, status: subRun.status });
           run.logs.push(`[${new Date().toISOString()}]  🌐 触发远端画布 ${info.dstCanvasId} → 子 jobId=${subRun.jobId}`);
+          emitRunEvent(jobId, 'cascade', { canvasId: info.dstCanvasId, jobId: subRun.jobId, status: subRun.status });
           saveRun(run);
         } catch (e) {
           run.logs.push(`[${new Date().toISOString()}]  ❌ 触发远端画布失败：${e.message}`);
@@ -683,6 +797,8 @@ async function runCanvasJob(canvasId, opts = {}) {
       ctx: {
         webFetchUrl: `http://localhost:${process.env.PORT || 3001}/api/web-fetch`,
         llmChatUrl: `http://localhost:${process.env.PORT || 3001}/api/llm/chat`,
+        // 让 chartNodes 能直接读 uploads 目录的图片转 base64（不走 HTTP）
+        uploadsDir: process.env.PLOTMESH_UPLOADS_DIR || undefined,
       },
     });
     run.results = result.results;
@@ -690,12 +806,16 @@ async function runCanvasJob(canvasId, opts = {}) {
     run.status = result.ok ? 'succeeded' : 'failed';
     run.completedAt = Date.now();
     saveRun(run);
+    emitRunEvent(jobId, 'status', { status: run.status });
   } catch (e) {
     run.status = 'failed';
     run.errors.push({ nodeId: null, error: e.message });
     run.completedAt = Date.now();
     saveRun(run);
+    emitRunEvent(jobId, 'status', { status: 'failed', error: e.message });
   }
+  // SSE 总线清理（订阅端会先收到最终 status 再断流）
+  setTimeout(() => disposeRunBus(jobId), 5000);
 
   return { jobId, status: run.status, run };
 }
@@ -711,17 +831,18 @@ router.post('/:id/run', async (req, res) => {
   const c = (payload.canvases || []).find((x) => x.id === canvasId && !x.deleted);
   if (!c) return res.status(404).json({ error: 'canvas_not_found' });
 
-  // 异步开跑，202 立即返回
-  const jobId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  res.status(202).json({ jobId: 'pending-async', status: 'running' });
+  // 预分配 jobId 让客户端立刻能订阅 SSE
+  const now = Date.now();
+  const jobId = `run-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  res.status(202).json({ jobId, status: 'running' });
 
-  // 走内部 helper
+  // 走内部 helper（异步）
   runCanvasJob(canvasId, {
+    jobId,
     trigger: trigger || 'api',
     reason: reason || null,
     subset,
   }).catch(() => {/* 已在 runCanvasJob 内处理写盘 */});
-  void jobId;
 });
 
 // GET /api/canvas/:id/runs/:jobId  → 查运行状态（v1.7 P1：从 runStore 取）
@@ -731,6 +852,63 @@ router.get('/:id/runs/:jobId', (req, res) => {
     return res.status(404).json({ error: 'job_not_found' });
   }
   res.json({ job: run });
+});
+
+// GET /api/canvas/:id/runs/:jobId/stream  → SSE 实时推送 run 进度（v1.7 alpha P1 第二刀）
+router.get('/:id/runs/:jobId/stream', async (req, res) => {
+  const { id: canvasId, jobId } = req.params;
+  // 路由前置 requireApiToken 已校验 Bearer，这里直接连
+  // 设置 SSE 响应头
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+
+  const send = (type, data) => {
+    res.write(`event: ${type}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // 1) 先 dump 现有 run 状态（让晚到的订阅者也能看到完整历史）
+  const existing = getRun(jobId);
+  if (!existing || existing.canvasId !== canvasId) {
+    send('error', { error: 'job_not_found' });
+    return res.end();
+  }
+  send('snapshot', {
+    status: existing.status,
+    logs: existing.logs || [],
+    nodeStatus: existing.nodeStatus || {},
+    cascadeTriggered: existing.cascadeTriggered || [],
+  });
+  // 已结束的 run 不需要订阅，立刻断流
+  if (existing.status !== 'running') {
+    send('status', { status: existing.status });
+    return res.end();
+  }
+
+  // 2) 订阅运行中事件
+  const { subscribeRun } = await import('../runner/runEvents.js');
+  const unsubscribe = subscribeRun(jobId, ({ type, payload }) => {
+    send(type, payload);
+    // run 终态后自动断流
+    if (type === 'status' && payload?.status && payload.status !== 'running') {
+      setTimeout(() => res.end(), 200);
+    }
+  });
+
+  // 3) 心跳，防止某些代理 30s 断连
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n');
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 });
 
 // GET /api/canvas/:id/runs  → 列出该画布的最近运行（默认 20 条，元数据，不含 logs/results）
@@ -829,5 +1007,9 @@ router.patch('/_runs/:jobId', (req, res) => {
   }
   res.json({ ok: true, job: updated });
 });
+
+// =============================================================
+// schedules CRUD 已在 GET /:id 之前注册（路由顺序敏感）
+// =============================================================
 
 export default router;

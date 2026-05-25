@@ -25,25 +25,77 @@ interface SidebarProps {
   onLoadRecentCanvas?: (item: RecentCanvas) => void;
 }
 
-const NODE_TYPES = [
-  { type: 'textPrompt', label: '✏️ 文本提示词', description: '输入提示词内容' },
-  { type: 'fileUpload', label: '📁 文件上传', description: '上传并解析文件' },
-  { type: 'webLink', label: '🔗 Web 链接', description: 'wiki / 在线文档 / 新闻' },
-  { type: 'llm', label: '🤖 大模型', description: '调用 LLM 处理' },
-  { type: 'textTransform', label: '🔤 文本处理', description: '大小写/替换/提取' },
-  { type: 'condition', label: '🔀 条件分支', description: '按关键词分流' },
-  { type: 'splitter', label: '🔀 分叉', description: '一段切成 N 路输出' },
-  { type: 'output', label: '📤 输出', description: '预览/下载/复制/腾讯文档' },
-  { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
-  { type: 'swimlane', label: '🏊 项目泳道', description: '横向泳道 / 项目时序' },
-  // v1.7 P2-A 跨画布引用
-  { type: 'crossOutput', label: '🌐 跨画布输出', description: '把内容投递到另一个画布的 crossInput' },
-  { type: 'crossInput', label: '🌐 跨画布输入', description: '接收远端 crossOutput 的回写' },
+/**
+ * 节点类型按用途分三类（v1.7 alpha）：
+ *   - 数据：原始资料 / 远端引用 / 数据提炼
+ *   - 文本：文本生成、加工、分流、输出
+ *   - 图形：可视化与时序
+ * 每类可独立折叠，状态保存在 localStorage。
+ */
+const NODE_CATEGORIES: Array<{
+  key: string;
+  label: string;
+  items: Array<{ type: string; label: string; description: string }>;
+}> = [
+  {
+    key: 'data',
+    label: '📥 数据',
+    items: [
+      { type: 'fileUpload', label: '📁 文件上传', description: '上传并解析文件' },
+      { type: 'webLink', label: '🔗 Web 链接', description: 'wiki / 在线文档 / 新闻' },
+      { type: 'extract', label: '📊 数据提取', description: 'LLM 把自由文本/图片规整为 JSON' },
+      { type: 'crossOutput', label: '🌐 跨画布输出', description: '把内容投递到另一个画布的 crossInput' },
+      { type: 'crossInput', label: '🌐 跨画布输入', description: '接收远端 crossOutput 的回写' },
+    ],
+  },
+  {
+    key: 'text',
+    label: '📝 文本',
+    items: [
+      { type: 'textPrompt', label: '✏️ 文本提示词', description: '输入提示词内容' },
+      { type: 'llm', label: '🤖 大模型', description: '调用 LLM 处理' },
+      { type: 'textTransform', label: '🔤 文本处理', description: '大小写/替换/提取' },
+      { type: 'condition', label: '🔀 条件分支', description: '按关键词分流' },
+      { type: 'splitter', label: '🔀 分叉', description: '一段切成 N 路输出' },
+      { type: 'output', label: '📤 输出', description: '预览/下载/复制/腾讯文档' },
+    ],
+  },
+  {
+    key: 'chart',
+    label: '🎨 图形',
+    items: [
+      { type: 'pieChart', label: '🥧 饼图', description: 'JSON 数据可视化（试验性）' },
+      { type: 'barChart', label: '📊 柱状图', description: '柱条/条形图（本地 SVG，0 token）' },
+      { type: 'genericChart', label: '🎨 自由图形', description: 'LLM 看参考图直接画 SVG（任意形态）' },
+      { type: 'dashboard', label: '📊 仪表盘', description: '合并多个图形为一个 HTML 页面' },
+      { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
+      { type: 'swimlane', label: '🏊 项目泳道', description: '横向泳道 / 项目时序' },
+    ],
+  },
 ];
+
+const NODE_CAT_COLLAPSED_KEY = 'plotmesh.sidebar.nodeCatCollapsed';
+const loadCatCollapsed = (): Record<string, boolean> => {
+  try {
+    const raw = localStorage.getItem(NODE_CAT_COLLAPSED_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
 
 export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showGroupMenu, setShowGroupMenu] = useState<string | null>(null); // 哪个 pkgId 正在弹"移动到分组"
+  // v1.7 alpha：节点分类折叠状态，持久化到 localStorage
+  const [catCollapsed, setCatCollapsed] = useState<Record<string, boolean>>(loadCatCollapsed);
+  const toggleCategory = (key: string) => {
+    setCatCollapsed((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try { localStorage.setItem(NODE_CAT_COLLAPSED_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
   const createGroup = useNodeStore((s) => s.createPackageGroup);
   const renameGroup = useNodeStore((s) => s.renamePackageGroup);
   const deleteGroup = useNodeStore((s) => s.deletePackageGroup);
@@ -228,22 +280,49 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
 
       {/* v1.6.2：去掉"节点面板"大标题（产品名 + 状态灯 + 子分类已经够清楚了） */}
 
-      {/* 节点类型列表 */}
+      {/* 节点类型列表（分类折叠） */}
       <div className="sidebar-section">
         <h3>节点类型</h3>
         <div className="node-list">
-          {NODE_TYPES.map((node) => (
-            <div
-              key={node.type}
-              className="node-item"
-              draggable
-              onDragStart={(e) => onDragStart(e, node.type)}
-              title={node.description}
-            >
-              <span className="node-item-label">{node.label}</span>
-              <span className="node-item-drag">⋮⋮</span>
-            </div>
-          ))}
+          {NODE_CATEGORIES.map((cat) => {
+            const collapsed = !!catCollapsed[cat.key];
+            return (
+              <div key={cat.key} className="node-category">
+                <div
+                  className="node-category-header"
+                  onClick={() => toggleCategory(cat.key)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '4px 6px',
+                    cursor: 'pointer',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: 'var(--text-muted, #94a3b8)',
+                    userSelect: 'none',
+                  }}
+                  title="点击折叠/展开"
+                >
+                  <span style={{ width: 10, display: 'inline-block' }}>{collapsed ? '▶' : '▼'}</span>
+                  <span style={{ flex: 1 }}>{cat.label}</span>
+                  <span style={{ fontWeight: 400 }}>({cat.items.length})</span>
+                </div>
+                {!collapsed && cat.items.map((node) => (
+                  <div
+                    key={node.type}
+                    className="node-item"
+                    draggable
+                    onDragStart={(e) => onDragStart(e, node.type)}
+                    title={node.description}
+                  >
+                    <span className="node-item-label">{node.label}</span>
+                    <span className="node-item-drag">⋮⋮</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
       </div>
 
