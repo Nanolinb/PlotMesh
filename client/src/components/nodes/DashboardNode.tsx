@@ -203,12 +203,23 @@ function DashboardNode({ id, data, selected }: Props) {
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
           <div className="field" style={{ flex: 1 }}>
-            <label style={{ fontSize: 10, color: 'var(--text-muted)' }}>列数</label>
+            <label
+              style={{
+                fontSize: 10,
+                color: layoutIn ? 'var(--text-muted)' : 'var(--text-muted)',
+                opacity: layoutIn ? 0.5 : 1,
+              }}
+              title={layoutIn ? '上游已接 layout 端口，列数由布局自动决定（本下拉禁用）' : ''}
+            >
+              列数{layoutIn ? '（由布局覆盖）' : ''}
+            </label>
             <select
               className="nodrag"
               value={localCols}
+              disabled={!!layoutIn}
               onChange={(e) => { const n = parseInt(e.target.value, 10); setLocalCols(n); updateNodeData(id, { columns: n } as any); }}
-              style={{ fontSize: 11, width: '100%' }}
+              style={{ fontSize: 11, width: '100%', opacity: layoutIn ? 0.5 : 1, cursor: layoutIn ? 'not-allowed' : 'default' }}
+              title={layoutIn ? `已被布局覆盖：${layoutIn.cols} 列` : ''}
             >
               <option value="1">1 列</option>
               <option value="2">2 列</option>

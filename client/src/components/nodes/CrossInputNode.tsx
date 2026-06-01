@@ -13,6 +13,7 @@
 import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';
+import { authFetch } from '../../auth/api';
 
 type Props = {
   id: string;
@@ -36,6 +37,28 @@ function CrossInputNode({ id, data, selected }: Props) {
   const text: string = data.text || '';
   const receivedAt: number | null = data.receivedAt || null;
 
+  // v2.0-β Phase B 步 3：拉取合约状态（pending/accepted/active）
+  const [connId, setConnId] = useState<string | null>(null);
+  const [contractStatus, setContractStatus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!hasSource) { setConnId(null); setContractStatus(null); return; }
+    const canvasId = useNodeStore.getState().activeCanvasId;
+    if (!canvasId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await authFetch(`/api/canvas/connections/by-dst?canvasId=${canvasId}&nodeId=${id}`);
+        const d = await r.json();
+        if (cancelled) return;
+        setConnId(d.connection?.id || null);
+        setContractStatus(d.connection?.status || null);
+      } catch { /* 离线/无连接，忽略 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [hasSource, id, status]);
+
+  const isPending = contractStatus === 'pending';
+
   const fmtTime = (ts: number) => {
     const d = new Date(ts);
     return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -50,14 +73,28 @@ function CrossInputNode({ id, data, selected }: Props) {
 
   const handleUnlink = useCallback(async () => {
     if (!hasSource) return;
-    if (!confirm(`确认解除来自「${sourceCanvasName} / ${sourceNodeLabel}」的关联？\n\n解除后远端画布跑完不会再写入此节点。`)) return;
+    const verb = isPending ? '撤回此引用请求' : '解除关联';
+    if (!confirm(`确认${verb}（来自「${sourceCanvasName} / ${sourceNodeLabel}」）？\n\n${isPending ? '撤回后对方将不再收到审批请求。' : '解除后远端画布跑完不会再写入此节点，操作会留审计记录。'}`)) return;
     try {
-      // 找到对应 connection 并删除
-      const r = await fetch(`/api/canvas/connections/by-dst?canvasId=${useNodeStore.getState().activeCanvasId}&nodeId=${id}`);
-      const d = await r.json();
-      if (d.connection?.id) {
-        await fetch(`/api/canvas/connections/${d.connection.id}`, { method: 'DELETE' });
-        // 本地 data 直接清空 source 字段
+      const canvasId = useNodeStore.getState().activeCanvasId;
+      // 优先用已缓存的 connId，否则现查
+      let cid = connId;
+      if (!cid) {
+        const r = await authFetch(`/api/canvas/connections/by-dst?canvasId=${canvasId}&nodeId=${id}`);
+        const d = await r.json();
+        cid = d.connection?.id || null;
+      }
+      if (cid) {
+        // v2.0-β：走 cancel 路由（留审计），而非物理 DELETE
+        const rc = await authFetch(`/api/canvas/connections/${cid}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: isPending ? '发起方撤回' : '接收方解除' }),
+        });
+        if (!rc.ok) {
+          // 兼容：legacy 无主连接 cancel 可能失败，回退 DELETE
+          await authFetch(`/api/canvas/connections/${cid}`, { method: 'DELETE' });
+        }
         useNodeStore.getState().updateNodeData(id, {
           sourceCanvasId: null,
           sourceCanvasName: null,
@@ -65,17 +102,19 @@ function CrossInputNode({ id, data, selected }: Props) {
           sourceNodeLabel: null,
           status: 'waiting',
         } as any);
+        setConnId(null);
+        setContractStatus(null);
       }
     } catch (e: any) {
-      alert(`解除失败：${e.message}`);
+      alert(`操作失败：${e.message}`);
     }
-  }, [hasSource, sourceCanvasName, sourceNodeLabel, id]);
+  }, [hasSource, isPending, sourceCanvasName, sourceNodeLabel, id, connId]);
 
   return (
     <div
       className={`node-card${selected ? ' selected' : ''} cross-input-node`}
       data-status={status === 'received' ? 'success' : status}
-      style={{ minWidth: 220, borderLeft: '3px solid #22c55e' }}
+      style={{ minWidth: 220, borderLeft: `3px solid ${isPending ? '#f59e0b' : '#22c55e'}` }}
     >
       <Handle type="target" position={Position.Left} />
       <div className="node-header">
@@ -100,8 +139,8 @@ function CrossInputNode({ id, data, selected }: Props) {
         {hasSource ? (
           <div
             style={{
-              background: 'rgba(34,197,94,0.1)',
-              border: '1px solid rgba(34,197,94,0.3)',
+              background: isPending ? 'rgba(245,158,11,0.1)' : 'rgba(34,197,94,0.1)',
+              border: `1px ${isPending ? 'dashed' : 'solid'} ${isPending ? 'rgba(245,158,11,0.5)' : 'rgba(34,197,94,0.3)'}`,
               borderRadius: 4,
               padding: '4px 8px',
               marginBottom: 6,
@@ -113,6 +152,11 @@ function CrossInputNode({ id, data, selected }: Props) {
             <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
               {sourceNodeLabel}{receivedAt ? ` · ${fmtTime(receivedAt)}` : ''}
             </div>
+            {isPending && (
+              <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2, fontWeight: 600 }}>
+                ⏳ 待对方确认引用（跨用户握手中）
+              </div>
+            )}
           </div>
         ) : (
           <div
@@ -130,7 +174,7 @@ function CrossInputNode({ id, data, selected }: Props) {
         )}
 
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
-          状态：{status === 'waiting' ? '⏳ 等待回写' : '✓ 已接收'}
+          状态：{isPending ? '⏳ 等待对方确认' : status === 'waiting' ? '⏳ 等待回写' : '✓ 已接收'}
         </div>
 
         {text && (
@@ -159,7 +203,7 @@ function CrossInputNode({ id, data, selected }: Props) {
             onClick={(e) => { e.stopPropagation(); handleUnlink(); }}
             style={{ width: '100%', fontSize: 11, padding: '4px 8px', marginTop: 6, color: '#ef4444' }}
           >
-            🔗 解除关联
+            {isPending ? '↩️ 撤回引用请求' : '🔗 解除关联'}
           </button>
         )}
       </div>

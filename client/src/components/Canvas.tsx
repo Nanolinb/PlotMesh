@@ -15,7 +15,7 @@
  *
  * 文件比较长（>1700 行），各个区域用注释分隔，可以按 "─────── ─" 搜索定位。
  */
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   ReactFlow,
   Background,
@@ -45,6 +45,14 @@ import WebLinkNode from './nodes/WebLinkNode';
 // v1.7 P2-A：跨画布引用
 import CrossOutputNode from './nodes/CrossOutputNode';
 import CrossInputNode from './nodes/CrossInputNode';
+// v2.0-β Phase B 步 4 主题节点
+import ThemeNode from './nodes/ThemeNode';
+import { computeEffectiveTheme, themeToSummary } from '../utils/themeMerge';
+import { assignPositions as assignGhostPositions } from '../utils/aiEmit';
+// v2.0 Phase C 步 5 AI emit
+import AIBuilderNode from './nodes/AIBuilderNode';
+// v2.0 Phase C 步 6 ghost 预览
+import GhostNode from './nodes/GhostNode';
 // v1.7 alpha：试验性可视化节点（饼图）
 import PieChartNode, { parsePieData } from './nodes/PieChartNode';
 // v1.7 alpha：柱状图（与饼图同套路，本地 SVG 0 token）
@@ -66,6 +74,8 @@ import CanvasManager from './CanvasManager';
 import CanvasTabs from './CanvasTabs';
 // v1.7 alpha P1 第二刀：定时任务面板
 import SchedulerPanel from './SchedulerPanel';
+import Bell from '../auth/Bell';
+import UserChip from '../auth/UserChip';
 import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, flushRemoteSyncNow, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
@@ -84,6 +94,12 @@ const nodeTypes = {
   // v1.7 P2-A 跨画布引用
   crossOutput: CrossOutputNode,
   crossInput: CrossInputNode,
+  // v2.0-β Phase B 步 4 主题节点
+  themeNode: ThemeNode,
+  // v2.0 Phase C 步 5 AI emit
+  aiBuilder: AIBuilderNode,
+  // v2.0 Phase C 步 6 ghost 预览
+  ghostNode: GhostNode,
   // v1.7 alpha 试验性
   pieChart: PieChartNode,
   barChart: BarChartNode,
@@ -104,6 +120,35 @@ function getDefaultData(type: string): any {
     case 'textPrompt': return { type: 'textPrompt', label: '提示词', text: '', promptNumber: 0, status: 'idle' };
     case 'llm': return { type: 'llm', label: '大模型', model: 'deepseek', systemPrompt: '', temperature: 0.7, status: 'idle', output: '', streamOutput: '' };
     case 'output': return { type: 'output', label: '输出', format: 'text', status: 'idle', output: '' };
+    case 'themeNode': return {
+      type: 'themeNode',
+      label: '🎨 主题',
+      role: 'tone',          // 'tone' 定调 | 'style' 样式 | 'merged' 合并主题
+      // tone（定调）字段
+      tone: '',              // 基调，如"专业严谨 / 活泼亲和"
+      audience: '',          // 目标受众
+      taboo: '',             // 禁忌词（逗号分隔）
+      // style（样式）字段
+      palette: '蓝灰',        // 配色
+      font: '无衬线',         // 字体
+      layout: '标准',         // 版式
+      // merged 合并结果（只读，由上游 tone+style 合成）
+      effectiveTheme: null,
+      status: 'idle',
+    };
+    case 'aiBuilder': return {
+      type: 'aiBuilder',
+      label: '🤖 AI 构建器',
+      prompt: '',                 // 用户对 AI 的指令
+      contextScope: 'upstream',   // 'upstream' | 'canvas' | 'selection'
+      model: 'deepseek',          // 复用 LLM 多模型
+      customModelName: '',
+      pendingEmit: null,          // dry-run 产出（EmitPlan），待审批
+      appliedAt: null,            // 已应用时间戳
+      rationale: '',              // AI 的解释
+      status: 'idle',             // idle | running | preview | applied | error
+      error: '',
+    };
     case 'condition': return { type: 'condition', label: '条件分支', mode: 'contains', keyword: '', status: 'idle' };
     case 'textTransform': return { type: 'textTransform', label: '文本处理', transform: 'trim', param: '', param2: '', status: 'idle', output: '' };
     case 'webLink': return { type: 'webLink', label: '🔗 Web 链接', url: '', status: 'idle' };
@@ -233,6 +278,71 @@ export default function Canvas() {
   const edges = useNodeStore((s) => s.edges);
   const storePackages = useNodeStore((s) => s.getPackages());
   const storePackageGroups = useNodeStore((s) => s.packageGroups);
+
+  // v2.0 Phase C 步 6：AI emit dry-run 的 ghost 半透明预览节点/连线
+  // 对每个处于 preview 态的 aiBuilder，把 pendingEmit 计算成临时 ghost（不进 store，不持久化）
+  const { ghostNodes, ghostEdges } = useMemo(() => {
+    const gNodes: any[] = [];
+    const gEdges: any[] = [];
+    for (const n of nodes) {
+      const d: any = n.data || {};
+      if (d.type !== 'aiBuilder' || d.status !== 'preview' || !d.pendingEmit) continue;
+      const plan = d.pendingEmit;
+      const anchor = n.position || { x: 0, y: 0 };
+      const positions = assignGhostPositions(plan.nodes || [], anchor, nodes);
+      const idMap: Record<string, string> = {};
+      (plan.nodes || []).forEach((en: any, i: number) => {
+        const gid = `ghost-${n.id}-${en.tmpId}`;
+        idMap[en.tmpId] = gid;
+        gNodes.push({
+          id: gid,
+          type: 'ghostNode',
+          position: positions[en.tmpId] || { x: anchor.x + 260, y: anchor.y + i * 160 },
+          data: { ghostType: en.type, ghostLabel: en.label || en.type },
+          selectable: false,
+          draggable: false,
+          deletable: false,
+        });
+      });
+      // ghost 连线：from/to 是 tmpId → ghost id，或现有节点 id 保持原样
+      (plan.edges || []).forEach((e: any, i: number) => {
+        const src = idMap[e.from] || e.from;
+        const tgt = idMap[e.to] || e.to;
+        if (!src || !tgt) return;
+        gEdges.push({
+          id: `ghost-edge-${n.id}-${i}`,
+          source: src,
+          target: tgt,
+          animated: true,
+          style: { stroke: '#8b5cf6', strokeDasharray: '5 5', opacity: 0.6 },
+          selectable: false,
+          deletable: false,
+        });
+      });
+      // 从 aiBuilder 自身到第一个 ghost 拉一条引导虚线
+      if ((plan.nodes || [])[0]) {
+        gEdges.push({
+          id: `ghost-anchor-${n.id}`,
+          source: n.id,
+          target: idMap[plan.nodes[0].tmpId],
+          animated: true,
+          style: { stroke: '#8b5cf6', strokeDasharray: '3 4', opacity: 0.4 },
+          selectable: false,
+          deletable: false,
+        });
+      }
+    }
+    return { ghostNodes: gNodes, ghostEdges: gEdges };
+  }, [nodes]);
+
+  const displayNodes = useMemo(
+    () => (ghostNodes.length ? [...nodes, ...ghostNodes] : nodes),
+    [nodes, ghostNodes],
+  );
+  const displayEdges = useMemo(
+    () => (ghostEdges.length ? [...edges, ...ghostEdges] : edges),
+    [edges, ghostEdges],
+  );
 
   const storeAddNode = useNodeStore((s) => s.addNode);
   const storeOnNodesChange = useNodeStore((s) => s.onNodesChange);
@@ -414,6 +524,35 @@ export default function Canvas() {
     }
     dirtyRef.current = true;
   }, [nodes, edges]);
+
+  // v2.0-β Phase B 步 4：主题广播 —— merged 主题节点沿连线把有效主题注入下游子节点
+  useEffect(() => {
+    // 收集所有 merged 主题节点 → 下游子节点 应当持有的 appliedTheme
+    const desired = new Map<string, string>(); // childNodeId -> themeSummary
+    for (const n of nodes) {
+      const nd = n.data as any;
+      if (nd?.type !== 'themeNode' || nd?.role !== 'merged') continue;
+      const eff = computeEffectiveTheme(n.id, nodes, edges);
+      const summary = themeToSummary(eff);
+      if (!summary) continue;
+      // 找该 merged 节点的所有出边 → 下游非主题节点
+      for (const e of edges) {
+        if (e.source !== n.id) continue;
+        const child = nodes.find((x) => x.id === e.target);
+        if (!child || (child.data as any)?.type === 'themeNode') continue;
+        desired.set(child.id, summary);
+      }
+    }
+    // 对比当前 data.appliedTheme，只在变化时写（避免无限循环）
+    for (const n of nodes) {
+      if ((n.data as any)?.type === 'themeNode') continue;
+      const want = desired.get(n.id) || null;
+      const have = (n.data as any)?.appliedTheme ?? null;
+      if (want !== have) {
+        storeUpdateNodeData(n.id, { appliedTheme: want } as any);
+      }
+    }
+  }, [nodes, edges, storeUpdateNodeData]);
 
   useEffect(() => {
     if (autosaveMin <= 0) {
@@ -2565,7 +2704,7 @@ export default function Canvas() {
   //
   // 闭包陷阱：executeFlow 闭包捕获了 setIsRunning/setRunLog 等当前实例 state；为了让
   // worker 内部稳定取到最新 executeFlow，我们用 ref 转发。
-  const executeFlowRef = useRef<(subset?: Set<string>) => Promise<void>>();
+  const executeFlowRef = useRef<(subset?: Set<string>) => Promise<void>>(undefined!);
   executeFlowRef.current = executeFlow;
 
   useEffect(() => {
@@ -2761,11 +2900,30 @@ export default function Canvas() {
         }}
       >
         {/* v1.5.x：顶部 Chrome-style 画布页签条（必须放在 ReactFlow 前面，作为 flex column 第一个子项） */}
-        <CanvasTabs onOpenManager={() => setShowCanvasManager(true)} />
+        {/* v2.0-α Phase A 步 2：顶部 bar = 页签条 + Bell */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            paddingRight: 8,
+            borderBottom: '1px solid var(--border-color, #e2e8f0)',
+            background: 'var(--bg-2, #fff)',
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <CanvasTabs onOpenManager={() => setShowCanvasManager(true)} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Bell />
+            <UserChip />
+          </div>
+        </div>
 
         <ReactFlow
-          nodes={nodes as any[]}
-          edges={edges as any[]}
+          nodes={displayNodes as any[]}
+          edges={displayEdges as any[]}
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
           onConnect={handleConnect}

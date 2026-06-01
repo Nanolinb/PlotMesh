@@ -40,6 +40,8 @@ import { getServerConfig, updateServerConfig } from '../utils/serverConfig.js';
 import { runCanvas } from '../runner/runCanvas.js';
 import { saveRun, getRun, listRuns } from '../runner/runStore.js';
 import { emitRunEvent, disposeRunBus } from '../runner/runEvents.js';
+// v2.0 Phase C 步 7：AI PM L1 stuck/失败通知
+import { notifyRunResult } from '../runner/pmNotify.js';
 // v1.7 P2-A：跨画布引用
 import {
   listConnections,
@@ -49,6 +51,17 @@ import {
   deleteConnection,
   deliverOutput,
 } from '../runner/crossCanvas.js';
+// v2.0-β Phase B 步 3：Reference 合约状态机
+import {
+  acceptConnection,
+  rejectConnection,
+  cancelConnection,
+  listPendingForUser,
+  listProposedByUser,
+} from '../runner/referenceContract.js';
+import { addInboxItem } from '../auth/inboxStore.js';
+import { broadcastInbox } from './events.js';
+import { getUserById } from '../auth/usersStore.js';
 
 const router = Router();
 
@@ -187,6 +200,25 @@ const NODE_TYPES_SCHEMA = {
     defaultData: { type: 'crossInput', label: '🌐 跨画布输入', text: '', status: 'waiting' },
     notes: 'sourceCanvasId/sourceNodeId 由 server 自动填，readonly；用户不能手改 source',
   },
+  themeNode: {
+    description: '主题节点（v2.0-β Phase B 步4）：定调/样式合并成有效主题，沿连线广播给下游子节点',
+    defaultData: {
+      type: 'themeNode', label: '🎨 主题', role: 'tone',
+      tone: '', audience: '', taboo: '',
+      palette: '蓝灰', font: '无衬线', layout: '标准',
+      effectiveTheme: null, status: 'idle',
+    },
+    notes: 'role 取值: tone(定调:tone/audience/taboo) | style(样式:palette/font/layout) | merged(合并:读上游 tone+style 边合成 effectiveTheme，只读)；merged 连到子节点 = 把 effectiveTheme 注入子节点 data.appliedTheme',
+  },
+  aiBuilder: {
+    description: 'AI 构建器（v2.0 Phase C 步5）：AI 读上下文生成节点结构（EmitPlan），dry-run 预览后用户审批一键落盘',
+    defaultData: {
+      type: 'aiBuilder', label: '🤖 AI 构建器',
+      prompt: '', contextScope: 'upstream', model: 'deepseek', customModelName: '',
+      pendingEmit: null, appliedAt: null, rationale: '', status: 'idle', error: '',
+    },
+    notes: 'contextScope: upstream(上游节点)|canvas(整画布)|selection(选中)；pendingEmit=EmitPlan{commitId,nodes[],edges[],patches[],rationale,confidence}；AI emit 不跨画布边界，落盘需用户点应用',
+  },
   group: {
     description: '分组容器（把多个节点装一起）',
     defaultData: { type: 'group', label: '功能组', collapsed: false, childCount: 0, status: 'idle' },
@@ -280,6 +312,21 @@ router.post('/connections', (req, res) => {
   }
   try {
     const result = createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId || null, srcNodeFallback || null);
+    // v2.0-β Phase B 步 3：跨用户引用 → pending → 通知 dst owner 审批
+    const conn = result.connection;
+    if (conn && conn.status === 'pending' && conn.dstOwnerId) {
+      notifyReference(conn.dstOwnerId, {
+        kind: 'reference',
+        title: '新的跨画布引用请求',
+        body: `${reqUserName(req)} 请求引用你的画布输出，等待你确认`,
+        from: { userId: conn.requestedBy || 'system', name: reqUserName(req) },
+        target: { canvasId: conn.dstCanvasId, nodeId: conn.dstNodeId, connId: conn.id },
+        actions: [
+          { label: '接受', action: 'accept-reference', payload: { connId: conn.id } },
+          { label: '拒绝', action: 'reject-reference', payload: { connId: conn.id } },
+        ],
+      });
+    }
     res.json({ ok: true, ...result });
   } catch (e) {
     return res.status(400).json({ error: 'create_failed', message: e.message });
@@ -294,6 +341,98 @@ router.delete('/connections/:connId', (req, res) => {
   } catch (e) {
     return res.status(404).json({ error: 'not_found', message: e.message });
   }
+});
+
+// ─── v2.0-β Phase B 步 3：Reference 合约握手路由 ──────────────────
+// 当前操作者身份来自 optionalAuth 注入的 req.user（联网模式），离线无 user。
+
+/** 取当前请求者展示名 */
+function reqUserName(req) {
+  return req.user?.name || req.user?.email || '某用户';
+}
+
+/** 往某用户 inbox 投递 + SSE 推送（合约通知统一入口） */
+function notifyReference(userId, item) {
+  if (!userId) return;
+  try {
+    const entry = addInboxItem(userId, item);
+    broadcastInbox(userId, entry);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[reference] notify failed:', e.message);
+  }
+}
+
+// GET /api/canvas/connections/pending  → 待我审批的引用请求（需 JWT）
+router.get('/connections/pending', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  res.json({
+    pending: listPendingForUser(userId),
+    proposed: listProposedByUser(userId),
+  });
+});
+
+// POST /api/canvas/connections/:connId/accept  → dst owner 接受
+router.post('/connections/:connId/accept', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const r = acceptConnection(req.params.connId, userId);
+  if (!r.ok) return res.status(400).json(r);
+  // 通知发起方：已被接受
+  const conn = r.connection;
+  if (conn.requestedBy && conn.requestedBy !== userId) {
+    notifyReference(conn.requestedBy, {
+      kind: 'reference',
+      title: '引用请求已被接受',
+      body: `${reqUserName(req)} 接受了你的跨画布引用，现在可以投递数据了`,
+      from: { userId, name: reqUserName(req) },
+      target: { canvasId: conn.srcCanvasId, nodeId: conn.srcNodeId, connId: conn.id },
+    });
+  }
+  res.json(r);
+});
+
+// POST /api/canvas/connections/:connId/reject  → dst owner 拒绝
+router.post('/connections/:connId/reject', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const reason = (req.body && req.body.reason) || '';
+  const r = rejectConnection(req.params.connId, userId, reason);
+  if (!r.ok) return res.status(400).json(r);
+  const conn = r.connection;
+  if (conn.requestedBy && conn.requestedBy !== userId) {
+    notifyReference(conn.requestedBy, {
+      kind: 'reference',
+      title: '引用请求被拒绝',
+      body: `${reqUserName(req)} 拒绝了你的跨画布引用${reason ? `：${reason}` : ''}`,
+      from: { userId, name: reqUserName(req) },
+      target: { canvasId: conn.srcCanvasId, nodeId: conn.srcNodeId, connId: conn.id },
+    });
+  }
+  res.json(r);
+});
+
+// POST /api/canvas/connections/:connId/cancel  → 任一方解除已生效引用（留审计）
+router.post('/connections/:connId/cancel', (req, res) => {
+  const userId = req.user?.id;
+  // 离线模式无 user：允许（legacy 行为），用 null 操作者
+  const reason = (req.body && req.body.reason) || '';
+  const r = cancelConnection(req.params.connId, userId || null, reason);
+  if (!r.ok) return res.status(400).json(r);
+  const conn = r.connection;
+  // 通知对方（非操作者那一方）
+  const other = conn.srcOwnerId === userId ? conn.dstOwnerId : conn.srcOwnerId;
+  if (other && other !== userId) {
+    notifyReference(other, {
+      kind: 'reference',
+      title: '跨画布引用已被解除',
+      body: `${reqUserName(req)} 解除了一条跨画布引用${reason ? `：${reason}` : ''}`,
+      from: { userId: userId || 'system', name: reqUserName(req) },
+      target: { canvasId: conn.dstCanvasId, nodeId: conn.dstNodeId, connId: conn.id },
+    });
+  }
+  res.json(r);
 });
 
 // v1.7 P2-A：前端 ▶️ 跑到 crossOutput 时调这里 → server 写入 dst.crossInput；
@@ -347,6 +486,49 @@ router.get('/list', (_req, res) => {
       edgeCount: (c.edges || []).length,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
+      // v2.0-α Phase A 步 2：画布归属
+      ownerId: c.ownerId || null,
+      sharedWith: c.sharedWith || [],
+    }));
+  res.json({ canvases: out });
+});
+
+// =============================================================
+// v2.0-α Phase A 步 2：画布归属（必须在 /:id 之前注册）
+// =============================================================
+
+// GET /api/canvas/owned-by-me  → 列出当前用户拥有的画布（需 JWT）
+router.get('/owned-by-me', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const p = readPayload();
+  const out = (p.canvases || [])
+    .filter((c) => !c.deleted && (c.ownerId === userId || !c.ownerId))
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      nodeCount: (c.nodes || []).length,
+      edgeCount: (c.edges || []).length,
+      updatedAt: c.updatedAt,
+      sharedWith: c.sharedWith || [],
+    }));
+  res.json({ canvases: out });
+});
+
+// GET /api/canvas/shared-with-me  → 列出共享给我的画布（需 JWT）
+router.get('/shared-with-me', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const p = readPayload();
+  const out = (p.canvases || [])
+    .filter((c) => !c.deleted && Array.isArray(c.sharedWith) && c.sharedWith.includes(userId))
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      nodeCount: (c.nodes || []).length,
+      edgeCount: (c.edges || []).length,
+      updatedAt: c.updatedAt,
+      ownerId: c.ownerId || null,
     }));
   res.json({ canvases: out });
 });
@@ -817,6 +999,9 @@ export async function runCanvasJob(canvasId, opts = {}) {
   // SSE 总线清理（订阅端会先收到最终 status 再断流）
   setTimeout(() => disposeRunBus(jobId), 5000);
 
+  // v2.0 Phase C 步 7：AI PM L1 —— 失败则给画布 owner 投 inbox（不阻塞返回）
+  try { notifyRunResult(run); } catch { /* 通知失败不影响主流程 */ }
+
   return { jobId, status: run.status, run };
 }
 
@@ -1006,6 +1191,77 @@ router.patch('/_runs/:jobId', (req, res) => {
     return res.status(500).json({ error: 'internal', message: e.message });
   }
   res.json({ ok: true, job: updated });
+});
+
+// =============================================================
+// v2.0-α Phase A 步 2：画布归属（share / unshare / claim）
+// =============================================================
+
+// PATCH /api/canvas/:id/share  → 共享给某用户（owner 或 admin）
+router.patch('/:id/share', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const { userId: targetUserId } = req.body || {};
+  if (!targetUserId) return res.status(400).json({ error: 'missing_userId' });
+
+  try {
+    mutateStore((payload) => {
+      const c = findCanvas(payload, req.params.id, true);
+      if (!c) throw new Error('canvas_not_found');
+      if (c.ownerId && c.ownerId !== userId) throw new Error('not_owner');
+      const list = c.sharedWith || [];
+      if (!list.includes(targetUserId)) {
+        c.sharedWith = [...list, targetUserId];
+      }
+    });
+  } catch (e) {
+    if (e.message === 'canvas_not_found') return res.status(404).json({ error: 'canvas_not_found' });
+    if (e.message === 'not_owner') return res.status(403).json({ error: 'not_owner' });
+    return res.status(500).json({ error: 'internal', message: e.message });
+  }
+  res.json({ ok: true });
+});
+
+// DELETE /api/canvas/:id/share/:userId  → 取消共享
+router.delete('/:id/share/:userId', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const targetUserId = req.params.userId;
+
+  try {
+    mutateStore((payload) => {
+      const c = findCanvas(payload, req.params.id, true);
+      if (!c) throw new Error('canvas_not_found');
+      if (c.ownerId && c.ownerId !== userId) throw new Error('not_owner');
+      const list = c.sharedWith || [];
+      c.sharedWith = list.filter((id) => id !== targetUserId);
+    });
+  } catch (e) {
+    if (e.message === 'canvas_not_found') return res.status(404).json({ error: 'canvas_not_found' });
+    if (e.message === 'not_owner') return res.status(403).json({ error: 'not_owner' });
+    return res.status(500).json({ error: 'internal', message: e.message });
+  }
+  res.json({ ok: true });
+});
+
+// PATCH /api/canvas/:id/claim-ownership  → 将无主的画布声明为已有（首位用户/迁移）
+router.patch('/:id/claim-ownership', (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  try {
+    mutateStore((payload) => {
+      const c = findCanvas(payload, req.params.id, true);
+      if (!c) throw new Error('canvas_not_found');
+      if (c.ownerId) throw new Error('already_owned');
+      c.ownerId = userId;
+    });
+  } catch (e) {
+    if (e.message === 'canvas_not_found') return res.status(404).json({ error: 'canvas_not_found' });
+    if (e.message === 'already_owned') return res.status(409).json({ error: 'already_owned' });
+    return res.status(500).json({ error: 'internal', message: e.message });
+  }
+  res.json({ ok: true });
 });
 
 // =============================================================

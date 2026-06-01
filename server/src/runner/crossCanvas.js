@@ -20,6 +20,7 @@
  *   4. 循环检测：traceId 跟随每次触发，深度 > 10 就停
  */
 import { mutateStore, readPayload } from '../utils/storeIO.js';
+import { evaluateHandshake, isDeliverable, NEEDS_APPROVAL } from './referenceContract.js';
 
 /**
  * 在 store.json 上 ensure connections 字段
@@ -178,6 +179,12 @@ export function createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId 
       (c) => !(c.srcCanvasId === srcCanvasId && c.srcNodeId === srcNodeId),
     );
 
+    // v2.0-β Phase B 步 3：合约判定 —— 跨用户引用走握手（pending），同人/无主即时 active
+    const { needsHandshake, srcOwnerId, dstOwnerId } = evaluateHandshake(
+      payload, srcCanvasId, dstCanvasId,
+    );
+    const status = needsHandshake ? NEEDS_APPROVAL : 'active';
+
     // 建新关联
     conn = {
       id: `conn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -186,6 +193,20 @@ export function createConnection(srcCanvasId, srcNodeId, dstCanvasId, dstNodeId 
       dstCanvasId,
       dstNodeId,
       createdAt: Date.now(),
+      // 合约字段
+      status,
+      requestedBy: srcOwnerId || null,
+      srcOwnerId: srcOwnerId || null,
+      dstOwnerId: dstOwnerId || null,
+      decidedAt: null,
+      cancelledAt: null,
+      history: [{
+        at: Date.now(),
+        by: srcOwnerId || null,
+        action: needsHandshake ? 'propose' : 'create',
+        fromStatus: null,
+        toStatus: status,
+      }],
     };
     payload.connections.push(conn);
   });
@@ -255,6 +276,11 @@ export function deliverOutput(srcCanvasId, srcNodeId, content) {
     );
     if (!conn) {
       result = { delivered: false, reason: 'no_connection' };
+      return;
+    }
+    // v2.0-β Phase B 步 3：合约投递门 —— 仅 active/accepted 可投递
+    if (!isDeliverable(conn)) {
+      result = { delivered: false, reason: 'not_deliverable', status: conn.status || 'active' };
       return;
     }
     const dstCanvas = (payload.canvases || []).find((c) => c.id === conn.dstCanvasId && !c.deleted);

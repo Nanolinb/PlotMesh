@@ -115,7 +115,7 @@ function parseToTable(text: string): string[][] {
   // 4) Markdown 表格（| col1 | col2 |）
   if (lines[0]?.trim().startsWith('|') && lines[1]?.trim().match(/^\|\s*:?-+:?\s*\|/)) {
     const rows = lines
-      .filter((l, i) => i !== 1) // 跳过对齐行
+      .filter((_l, i) => i !== 1) // 跳过对齐行
       .map((l) => l.replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
     return rows;
   }

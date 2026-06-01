@@ -110,6 +110,21 @@ function LLMNode({ id, data, selected }: Props) {
       </div>
 
       <div className="node-body">
+        {(data as any).appliedTheme && (
+          <div
+            title={`已应用主题：${(data as any).appliedTheme}`}
+            style={{
+              fontSize: 10, color: '#14b8a6',
+              background: 'rgba(20,184,166,0.1)',
+              border: '1px solid rgba(20,184,166,0.3)',
+              borderRadius: 4, padding: '2px 6px', marginBottom: 8,
+              display: 'inline-block', maxWidth: '100%',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}
+          >
+            🎨 {(data as any).appliedTheme}
+          </div>
+        )}
         <div className="field" style={{ marginBottom: '8px' }}>
           <label style={{ fontSize: '11px', color: '#64748b', display: 'block', marginBottom: '4px' }}>模型</label>
           <select

@@ -18,6 +18,8 @@
 import { useEffect, useState } from 'react';
 import Canvas from './components/Canvas';
 import MergeReportDialog, { type ConflictResolution } from './components/MergeReportDialog';
+import LoginPage from './auth/LoginPage';
+import { useAuth } from './auth/authContext';
 import './App.css';
 import { migrateFromLocalStorageIfNeeded } from './store/migration';
 import { hydrateNodeStore } from './store/nodes';
@@ -47,8 +49,13 @@ type SyncStage =
 
 function App() {
   const [stage, setStage] = useState<SyncStage>({ kind: 'init' });
+  const auth = useAuth();
+
+  // v2.0-α Phase A：启动 gate 前先等 auth 检测完毕
+  const authReady = auth.phase === 'optional' || auth.phase === 'ready';
 
   useEffect(() => {
+    if (!authReady) return; // auth 没确定前，什么都不做
     let cancelled = false;
     (async () => {
       try {
@@ -124,7 +131,7 @@ function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authReady]);
 
   /** 用户决策完所有冲突后：组装最终实体集合 + apply + push + hydrate */
   const handleConflictsResolved = async (resolutions: Record<string, ConflictResolution>) => {
@@ -199,6 +206,64 @@ function App() {
     await hydrateNodeStore();
     setStage({ kind: 'ready' });
   };
+
+  if (auth.phase === 'checking') {
+    return (
+      <div
+        className="app"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100vh',
+          color: 'var(--text-muted, #94a3b8)',
+          fontSize: 14,
+        }}
+      >
+        <div>检测认证状态…</div>
+      </div>
+    );
+  }
+
+  if (auth.phase === 'login' || auth.phase === 'register') {
+    return <LoginPage />;
+  }
+
+  if (auth.phase === 'error') {
+    return (
+      <div
+        className="app"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100vh',
+          flexDirection: 'column',
+          gap: 12,
+          padding: 24,
+        }}
+      >
+        <div style={{ fontSize: 18, fontWeight: 600 }}>⚠️ 认证服务不可用</div>
+        <div style={{ color: '#94a3b8', fontSize: 13 }}>
+          无法连接到 PlotMesh 认证服务，请检查 server 是否启动。
+        </div>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            padding: '6px 16px',
+            border: '1px solid var(--border, #e2e8f0)',
+            borderRadius: 6,
+            background: 'var(--bg-2, #fff)',
+            cursor: 'pointer',
+          }}
+        >
+          重新加载
+        </button>
+      </div>
+    );
+  }
+
+  // 以下进入现有启动流程（sync + hydrate）
 
   if (stage.kind === 'error') {
     return (

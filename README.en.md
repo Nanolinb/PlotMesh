@@ -1,11 +1,11 @@
 # PlotMesh
 
-> **A visual canvas where humans and AI co-create.**
-> Stitch human intuition and AI reasoning into a single graph of nodes.
+> **A visual canvas where humans, AI, and teams co-create.**
+> Stitch human intuition, AI reasoning, and team collaboration into one graph of nodes.
 
 🌐 **Languages**: [中文](README.md) · [English](README.en.md)　|　📜 [Changelog](CHANGELOG.md)
 
-[![version](https://img.shields.io/badge/version-1.4.0-6366f1)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.7.0--alpha-6366f1)](CHANGELOG.md)
 [![Made with React](https://img.shields.io/badge/React-18-61DAFB?logo=react)]()
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)]()
 [![React Flow](https://img.shields.io/badge/React%20Flow-v12-FF0072)]()
@@ -13,169 +13,180 @@
 
 ---
 
-## ✨ Why PlotMesh
+## ✨ What is it
 
-Human–AI collaboration shouldn't be trapped inside a chat box. PlotMesh lets you build AI workflows the way you'd sketch a mind map: **collect raw material → think it through → call the model → post-process → ship the result** — all visible on one infinite canvas.
+PlotMesh is a **node-based visual workbench**. You break a task into nodes — gather material, call AI, post-process, visualize, ship — wire them into a flow, hit **Run**, and the whole chain executes in topological order.
+
+It's not just "a chat box turned into a canvas." It's where three things meet:
+
+- **Human–AI collaboration** — humans decide *what*, AI handles *how*; AI can even *grow* new structure on the canvas (AI Builder), which you review before it lands.
+- **Multi-user collaboration** — multiple users own their own canvases on one server, share them, reference across canvases (with a two-way handshake contract), and get notified via an inbox.
+- **Reusable orchestration** — any subgraph can be packaged as a "preset" and reused across canvases and projects.
+
+> **Dual-mode architecture**: works as a **single-user offline tool** (zero config, open and go) *and* a **networked collaboration mode** (login, multi-user, role management). Same codebase, one switch.
 
 ## 🎯 Design principles
 
-- **The canvas is the thought.** Every node is a step; every edge is a flow of information.
-- **Humans decide *what*, AI handles *how*.**
-- **Reusability matters.** Any subgraph can be packaged as a "preset" and dropped back in next time.
-- **End-to-end, no copy-paste.** Files in → AI processing → real `.docx` / `.xlsx` / `.pdf` / `.png` out.
-- **Injection-resistant.** File contents are wrapped in `<documents>` tags; user prompts are wrapped in `<instructions>` — wording inside files cannot hijack the model.
+- **The canvas is the thought.** Every node is a step; every edge is a flow.
+- **Human–AI co-creation.** AI-generated structure always shows a **dry-run preview** first — it never edits your canvas without confirmation.
+- **Reusability matters.** Package subgraphs as presets in one click.
+- **End-to-end.** Files in → AI processing → real Word/Excel/PDF/image/web out.
+- **Injection-resistant.** File contents wrapped in `<documents>`, instructions in `<instructions>` — wording inside files can't hijack the model.
 
-## 🧩 Node palette (7 types)
+## 🧩 Node palette (20 types · 6 groups)
 
+### 📥 Input
+| Icon | Node | What it does |
+|------|------|------|
+| 📁 | File Upload | Parse docx/xlsx/pdf/txt (CJK filenames OK). **Source-only**, no input port. |
+| 🔗 | Web Link | Fetch web page / wiki / online doc / news as input; Tencent Docs URLs auto-route via MCP. |
+| 🌐 | Cross-Canvas Input | Receives output written back from **another canvas**; source info is read-only, filled by the server. |
+
+### 📝 Text
 | Icon | Node | What it does |
 |------|------|------|
 | ✏️ | Text Prompt | Your task statement. Auto-numbered; multiples concatenate in order. |
-| 📁 | File Upload | Upload & parse docx/xlsx/pdf/txt (CJK filenames OK). **Source-only**: it has no input port — it doesn't consume upstream data. |
-| 🤖 | LLM | Calls DeepSeek / GPT / Claude / GLM / Hunyuan. Auto-classifies upstream input as *reference material* vs *instruction* to prevent prompt injection. **Temperature** slider has *Stable / Balanced / Creative / Wild* tier badges. |
+| 🤖 | LLM | DeepSeek/GPT/Claude/GLM/Hunyuan/Kimi/Qwen; auto-classifies *reference* vs *instruction* to block injection; temperature tiers Stable/Balanced/Creative/Wild. |
 | 🔤 | Text Transform | 9 transforms: case, trim, replace, JSON extract, count, etc. |
-| 🔀 | Condition | Route by keyword/regex. **Two outputs**: top = match, bottom = no match. |
-| 🔀 | Splitter | Split one upstream string into N segments, **one independent output port per segment**. Supports JSON array / numbered / bullet list / custom delimiter / regex; ports can auto-grow with segment count or be fixed manually. |
-| 📤 | Output | Export to **real** txt/md/docx/xlsx/pdf/png files, or pick **web** to open the rendered HTML directly in a new browser tab (built-in Markdown→HTML renderer with light/dark themes). |
-| 📦 | Group | Auto-frames selected nodes; save as a reusable preset. **The expanded group label has a ▶ button** to run only the nodes inside (orange pulse while running, green on success, red on error). |
-| ⏱ | Timeline | Horizontal resizable timeline. Choose fps (60/30/24/12/custom) and time display (seconds / frames / SMPTE timecode). Auto-parses time markers from upstream text to generate cut points; each cut becomes a source port on the right. |
+| 🔀 | Condition | Route by keyword/regex. Two outputs (top=match, bottom=no-match). |
+| 🔀 | Splitter | Split one string into N segments, one output port each (JSON array / numbered / list / delimiter / regex). |
+| 📤 | Output | Export **real** txt/md/docx/xlsx/pdf/png, or pick **web** to open rendered HTML (Markdown→HTML + light/dark). |
 
-## 🎨 Toolbar
+### 🎨 Visualization
+| Icon | Node | What it does |
+|------|------|------|
+| 📊 | Extract | Use LLM to turn arbitrary text/image into structured JSON for chart nodes. |
+| 🥧 | Pie Chart | Render JSON/table/list into SVG pie (local render, 0 tokens). |
+| 📊 | Bar Chart | Bar/column chart, local SVG, vertical or horizontal. |
+| 🎨 | Generic Chart | LLM looks at a reference image + data and draws arbitrary SVG. |
+| 📊 | Dashboard | Collect N chart nodes into one HTML grid page with custom layout. |
 
-| Button | Action |
-|------|------|
-| ▶️ Run | Execute all nodes in topological order |
-| 📋 Log | Inspect every step |
-| ↶ Undo / ↷ Redo | Cmd+Z / Cmd+Shift+Z, full history |
-| 🔑 API Config | Visual editor for model API keys, persisted to `.env` |
-| 📦 Save preset | With selection: bundle selected nodes; without selection: prompts "Save the whole canvas as a preset?". On name conflict choose *Overwrite / Rename / Cancel* |
-| ⬇️ Canvas Export / ⬆️ Canvas Import | Serialize the whole canvas to JSON; import auto-stashes the current canvas into Recent Canvases for rollback |
-| 🕘 Recent Canvases (sidebar bottom) | Up to 8 import/export/overwritten snapshots, click to reload; before replacing the current canvas you'll be asked to stash it |
-| ⏱ Auto-save interval | Toolbar dropdown — *Off / 1 / 2 / 3 / 5 / 10 / 15 minutes*, default 5; flushed once before tab close regardless |
-| 🌙 Dark / ☀️ Light | Theme toggle, preference persisted |
+### ⏱ Orchestration & Time
+| Icon | Node | What it does |
+|------|------|------|
+| ⏱ | Timeline | Resizable horizontal timeline with fps + timecode (sec/frame/SMPTE); parses cut points from text, one port each. |
+| 🏊 | Swimlane | Horizontal lanes / multi-row project timeline. |
+| 📦 | Group | Frame & package nodes as a preset; expanded group has ▶ to run only inside. |
 
-### ⌨️ Keyboard shortcuts
+### 🌐 Collaboration (networked mode)
+| Icon | Node | What it does |
+|------|------|------|
+| 🌐 | Cross-Canvas Output | Deliver upstream content to another canvas's input; **cross-user references use a two-way handshake** (accepted before it takes effect; cancellation is audited). |
+| 🎨 | Theme | Merge "tone (manager)" × "style (designer)" into an effective theme, broadcast down the wire to child nodes. |
 
-| Action | macOS | Windows / Linux |
-|---|---|---|
-| Copy selected nodes | `⌘ + C` | `Ctrl + C` |
-| Paste (offset down-right, increments on repeat) | `⌘ + V` | `Ctrl + V` |
-| Cut | `⌘ + X` | `Ctrl + X` |
-| Duplicate in place | `⌘ + D` | `Ctrl + D` |
-| Undo / Redo | `⌘ + Z` / `⌘ + ⇧ + Z` | `Ctrl + Z` / `Ctrl + Shift + Z` |
-| Delete selected node/edge | `Delete` / `Backspace` | `Delete` / `Backspace` |
-| Save as preset | `⌘ + S` | `Ctrl + S` |
+### 🤖 AI-native
+| Icon | Node | What it does |
+|------|------|------|
+| 🤖 | AI Builder | Write a request; AI reads canvas context → proposes a node structure → **dry-run preview** → apply in one click (undoable as one step); guardrails: type whitelist / count cap / injection defense. |
 
-> Copying a group automatically grabs its children and the edges between them. Pasted nodes are reset to a clean `idle` state — they don't carry over old run results.
+## 🤝 Multi-user collaboration (networked mode)
 
-### 🖱 Right-click menu (on canvas)
+PlotMesh is an offline tool by default, but turning on **networked mode** unlocks team collaboration:
 
-Right-click **anywhere** on the canvas to open the context menu — blank pane, on a node, inside a group, or on the marquee selection rectangle:
+- **Users**: email+password (bcrypt) with JWT; **the first registrant becomes admin**.
+- **Canvas ownership**: each canvas has an owner, shareable to specific members.
+- **Reference contract**: A referencing B's output needs B's confirmation in the inbox (`pending → accepted/rejected`); cancellation goes `cancelled` and is permanently audited.
+- **Inbox + notifications**: top 🔔 Bell receives reference requests / mentions in real time (SSE).
+- **Admin console**: 🔑 API Config → 👥 Members (list/reset password/delete/set role; can't delete the last admin).
 
-- **➕ New Node ▶**: creates a node at the cursor's flow position (submenu lists the 6 node types)
-- **📦 Group (canvas-only)**: enabled when ≥2 top-level nodes are selected (not already inside a group). Wraps them into a **canvas-only** group — does **not** persist to presets. Greyed out otherwise.
-- **🔓 Ungroup**: appears only when the right-click point falls inside an existing group (including blank space inside the group). Dissolves the group, restoring children to absolute coordinates and selecting them.
+> Toggle via `~/.plotmesh/server-config.json` → `auth.required=true`, or env `PLOTMESH_AUTH_REQUIRED=true`.
 
-## 🚀 Quick start
+## 🚀 Getting started
 
 ### Requirements
-- Node.js ≥ 18
-- npm (or pnpm / yarn)
+- Node.js ≥ 18 (22+ recommended)
 
-### Install & run
+### Local dev
 
 ```bash
-# 1. Clone
 git clone https://github.com/Nanolinb/PlotMesh.git
 cd PlotMesh
 
-# 2. Backend
-cd server
-cp .env.example .env        # then edit .env to fill in your LLM API keys
-npm install
-npm start                   # listens on http://localhost:3001
+cd server && cp .env.example .env   # add your LLM API key(s)
+npm install && npm start            # http://localhost:3001
 
-# 3. Frontend (new terminal)
-cd client
-npm install
-npm run dev                 # opens http://localhost:5173
+cd ../client
+npm install && npm run dev          # http://localhost:5173
 ```
 
 ### Configure API keys
+1. **Server (recommended)**: edit `server/.env`, add any one model's key.
+2. **Frontend**: toolbar 🔑 API Config (writes to `server/.env`).
 
-Either of:
-
-1. **Server-side (recommended)**: edit `server/.env` and fill in any of DeepSeek / GPT / Claude / GLM / Hunyuan. Restart the backend.
-2. **Frontend**: click **🔑 API Config** in the toolbar, enter the key, save — it's written to `server/.env`.
-
-> You don't need all five providers. The LLM node only lists the ones that have a key.
+> No need to configure all providers — the LLM node only shows configured ones.
 
 ### Your first workflow
+1. Drag ✏️ **Text Prompt** → "Explain quantum entanglement in 3 sentences"
+2. Drag 🤖 **LLM**, pick a model
+3. Drag 📤 **Output**, format = Markdown
+4. Wire: Prompt → LLM → Output
+5. Hit ▶️ **Run**, then download the `.md`
 
-1. Drag ✏️ **Text Prompt** from the left, double-click and type "Explain quantum entanglement in three sentences."
-2. Drag 🤖 **LLM**, pick a model.
-3. Drag 📤 **Output**, format = Markdown.
-4. Wire them: prompt → LLM → output.
-5. Hit ▶️ **Run**.
-6. Click ⬇️ on the output node to download a `.md` file.
-
-### File + prompt: do it like this
+### Files + prompts, the right way
 
 ```
 [ Prompt ] ─┐
-            ├─→ [ LLM ] → [ Output ]    ✅ Parallel — the right way
-[ File   ] ─┘
+            ├─→ [ LLM ] → [ Output ]    ✅ parallel input, most robust
+[ File ]   ─┘
 ```
 
-The File Upload node **has no input port** — its output is auto-wrapped in `<documents>` as reference material, while prompts are wrapped in `<instructions>`. So even if the file contains "please double every number", the model won't act on it.
+File Upload has **no input port**; its output is wrapped in `<documents>` as reference, prompts in `<instructions>`.
+
+## 🐳 Docker (team / NAS)
+
+```bash
+docker compose up -d        # server (3001) + client (8080)
+docker compose logs -f
+```
+
+Visit `http://<host-ip>:8080/`. Data persists in `./data` and `./uploads`.
+
+> Docker enables remote access (token-enforced) by default; for team login add `PLOTMESH_AUTH_REQUIRED=true` to the server env.
+
+### macOS autostart
+
+```bash
+bash scripts/install-autostart.sh            # launchd service (boot + crash restart)
+bash scripts/install-autostart.sh --status
+bash scripts/install-autostart.sh --uninstall
+```
 
 ## 🏗 Architecture
 
 - **Frontend**: Vite + React 18 + TypeScript + [React Flow](https://reactflow.dev/) v12 + [Zustand](https://github.com/pmndrs/zustand)
-- **Backend**: Node.js + Express (LLM gateway + file upload)
-- **LLM bridging**: five providers unified behind `/api/llm/chat`
-- **Real-format export**: [docx](https://github.com/dolanmiu/docx) / [xlsx](https://github.com/SheetJS/sheetjs) / [jspdf](https://github.com/parallax/jsPDF)
-- **Storage**: browser localStorage (**canvas draft auto-saved**, workflows / presets / theme) + server `uploads/` dir
-- **Prompt-injection defense**: the executor classifies upstream inputs by source — file chunks are wrapped in `<documents>`, instruction chunks in `<instructions>`, plus a guard line in the system prompt.
-
-## 📁 Layout
-
-```
-PlotMesh/
-├── client/            # React frontend
-│   └── src/
-│       ├── components/
-│       │   ├── nodes/    # 7 node components
-│       │   └── Canvas.tsx
-│       ├── store/        # Zustand store
-│       ├── types/
-│       └── utils/
-│           └── exporters.ts    # real-format file exporters
-├── server/            # Express backend
-│   └── src/
-│       └── routes/
-│           ├── llm.js      # LLM proxy & config
-│           └── upload.js   # file upload (CJK filename safe)
-└── README.md
-```
+- **Backend**: Node.js + Express (LLM gateway + uploads + canvas REST API + auth + SSE)
+- **Storage**: browser IndexedDB (drafts/presets/prefs) + server `store.json` (cross-browser sync, three-way merge) + `uploads/`
+- **Multi-user**: bcryptjs + JWT; pluggable AuthProvider (builtin email/password first, SSO/LDAP reserved)
+- **Execution**: frontend executor + server-side runner **dual engine** (headless run + scheduled jobs)
+- **LLM**: 7 providers unified via `/api/llm/chat`
+- **Real exports**: [docx](https://github.com/dolanmiu/docx) / [xlsx](https://github.com/SheetJS/sheetjs) / [jspdf](https://github.com/parallax/jsPDF)
+- **Injection-resistant**: upstream classified by origin, files in `<documents>`, instructions in `<instructions>`
 
 ## 🛣 Roadmap
 
-- [x] File-upload prompt isolation
-- [x] Preset save: overwrite / rename / cancel dialog
-- [x] Canvas right-click menu (new node / Group / Ungroup)
-- [x] Copy/paste shortcuts (C/V/X/D)
-- [x] Auto-save canvas draft (close & reopen the browser, work persists)
-- [ ] Node context menu (more single-node ops)
-- [ ] Prompt template library
-- [ ] LLM streaming output
-- [ ] Realtime multi-user editing (WebSocket + soft lock)
-- [ ] Canvas version history
-- [ ] Third-party plugins / custom node types
-- [ ] Workflow marketplace
+**Done**
+- [x] Prompt isolation / context menu / copy-paste / autosave
+- [x] Multi-canvas management + Chrome-style tab bar
+- [x] Chart stack (pie/bar/generic/dashboard/extract, local SVG)
+- [x] Cross-canvas references + server-side runner dual engine
+- [x] Cross-browser sync (three-way merge + soft-delete recycle bin)
+- [x] Multi-user foundation (Auth/JWT/dual-mode + ownership + inbox/SSE/Bell)
+- [x] Reference contract state machine (two-way handshake + audit)
+- [x] Theme node (tone × style merge & broadcast)
+- [x] AI Builder (AI generates structure + dry-run preview + one-click apply)
+- [x] Admin console (members / reset password / roles)
+- [x] Docker deploy + macOS autostart
+
+**In progress / planned (v2.0)**
+- [ ] Full AI emit: translucent ghost preview on canvas + explicit Slot ports
+- [ ] Aggregation node (export PPT/PDF)
+- [ ] Flex Pool three-tier staffing & scheduling panel
+- [ ] AI PM: daily digest / stuck detection with @mentions / proactive suggestions
+- [ ] Control canvas (project-level dataflow monitoring — see where the team is "stuck")
 
 ## 🤝 Contributing
 
-Issues and PRs welcome. Please open an issue describing your idea before sending a PR so we stay aligned on direction.
+Issues / PRs welcome! Please open an Issue first to align on direction.
 
 ## 📜 License
 

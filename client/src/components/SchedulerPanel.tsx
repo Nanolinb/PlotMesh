@@ -56,7 +56,7 @@ export default function SchedulerPanel({ open, onClose }: Props) {
     // 前端走同源访问 server，server 对 localhost 默认豁免 token；
     // 如果用户开了"远端访问"会强制 token，到时再支持（可从 localStorage 读）
     const stored = localStorage.getItem('plotmesh.apiToken') || '';
-    return stored ? { 'Authorization': `Bearer ${stored}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+    return stored ? { 'Authorization': `Bearer ${stored}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' } as Record<string, string>;
   }, []);
 
   const refresh = useCallback(async () => {

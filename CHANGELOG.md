@@ -5,6 +5,48 @@
 
 ---
 
+## [1.7.0-alpha.5] — 2026-06-02
+
+> v2.0 协作底座 + AI 原生能力一系列落地（Phase A/B/C 主干跑通）+ 双 README 重写。
+> 本版本是 v1.x → v2.0 的过渡里程碑：单机离线工具升级为「人 AI 协同 + 多人协作 + AI 原生画布」。
+
+### Added · 新增
+
+- **多用户协作底座（Phase A）**
+  - `AuthProvider` 可插拔抽象 + `builtinProvider`（邮箱+密码，bcryptjs 哈希）+ JWT 鉴权（secret 存 `~/.plotmesh/jwt-secret`）
+  - 双模架构：`auth.required=false` 离线（v1.x 兼容）/ `true` 联网（强制登录）
+  - 画布归属：`ownerId` / `sharedWith[]` + `GET /owned-by-me` `/shared-with-me` `PATCH /:id/share`
+  - 收件箱 + SSE：`inboxStore`（per-user JSON）+ `eventsRouter`（多 channel）+ 顶部 🔔 Bell + InboxDrawer
+  - 前端登录页 + `authContext`（bootstrapMode 首位用户引导）+ UserChip（用户标识/退出/改密码）
+- **Reference 合约状态机（Phase B 步 3）**
+  - `referenceContract.js`：跨用户跨画布引用走双边握手（active/pending/accepted/rejected/cancelled）
+  - 同用户/无主即时生效，跨用户需 dst owner 在 inbox 确认；投递门只放行 active/accepted
+  - CancellationRecord 永久审计（`connectionsArchive[]`）；`POST /connections/:id/accept|reject|cancel`
+  - CrossInputNode pending 态视觉（黄色虚线「待对方确认」）+ InboxDrawer 接受/拒绝按钮
+- **主题节点（Phase B 步 4 MVP）**
+  - `themeNode`：role=tone(定调) | style(样式) | merged(合并)；定调×样式合并成有效主题
+  - `utils/themeMerge.ts` 沿入边合并；merged 沿连线广播注入下游子节点 `appliedTheme`
+- **AI 构建器（Phase C 步 5 MVP）**
+  - `aiBuilder` 节点：写需求 → AI 读上下文生成 EmitPlan → dry-run 预览 → 一键应用（单 commit 可撤销）
+  - `utils/aiEmit.ts`：提示构造（防注入）/ 上下文收集 / EmitPlan 解析 / 安全护栏（类型白名单/≤20 节点/字段白名单）/ 位置不重叠分配
+- **管理员控制台**
+  - 角色体系：users.json 加 `role`，第一个注册者自动 admin（或 `PLOTMESH_ADMIN_EMAIL` 指定）
+  - `requireAdmin` 中间件 + `GET /admin/users` `DELETE /admin/users/:id` `PATCH .../reset-password|/role`
+  - `AdminPanel.tsx` 进 API 配置弹窗「👥 成员管理」tab（仅 admin 可见）：列成员/删除/重置密码/改角色（防删降最后一个 admin / 防删自己）
+- **文档**：README.md / README.en.md 全面重写（版本/定位/20 类节点 6 大类/多用户协作/Docker/技术架构）；腾讯文档「使用技巧」章节前置「节点速查」小节
+
+### Changed · 变更
+
+- 节点体系从 9 类扩充到 20 类（新增 跨画布输入/输出、饼图、柱状图、自由图形、仪表盘、数据提取、项目泳道、主题、AI 构建器）
+- README 版本徽标 1.4.0 → 1.7.0-alpha；节点表按「数据输入/文本处理/图形可视化/编排/协作/AI 原生」6 大类重组
+
+### Fixed · 修复
+
+- UserChip 改密码弹窗夜间模式看不清（误用不存在的 CSS 变量 → 全量对齐项目主题变量）
+- 画布管理「新建文件夹/画布」按钮排版错位（emoji+加号横向对齐，字号统一）
+
+---
+
 ## [1.7.0-alpha.4] — 2026-05-25
 
 > 仪表盘节点支持自定义布局（Markdown 表格 / grid-template-areas / 行式简写）+ 柱状图节点宽度修复。

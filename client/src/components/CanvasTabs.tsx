@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNodeStore } from '../store/nodes';
 import { listCanvases } from '../store/storage';
 import type { Canvas as CanvasRecord } from '../types/db';
+import { loadHiddenSet } from '../utils/canvasVisibility';
 
 const CLOSED_TABS_KEY = 'plotmesh-closed-tabs';
 
@@ -63,6 +64,8 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   const overflowRef = useRef<HTMLDivElement | null>(null);
   // v1.7：关闭的页签集合（只是隐藏 tab，画布数据保留）
   const [closedIds, setClosedIds] = useState<Set<string>>(() => loadClosedSet());
+  // v1.7：抽屉级"隐藏"集合（IDB.META 持久化，CanvasManager 控制）
+  const [hiddenSet, setHiddenSet] = useState<Set<string>>(new Set());
   // v1.7：右键菜单
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; rec: CanvasRecord } | null>(null);
   // v1.7：横滚 ref + 左右按钮显示状态
@@ -87,6 +90,9 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
         .filter((c) => !c.id.startsWith('recent-'))
         .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0)); // 按创建顺序，稳定不跳
       setItems(filtered);
+      // 同步 hiddenSet（抽屉里改过会触发 'plotmesh-hidden-changed' 事件）
+      const hs = await loadHiddenSet();
+      setHiddenSet(hs);
     } catch (e) {
       console.warn('[plotmesh] CanvasTabs 读列表失败：', e);
     }
@@ -96,6 +102,15 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCanvasId, activeCanvasName, recentCanvasesSig]);
+
+  // 抽屉改了 hidden 之后通知 tabs 刷新（CanvasManager dispatch 这个事件）
+  useEffect(() => {
+    const onHiddenChanged = () => {
+      loadHiddenSet().then(setHiddenSet);
+    };
+    window.addEventListener('plotmesh-hidden-changed', onHiddenChanged);
+    return () => window.removeEventListener('plotmesh-hidden-changed', onHiddenChanged);
+  }, []);
 
   // 切到一个 active 画布时，自动从 closed 集合移除（你打开了它，就不应该被隐藏）
   useEffect(() => {
@@ -147,24 +162,37 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   /**
    * v1.7：✕ = 关闭页签（不删数据）
    *   - 把 id 加进 closedIds，从 tab bar 隐藏
-   *   - 如果关的是当前 active，自动切到列表里下一个未关闭的画布
+   *   - 如果关的是当前 active，先切到下一个未关闭的画布，再加入 closedIds
+   *     （避免 useEffect 自动把 active 从 closedIds 移除导致页签不消失）
    */
   const handleClose = async (rec: CanvasRecord, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
+    // 关 active 的特殊处理：先切走 active，再标记关闭
+    if (rec.id === activeCanvasId) {
+      const next = new Set(closedIds);
+      next.add(rec.id);
+      // 找候补：在 items 里挑一个不是自己且不在 closedIds 里的
+      const fallback = items.find((c) => c.id !== rec.id && !next.has(c.id));
+      if (fallback) {
+        // 先切走 → 再写 closedIds（顺序很重要：第 100 行的 useEffect 只会把"切到的 active"从 closedIds 移除，
+        // 不会动我们刚刚标记关闭的 rec.id）
+        await switchActiveCanvas(fallback.id);
+        setClosedIds(next);
+        saveClosedSet(next);
+      } else {
+        // 所有画布都关了 → 先标关闭，再创建空白；createNewCanvas 会变成新 active
+        setClosedIds(next);
+        saveClosedSet(next);
+        await createNewCanvas();
+      }
+      return;
+    }
+    // 非 active → 直接加 closedIds 即可
     const next = new Set(closedIds);
     next.add(rec.id);
     setClosedIds(next);
     saveClosedSet(next);
-    // 如果关的是当前 active → 切到下一个可见画布
-    if (rec.id === activeCanvasId) {
-      const visible = items.filter((c) => !next.has(c.id) && c.id !== rec.id);
-      if (visible.length > 0) {
-        await switchActiveCanvas(visible[0].id);
-      } else {
-        // 所有画布都被关了 → 新建一个空画布（不至于让用户看到空白）
-        await createNewCanvas();
-      }
-    }
   };
 
   /**
@@ -211,7 +239,13 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
       return ai - bi;
     });
   })();
-  const visibleItems = sortedItems.filter((rec) => !closedIds.has(rec.id) || rec.id === activeCanvasId);
+  const visibleItems = sortedItems.filter((rec) => {
+    // active 永远显示（即使被 closed 或 hidden）
+    if (rec.id === activeCanvasId) return true;
+    if (closedIds.has(rec.id)) return false;
+    if (hiddenSet.has(rec.id)) return false;
+    return true;
+  });
   const hiddenCount = sortedItems.length - visibleItems.length;
 
   // v1.7：滚动可达性检测（左右按钮启用/禁用）

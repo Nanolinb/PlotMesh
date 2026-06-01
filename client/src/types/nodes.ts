@@ -97,7 +97,7 @@ export const OUTPUT_FORMAT_OPTIONS: { value: OutputFormat; label: string }[] = [
 ];
 
 // 节点执行状态
-export type NodeStatus = 'idle' | 'running' | 'success' | 'error';
+export type NodeStatus = 'idle' | 'running' | 'success' | 'error' | 'received' | 'waiting';
 
 // 自定义节点数据
 export interface FileUploadNodeData {

@@ -54,7 +54,7 @@ import {
   type PackageGroupRecord,
 } from '../types/db';
 
-export type CustomNode = Node<CustomNodeData>;
+export type CustomNode = Node<CustomNodeData & Record<string, unknown>>;
 export type CustomEdge = Edge;
 
 /** 撤销/重做栈中的一帧快照（仅画布数据，不含包/历史本身） */
@@ -86,7 +86,7 @@ interface NodeStore {
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   addNode: (node: CustomNode) => void;
-  updateNodeData: (nodeId: string, data: Partial<CustomNodeData>) => void;
+  updateNodeData: (nodeId: string, data: Partial<CustomNodeData & Record<string, unknown>>) => void;
   deleteNodes: (nodeIds: string[]) => void;
   setEdges: (updater: any) => void;
 
@@ -259,6 +259,11 @@ function flushActiveCanvasToIDB(
   void (async () => {
     try {
       const existing = await getCanvas(canvasId);
+      // v1.7-alpha：被软删的画布不要 flush 复活
+      if (existing?.deleted) {
+        clearPendingFlush();
+        return;
+      }
       const now = Date.now();
       const rec: CanvasRecord = {
         id: canvasId,
@@ -298,6 +303,11 @@ async function flushActiveCanvasToIDBAsync(
   writePendingFlush(canvasId, cleanNodes, edges);
   try {
     const existing = await getCanvas(canvasId);
+    // v1.7-alpha：被软删的画布不要 flush 复活
+    if (existing?.deleted) {
+      clearPendingFlush();
+      return;
+    }
     const now = Date.now();
     const rec: CanvasRecord = {
       id: canvasId,
@@ -857,7 +867,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
         node.id === nodeId
           ? { ...node, data: { ...node.data, ...data } }
           : node
-      ),
+      ) as CustomNode[],
     });
   },
 
@@ -1077,10 +1087,10 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       .map((id) => nodes.find((n: any) => n.id === id))
       .filter((n: any) => n);
     const isSingleGroupSelected =
-      topLevelSelected.length === 1 && topLevelSelected[0].type === 'group';
+      topLevelSelected.length === 1 && topLevelSelected[0]!.type === 'group';
 
     if (isSingleGroupSelected) {
-      const orig = topLevelSelected[0];
+      const orig = topLevelSelected[0]!;
       // 仅更新原 group 的 data（绑定 packageId + 同步 exposedPorts/childCount），其它节点不动
       const updatedNodes = nodes.map((n: any) => {
         if (n.id === orig.id) {
@@ -1979,21 +1989,29 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       try {
         const cleanNodes = stripRuntimeFields(cur.nodes);
         const existing = await getCanvas(cur.activeCanvasId);
-        const now = Date.now();
-        await putCanvas({
-          id: cur.activeCanvasId,
-          workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
-          projectId: existing?.projectId || DEFAULT_PROJECT_ID,
-          name: cur.activeCanvasName || existing?.name || '未命名画布',
-          nodes: cleanNodes,
-          edges: cur.edges,
-          viewport: existing?.viewport,
-          thumbnail: existing?.thumbnail,
-          lastOpenedAt: existing?.lastOpenedAt ?? now,
-          createdAt: existing?.createdAt ?? now,
-          updatedAt: now,
-        });
-        clearPendingFlush();
+        // v1.7-alpha：如果当前画布已被软删（deleted=true），不要 flush 复活它
+        // 这是 deleteCanvasById 删 active 画布时切走的"复活"bug 根因
+        if (existing?.deleted) {
+          // 已软删 → 跳过 flush，直接进下一步
+        } else {
+          const now = Date.now();
+          await putCanvas({
+            id: cur.activeCanvasId,
+            workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+            projectId: existing?.projectId || DEFAULT_PROJECT_ID,
+            name: cur.activeCanvasName || existing?.name || '未命名画布',
+            nodes: cleanNodes,
+            edges: cur.edges,
+            viewport: existing?.viewport,
+            thumbnail: existing?.thumbnail,
+            lastOpenedAt: existing?.lastOpenedAt ?? now,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+            // 保留 deleted/deletedAt（万一被外部标删了，不要靠 flush 复活）
+            ...(existing?.deleted ? { deleted: existing.deleted, deletedAt: existing.deletedAt } : {}),
+          });
+          clearPendingFlush();
+        }
       } catch (e) {
         console.warn('[plotmesh] switchActiveCanvas: flush 当前画布失败：', e);
       }

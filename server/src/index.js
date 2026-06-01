@@ -13,6 +13,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import llmRouter from './routes/llm.js';
@@ -21,7 +22,11 @@ import syncRouter from './routes/sync.js';
 import webFetchRouter from './routes/webFetch.js';
 import tencentDocsRouter from './routes/tencentDocs.js';
 import canvasRouter from './routes/canvas.js';
+import authRouter from './routes/auth.js';
+import inboxRouter from './routes/inbox.js';
+import eventsRouter from './routes/events.js';
 import { printApiTokenBanner } from './middleware/apiToken.js';
+import { optionalAuth } from './auth/middleware.js';
 import { getServerConfig } from './utils/serverConfig.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -41,11 +46,16 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// v2.0-α Phase A：所有请求挂可选 user 上下文（带 JWT 时 req.user 有值；
+// 不带也不报错，向后兼容 v1.x 的"无身份"调用）
+app.use(optionalAuth);
+
 // 静态文件服务（上传的文件）
 const uploadDir = path.join(__dirname, '../uploads');
 app.use('/uploads', express.static(uploadDir));
 
 // 路由
+app.use('/api/auth', authRouter);
 app.use('/api/llm', llmRouter);
 app.use('/api/upload', uploadRouter);
 app.use('/api/sync', syncRouter);
@@ -53,11 +63,34 @@ app.use('/api/web-fetch', webFetchRouter);
 app.use('/api/tencent-docs', tencentDocsRouter);
 // v1.6 切片 1：外部 AI 操作画布的 REST API
 app.use('/api/canvas', canvasRouter);
+// v2.0-α Phase A 步 2：inbox + SSE 多 channel
+app.use('/api/inbox', inboxRouter);
+app.use('/api/events', eventsRouter);
 
 // 健康检查
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// v2.0-α Phase A：若存在 build 后的前端产物，直接服务（用于测试/独立部署）
+// 支持两种启动方式：从 server/ 启动 或 从项目根目录启动
+const clientDistCandidates = [
+  path.resolve(process.cwd(), '../client/dist'),
+  path.resolve(process.cwd(), 'client/dist'),
+];
+let clientDist = null;
+for (const cand of clientDistCandidates) {
+  if (fs.existsSync(path.join(cand, 'index.html'))) {
+    clientDist = cand;
+    break;
+  }
+}
+if (clientDist) {
+  app.use(express.static(clientDist));
+  app.get(/.*/, (_req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
 
 app.listen(PORT, HOST, async () => {
   console.log(`🚀 Server running on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
@@ -76,5 +109,23 @@ app.listen(PORT, HOST, async () => {
     startScheduler(runCanvasJob, { scanIntervalMs: 10000 });
   } catch (e) {
     console.warn('⚠️  启动 scheduler 失败：', e.message);
+  }
+
+  // v2.0 Phase C 步 7：AI PM —— 把 inbox SSE 广播器注入 pmNotify（L1 失败实时推送）
+  try {
+    const { setPmBroadcaster } = await import('./runner/pmNotify.js');
+    const { broadcastInbox } = await import('./routes/events.js');
+    setPmBroadcaster(broadcastInbox);
+  } catch (e) {
+    console.warn('⚠️  注入 AI PM 广播器失败：', e.message);
+  }
+
+  // v2.0 Phase C 步 7：AI PM L2 —— 启动每日日报调度
+  try {
+    const { startPmDigest } = await import('./runner/pmDigestScheduler.js');
+    const hour = process.env.PLOTMESH_PM_DIGEST_HOUR ? parseInt(process.env.PLOTMESH_PM_DIGEST_HOUR, 10) : 9;
+    startPmDigest({ digestHour: hour });
+  } catch (e) {
+    console.warn('⚠️  启动 AI PM 日报调度失败：', e.message);
   }
 });

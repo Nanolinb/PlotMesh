@@ -23,6 +23,17 @@ function getConfigPath() {
 function defaultConfig() {
   return {
     remoteAccess: false,
+    /**
+     * v2.0-α Phase A：认证开关
+     *   - required=false（默认）        离线模式，前端可不登录直接用画布
+     *   - required=true                 联网模式，前端必须登录才能进入
+     *   - allowSelfRegister=true（默认）  任何人都能 POST /api/auth/register
+     *   - allowSelfRegister=false          只有管理员可邀请新用户
+     */
+    auth: {
+      required: false,
+      allowSelfRegister: true,
+    },
   };
 }
 
@@ -35,7 +46,12 @@ function load() {
     if (fs.existsSync(fp)) {
       const raw = fs.readFileSync(fp, 'utf8');
       const json = JSON.parse(raw);
-      cached = { ...defaultConfig(), ...json };
+      // 深合并 auth 子对象
+      cached = {
+        ...defaultConfig(),
+        ...json,
+        auth: { ...defaultConfig().auth, ...(json.auth || {}) },
+      };
     } else {
       cached = defaultConfig();
     }
@@ -48,6 +64,13 @@ function load() {
   const envRA = process.env.PLOTMESH_REMOTE_ACCESS;
   if (envRA === 'true') cached.remoteAccess = true;
   if (envRA === 'false') cached.remoteAccess = false;
+  // v2.0-α：auth 也支持 env override
+  const envAuthReq = process.env.PLOTMESH_AUTH_REQUIRED;
+  if (envAuthReq === 'true') cached.auth.required = true;
+  if (envAuthReq === 'false') cached.auth.required = false;
+  const envAuthSelfReg = process.env.PLOTMESH_AUTH_ALLOW_SELF_REGISTER;
+  if (envAuthSelfReg === 'true') cached.auth.allowSelfRegister = true;
+  if (envAuthSelfReg === 'false') cached.auth.allowSelfRegister = false;
   return cached;
 }
 
@@ -69,10 +92,15 @@ export function getServerConfig() {
 
 /**
  * 更新部分字段并写盘。返回新的完整 config。
+ * auth 子对象做深合并（只改传入的字段，不丢其余）。
  */
 export function updateServerConfig(patch) {
   load();
-  cached = { ...cached, ...patch };
+  const { auth: authPatch, ...rest } = patch || {};
+  cached = { ...cached, ...rest };
+  if (authPatch && typeof authPatch === 'object') {
+    cached.auth = { ...cached.auth, ...authPatch };
+  }
   save();
   return { ...cached };
 }

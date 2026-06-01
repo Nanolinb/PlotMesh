@@ -10,6 +10,8 @@
  */
 import { useEffect, useState } from 'react';
 import ApiTokenPanel from './ApiTokenPanel';
+import AdminPanel from './AdminPanel';
+import { useAuth } from '../auth/authContext';
 
 type ModelInfo = {
   id: string;
@@ -42,9 +44,11 @@ const KEY_HINTS: Record<string, { url: string; tip: string }> = {
  * - 支持显示/隐藏明文、测试连接、官网链接
  */
 export default function ApiKeyConfigModal({ open, onClose }: Props) {
-  // v1.6.2 起：两类配置切 tab
-  type Tab = 'llm' | 'external';
+  // v1.6.2 起：两类配置切 tab；v2.0-β 加 admin tab（仅管理员可见）
+  type Tab = 'llm' | 'external' | 'admin';
   const [tab, setTab] = useState<Tab>('llm');
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
 
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -181,6 +185,7 @@ export default function ApiKeyConfigModal({ open, onClose }: Props) {
           {([
             { key: 'llm', label: '🤖 大模型 API Key', desc: '调用 LLM 的密钥（写入 server/.env）' },
             { key: 'external', label: '🔑 外部 AI 接入', desc: 'codex / kimi / Claude Desktop 操作画布的 token' },
+            ...(isAdmin ? [{ key: 'admin' as Tab, label: '👥 成员管理', desc: '管理已注册成员：重置密码 / 删除 / 角色' }] : []),
           ] as Array<{ key: Tab; label: string; desc: string }>).map((t) => {
             const active = tab === t.key;
             return (
@@ -403,6 +408,12 @@ export default function ApiKeyConfigModal({ open, onClose }: Props) {
               localhost 默认豁免鉴权，远端必须携带 <code>Authorization: Bearer &lt;token&gt;</code>。
             </p>
             <ApiTokenPanel embedded />
+          </div>
+        )}
+
+        {tab === 'admin' && isAdmin && (
+          <div style={{ paddingBottom: 8 }}>
+            <AdminPanel />
           </div>
         )}
 

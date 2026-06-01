@@ -186,10 +186,10 @@ export function renderBarChartSvg(
     ? `<text x="${width / 2}" y="20" text-anchor="middle" fill="${lc}" font-size="14" font-weight="600">${esc(opts.title)}</text>`
     : '';
 
-  const cells = [];
-  const labels = [];
-  const valLabels = [];
-  const axes = [];
+  const cells: string[] = [];
+  const labels: string[] = [];
+  const valLabels: string[] = [];
+  const axes: string[] = [];
   const slot = (horizontal ? innerH : innerW) / bars.length;
   const barW = slot * (style.barWidth ?? 0.7);
   const barOffset = (slot - barW) / 2;

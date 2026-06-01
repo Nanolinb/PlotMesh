@@ -220,17 +220,20 @@ body {
 }
 
 .save-pkg-btn {
-  width: 28px;
+  min-width: 28px;
   height: 28px;
+  padding: 0 6px;
   border-radius: 6px;
   border: 1px solid var(--border-color);
   background: var(--bg-card-body);
   cursor: pointer;
-  font-size: 16px;
+  font-size: 13px;
   color: var(--accent);
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 1px;
+  white-space: nowrap;
   transition: all 0.15s;
 }
 

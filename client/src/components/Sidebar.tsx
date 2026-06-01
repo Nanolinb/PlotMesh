@@ -72,6 +72,20 @@ const NODE_CATEGORIES: Array<{
       { type: 'swimlane', label: '🏊 项目泳道', description: '横向泳道 / 项目时序' },
     ],
   },
+  {
+    key: 'theme',
+    label: '🎨 主题',
+    items: [
+      { type: 'themeNode', label: '🎨 主题', description: '定调/样式合并，沿连线广播给子节点' },
+    ],
+  },
+  {
+    key: 'ai',
+    label: '🤖 AI',
+    items: [
+      { type: 'aiBuilder', label: '🤖 AI 构建器', description: 'AI 读上下文生成节点结构，预览后一键应用' },
+    ],
+  },
 ];
 
 const NODE_CAT_COLLAPSED_KEY = 'plotmesh.sidebar.nodeCatCollapsed';

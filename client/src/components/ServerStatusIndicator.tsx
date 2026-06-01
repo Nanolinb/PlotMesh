@@ -67,8 +67,10 @@ const START_CMD = 'cd server && npm start';
 export default function ServerStatusIndicator() {
   const [result, setResult] = useState<PingResult>({ status: 'pending' });
   const [showHelp, setShowHelp] = useState(false);
+  const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +86,14 @@ export default function ServerStatusIndicator() {
       if (timerRef.current != null) window.clearInterval(timerRef.current);
     };
   }, []);
+
+  // 弹窗打开时计算按钮在 viewport 中的位置，用于 fixed 定位
+  useEffect(() => {
+    if (showHelp && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setPopupPos({ top: rect.bottom + 6, left: rect.left });
+    }
+  }, [showHelp]);
 
   const dotColor = result.status === 'online' ? '#22c55e' : result.status === 'offline' ? '#ef4444' : '#f59e0b';
   const tooltip =
@@ -125,6 +135,7 @@ export default function ServerStatusIndicator() {
       }}
     >
       <button
+        ref={buttonRef}
         type="button"
         onClick={handleClick}
         title={tooltip}
@@ -165,9 +176,9 @@ export default function ServerStatusIndicator() {
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
-              position: 'absolute',
-              top: 26,
-              left: 0,
+              position: 'fixed',
+              top: popupPos.top,
+              left: popupPos.left,
               zIndex: 9999,
               minWidth: 280,
               maxWidth: 320,

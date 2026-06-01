@@ -185,6 +185,10 @@ export function requireApiToken(req, res, next) {
     ip.startsWith('::ffff:127.');
 
   if (isLocalhost && !requireLocalhost) {
+    // ⚓ Phase B 扩展点：localhost 豁免下也尝试解析 token → user（带了 Bearer 才有）
+    const lauth = req.headers.authorization || '';
+    const lm = lauth.match(/^Bearer\s+(.+)$/i);
+    if (lm) req.apiUser = resolveApiTokenUser(lm[1].trim());
     return next();
   }
 
@@ -196,7 +200,37 @@ export function requireApiToken(req, res, next) {
   if (m[1].trim() !== token) {
     return res.status(401).json({ error: 'invalid_token', message: 'Token does not match server token' });
   }
+  // ⚓ Phase B 扩展点：解析 token → user，挂 req.apiUser（当前恒为 null = server-level 全权限）
+  req.apiUser = resolveApiTokenUser(m[1].trim());
   return next();
+}
+
+/**
+ * ⚓ Phase B 扩展点：API token → 用户绑定（多用户隔离）
+ * ---------------------------------------------------------------
+ * 现状（v2.0-α Phase A）：单 server token，不绑定用户 → 全权限（server-level）。
+ * 这对单机/localhost 自用没问题，但多用户联网下，外部 AI（Codex/Kimi via MCP）
+ * 通过 token 连进来时，server 无法知道"以谁的身份"操作 → 无法按 ownerId 隔离画布。
+ *
+ * Phase B 落地方案（届时把本函数替换为真实实现）：
+ *   1) token 存储从单文件 ~/.plotmesh/api-token 升级为 api-tokens.json：
+ *        [{ id, token, label, userId, createdAt, lastUsedAt }, ...]
+ *   2) 本函数按 token 反查 userId（命中则返回 user 对象，否则 null）
+ *   3) requireApiToken 调用本函数 → 命中则 req.apiUser = user
+ *        → 下游画布路由按 req.apiUser.id 过滤 ownerId / 校验 sharedWith
+ *   4) userId=null 的旧 token（迁移自单文件）走 server-level 全权限，向后兼容
+ *   5) 前端"API 配置 → 外部 AI 接入"tab 改为：当前用户的 token 列表 +
+ *        生成/吊销，每个 token label（如 "Codex MCP"）+ lastUsedAt
+ *
+ * 现在返回 null：表示"未绑定用户"，requireApiToken 维持现有全权限语义不变。
+ * 这样接口形状（req.apiUser 字段）提前固定，Phase B 只需填实现，不改调用方。
+ *
+ * @param {string} _token 当前请求携带的 Bearer token
+ * @returns {{id:string,email?:string,name?:string,color?:string}|null}
+ */
+export function resolveApiTokenUser(_token) {
+  // Phase B：在此查 api-tokens.json 反查 userId 并返回 user 对象
+  return null;
 }
 
 /** 仅本机豁免：用于"前端 UI 查询/重置 token"等敏感操作 */
