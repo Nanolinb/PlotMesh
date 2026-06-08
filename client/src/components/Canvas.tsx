@@ -1531,6 +1531,27 @@ export default function Canvas() {
         }
         return results.get(e.source);
       };
+
+      // v2.0：统一的"按编号顺序收集上游"工具。
+      // 多个上游（含 textPrompt 关键词节点）汇入同一节点时：
+      //   - 按源节点 data.promptNumber 升序拼接（未编号的用 MAX + 原连线序兜底）
+      //   - 默认用 \n\n 连接，保证 #1/#2/#3 编号顺序 == 合并顺序
+      // 替代旧的 `upstream = readResultForEdge(e) || upstream`（那种只保留最后一条边，
+      // 串接多个文本提示词时会静默丢掉除最后一个以外的全部输入）。
+      const nodeLookup = new Map<string, any>(allNodes.map((n: any) => [n.id, n]));
+      const collectUpstream = (targetId: string, sep = '\n\n'): string => {
+        const chunks = filteredEdges
+          .filter((e: any) => e.target === targetId)
+          .map((e: any, idx: number) => {
+            const pn = nodeLookup.get(e.source)?.data?.promptNumber;
+            return { edge: e, sortKey: typeof pn === 'number' ? pn : Number.MAX_SAFE_INTEGER, tieBreak: idx };
+          })
+          .sort((a, b) => (a.sortKey - b.sortKey) || (a.tieBreak - b.tieBreak))
+          .map(({ edge }) => readResultForEdge(edge))
+          .filter((v): v is string => !!v);
+        return chunks.join(sep);
+      };
+
       let head = 0;
       while (head < queue.length) {
         const nodeId = queue[head];
@@ -1644,19 +1665,14 @@ export default function Canvas() {
           // 这样可以避免文件正文里出现"请帮我..."等措辞被 LLM 误当成指令执行。
           const fileChunks: string[] = [];
           const instructionChunks: string[] = [];
-          // 收集所有指向当前 LLM 的上游边。
-          // v2.0 修复：多个 textPrompt（关键词节点）串/并联汇入同一 LLM 时，
-          // 按各自的 promptNumber 升序拼接，让用户的 #1/#2/#3 编号顺序 == 实际合并顺序。
-          // 非 textPrompt 上游（无 promptNumber）排在已编号节点之后，保持连线先后的相对顺序。
-          const nodeLookup = new Map<string, any>(allNodes.map((n: any) => [n.id, n]));
+          // 收集所有指向当前 LLM 的上游边，按源节点 promptNumber 升序（见 collectUpstream 注释）。
+          // 这里需要区分文件块/指令块，故不直接用 collectUpstream，而复用同一套排序规则。
           const incomingEdges = filteredEdges
             .filter((e: any) => e.target === nodeId)
             .map((e: any, idx: number) => {
-              const srcNode = nodeLookup.get(e.source);
-              const pn = srcNode?.data?.promptNumber;
+              const pn = nodeLookup.get(e.source)?.data?.promptNumber;
               return {
                 edge: e,
-                // 已编号的用 promptNumber 排序；未编号的用一个大数 + 原始连线顺序兜底
                 sortKey: typeof pn === 'number' ? pn : Number.MAX_SAFE_INTEGER,
                 tieBreak: idx,
               };
@@ -1755,9 +1771,8 @@ export default function Canvas() {
           }
         }
         if (data.type === 'output') {
-          let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
-          upstream = stripFilePrefix(upstream);
+          // 多个上游按编号顺序合并（旧逻辑只取最后一条边）
+          const upstream = stripFilePrefix(collectUpstream(nodeId));
           results.set(nodeId, upstream);
           storeUpdateNodeData(nodeId, { status: 'success', output: upstream });
         }
@@ -1765,9 +1780,8 @@ export default function Canvas() {
         // v1.7 P2-A：crossOutput → 投递到远端 crossInput（异步 POST 给 server）
         // 前端 ▶️ 跑到这里时，调 server 的 POST /api/canvas/:id/cross-deliver 让 server 写到 dst
         if (data.type === 'crossOutput') {
-          let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
-          upstream = stripFilePrefix(upstream);
+          // 多个上游按编号顺序合并（旧逻辑只取最后一条边）
+          const upstream = stripFilePrefix(collectUpstream(nodeId));
           results.set(nodeId, upstream);
           // 立即标记 running，发出后变 success
           storeUpdateNodeData(nodeId, { status: 'running', output: upstream });
@@ -1839,9 +1853,8 @@ export default function Canvas() {
         // 时间轴：把上游文本写到 data.upstreamText 让节点 UI 自己解析时间点；
         // 输出每个 cut 的时间字符串（按当前显示模式），以备下游做镜头编排。
         if (data.type === 'timeline') {
-          let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
-          upstream = stripFilePrefix(upstream);
+          // 多个上游按编号顺序合并（旧逻辑只取最后一条边）
+          const upstream = stripFilePrefix(collectUpstream(nodeId));
           // 写回 upstreamText，触发节点内部的 useEffect 解析 cuts
           storeUpdateNodeData(nodeId, { upstreamText: upstream, status: 'success' });
           const d = data as any;
@@ -1869,9 +1882,8 @@ export default function Canvas() {
 
         // 分叉节点：把上游一段文本切成 N 段，分别从 source handle out__0 / out__1 / ... 出去
         if (data.type === 'splitter') {
-          let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
-          upstream = stripFilePrefix(upstream);
+          // 多个上游按编号顺序合并后再切分（旧逻辑只取最后一条边 → 串接文本提示词时丢内容）
+          const upstream = stripFilePrefix(collectUpstream(nodeId));
           const d = data as any;
           // 把上游写到节点 data.upstreamText，让节点 UI 能预览切分结果
           storeUpdateNodeData(nodeId, { upstreamText: upstream });
@@ -1908,9 +1920,8 @@ export default function Canvas() {
 
         // 条件分支：根据 mode 和 keyword 判定 true/false 分支
         if (data.type === 'condition') {
-          let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
-          upstream = stripFilePrefix(upstream);
+          // 多个上游按编号顺序合并后再做关键词判断（旧逻辑只取最后一条边）
+          let upstream = stripFilePrefix(collectUpstream(nodeId));
           const d = data as any;
           const kw = String(d.keyword || '');
           let matched = false;
@@ -1932,9 +1943,8 @@ export default function Canvas() {
 
         // 文本处理：各种字符串变换
         if (data.type === 'textTransform') {
-          let upstream = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstream = readResultForEdge(e) || upstream; });
-          upstream = stripFilePrefix(upstream);
+          // 多个上游按编号顺序合并后再做变换（旧逻辑只取最后一条边）
+          let upstream = stripFilePrefix(collectUpstream(nodeId));
           const d = data as any;
           const tf = d.transform || 'trim';
           const p = d.param || '';
@@ -1967,12 +1977,24 @@ export default function Canvas() {
 
         // 数据提取：调 LLM 把上游自由文本规整成结构化 JSON 数组
         if (data.type === 'extract') {
-          // 取上游原始字符串（含可能的 __PM_IMAGES__ / __PM_FILE__ 头）
-          let upstreamRaw = '';
-          filteredEdges.forEach((e: any) => { if (e.target === nodeId) upstreamRaw = readResultForEdge(e) || upstreamRaw; });
-          // 抽出图片清单 + 剥头得到纯文本
-          const images = extractImages(upstreamRaw);
-          const upstream = stripFilePrefix(upstreamRaw);
+          // 取上游：多个上游按编号顺序合并文本；图片清单取首个带 __PM_IMAGES__ 的边
+          const orderedRaws = filteredEdges
+            .filter((e: any) => e.target === nodeId)
+            .map((e: any, idx: number) => {
+              const pn = nodeLookup.get(e.source)?.data?.promptNumber;
+              return { edge: e, sortKey: typeof pn === 'number' ? pn : Number.MAX_SAFE_INTEGER, tieBreak: idx };
+            })
+            .sort((a, b) => (a.sortKey - b.sortKey) || (a.tieBreak - b.tieBreak))
+            .map(({ edge }) => readResultForEdge(edge))
+            .filter((v): v is string => !!v);
+          // 图片：取第一个含图片清单的上游
+          let images: ReturnType<typeof extractImages> = [];
+          for (const raw of orderedRaws) {
+            const imgs = extractImages(raw);
+            if (imgs.length) { images = imgs; break; }
+          }
+          // 文本：所有上游剥头后按编号顺序拼接
+          const upstream = orderedRaws.map((raw) => stripFilePrefix(raw)).filter((t) => t.trim()).join('\n\n');
           // 文本和图片至少要有一项
           const hasText = !!upstream.trim();
           if (!hasText && images.length === 0) {

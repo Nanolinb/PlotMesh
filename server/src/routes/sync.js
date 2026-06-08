@@ -233,13 +233,61 @@ router.put('/snapshot', (req, res) => {
   // v1.7 P2-A 修复：前端 SnapshotPayload 不含 connections（前端不管这块），
   // 但 server 端有自己的 connections（跨画布关联）。如果直接用前端 payload 覆盖，
   // server 的 connections 会被擦掉。这里把旧 payload 的 connections 合并进新 payload。
+  //
+  // v2.0 修复：projects（项目一等实体）完全由 server 端 /api/project 管理，
+  // 前端 IndexedDB 根本不携带 projects。若不保护，客户端每次 sync 都会把
+  // server 上的项目擦成空数组 → 表现为"项目创建后又消失/无法创建"。
+  // 这里对 server 权威集合做合并保护：
+  //   - projects：前端没带（undefined）就保留 server 旧的；前端明确带了才覆盖
+  //   - canvases.projectId：项目归属也在 server 端设置，前端 IDB 可能是旧值，
+  //     合并时以 server 端已有的 projectId 为准（前端未显式改动时不回退）
   let mergedPayload = payload;
   try {
-    if (current && current.payload && Array.isArray(current.payload.connections)) {
-      // 只在前端 payload 没带 connections 时才用 server 旧的（防止用户真的想清空）
-      if (!Array.isArray(payload.connections)) {
-        mergedPayload = { ...payload, connections: current.payload.connections };
+    const cur = current && current.payload ? current.payload : null;
+    const patch = {};
+
+    // connections：前端不带就用 server 旧的
+    if (cur && Array.isArray(cur.connections) && !Array.isArray(payload.connections)) {
+      patch.connections = cur.connections;
+    }
+
+    // projects 合并保护（union by id）：
+    // server 端第一类实体项目（带 flexPool 标记，id 形如 proj-xxx）由 /api/project 管理，
+    // 前端 IDB 只携带它自己的 Project（如 project-default），不含这些。
+    // 直接覆盖会丢失 server 项目 → 这里做按 id 合并：
+    //   - 前端带来的 projects 全部保留
+    //   - server 上前端没带、且是"被管理的"项目（有 flexPool）的，补回去
+    if (cur && Array.isArray(cur.projects)) {
+      const frontProjects = Array.isArray(payload.projects) ? payload.projects : [];
+      const frontIds = new Set(frontProjects.map((p) => p && p.id));
+      const managedMissing = cur.projects.filter(
+        (p) => p && p.flexPool && !frontIds.has(p.id)
+      );
+      if (managedMissing.length) {
+        patch.projects = [...frontProjects, ...managedMissing];
       }
+    }
+
+    // canvases.projectId 保护：用 server 旧值回填到同 id 画布上
+    // （仅当前端该画布没有显式 projectId，或仍是默认值时）
+    if (cur && Array.isArray(cur.canvases) && Array.isArray(payload.canvases)) {
+      const oldProjById = new Map(
+        cur.canvases.map((c) => [c.id, c.projectId])
+      );
+      patch.canvases = payload.canvases.map((c) => {
+        const serverPid = oldProjById.get(c.id);
+        // server 上有明确归属（非空/非默认），而前端没带或还是默认 → 用 server 的
+        const frontPid = c.projectId;
+        const frontIsUnset = !frontPid || frontPid === 'project-default';
+        if (serverPid && serverPid !== 'project-default' && frontIsUnset) {
+          return { ...c, projectId: serverPid };
+        }
+        return c;
+      });
+    }
+
+    if (Object.keys(patch).length) {
+      mergedPayload = { ...payload, ...patch };
     }
   } catch {/* swallow */}
 
