@@ -13,7 +13,7 @@
  *   - 通知失败不能影响主流程（全部 try/catch 吞掉）
  */
 import { addInboxItem } from '../auth/inboxStore.js';
-import { readPayload } from '../utils/storeIO.js';
+import { readPayload, mutateStore } from '../utils/storeIO.js';
 
 // broadcastInbox 来自 routes/events.js，运行期注入避免循环依赖
 let _broadcast = null;
@@ -113,4 +113,52 @@ export async function notifyDailyDigest(canvasId, llmCall, ctx = {}) {
     target: { canvasId },
     actions: [{ label: '打开画布', action: 'open-canvas', payload: { canvasId } }],
   });
+}
+
+/**
+ * L3 派发层：@某成员卷入项目协作。
+ * 1) 若该画布还没 share 给对方，自动加进 sharedWith（授予查看权限）
+ * 2) 给对方投 kind=mention inbox（带「跳转到画布/节点」action）+ SSE 推送
+ *
+ * @param {{ canvasId, nodeId?, fromUser:{userId,name}, toUserId, message? }} opts
+ * @returns {{ ok, autoShared, entry } | { ok:false, error }}
+ */
+export function notifyMention(opts) {
+  const { canvasId, nodeId = null, fromUser, toUserId, message = '' } = opts || {};
+  if (!canvasId || !toUserId || !fromUser) return { ok: false, error: 'missing_fields' };
+
+  // 取画布名 + 自动 share
+  let canvasName = canvasId;
+  let autoShared = false;
+  try {
+    mutateStore((payload) => {
+      const c = (payload.canvases || []).find((x) => x.id === canvasId && !x.deleted);
+      if (!c) return;
+      canvasName = c.name || canvasId;
+      // 不给 owner 自己重复 share；对方非 owner 且未在 sharedWith → 自动加
+      if (c.ownerId !== toUserId) {
+        const list = Array.isArray(c.sharedWith) ? c.sharedWith : [];
+        if (!list.includes(toUserId)) {
+          c.sharedWith = [...list, toUserId];
+          autoShared = true;
+        }
+      }
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[pmNotify] mention 自动 share 失败：', e.message);
+  }
+
+  const entry = notify(toUserId, {
+    kind: 'mention',
+    title: `${fromUser.name} 在「${canvasName}」@了你`,
+    body: message
+      ? message
+      : (nodeId ? `请看画布「${canvasName}」中的某个节点` : `请关注画布「${canvasName}」`),
+    from: { userId: fromUser.userId || 'system', name: fromUser.name },
+    target: { canvasId, nodeId },
+    actions: [{ label: '跳转查看', action: 'open-canvas', payload: { canvasId, nodeId } }],
+  });
+
+  return { ok: true, autoShared, entry };
 }

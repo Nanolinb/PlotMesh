@@ -42,7 +42,7 @@ interface AuditRecord {
   history: Array<{ at: number; by: string | null; action: string; reason?: string }>;
 }
 
-type Sub = 'users' | 'server' | 'audit';
+type Sub = 'users' | 'server' | 'audit' | 'projects';
 
 export default function AdminPanel() {
   const { user: me } = useAuth();
@@ -51,9 +51,10 @@ export default function AdminPanel() {
   return (
     <div>
       {/* 子区切换 */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
         {([
           { key: 'users', label: '👤 成员' },
+          { key: 'projects', label: '📊 Flex Pool' },
           { key: 'server', label: '⚙️ server 设置' },
           { key: 'audit', label: '📜 引用审计' },
         ] as Array<{ key: Sub; label: string }>).map((t) => (
@@ -74,6 +75,7 @@ export default function AdminPanel() {
       </div>
 
       {sub === 'users' && <UsersSection me={me} />}
+      {sub === 'projects' && <FlexPoolSection />}
       {sub === 'server' && <ServerSection />}
       {sub === 'audit' && <AuditSection />}
     </div>
@@ -485,6 +487,210 @@ function AuditSection() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ════════════════════════ Flex Pool 项目管理 ════════════════════════
+
+interface PoolEntry {
+  userId: string;
+  role: string;
+  name: string;
+  email: string;
+  color: string;
+  joinedAt?: number;
+}
+
+interface ProjectBrief {
+  ownerId: string | null;
+  ownerName: string;
+  canvasCount: number;
+  totalStuck: number;
+  members: PoolEntry[];
+}
+
+function FlexPoolSection() {
+  const [projects, setProjects] = useState<ProjectBrief[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [expandedProject, setExpandedProject] = useState<string | null>(null);
+  const [addEmail, setAddEmail] = useState('');
+  const [addRole, setAddRole] = useState('editor');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr('');
+    try {
+      const r = await authFetch('/api/dashboard/overview');
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.message || '加载失败');
+      setProjects(d.projects || []);
+    } catch (e: any) {
+      setErr(e.message || '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const addMember = async (canvasId: string) => {
+    if (!addEmail.trim()) { alert('请输入邮箱'); return; }
+    try {
+      const r = await authFetch(`/api/dashboard/canvas/${canvasId}/flex-pool`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', email: addEmail.trim(), role: addRole }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || '添加失败');
+      alert(`✓ 已添加 ${addEmail} 为 ${addRole}`);
+      setAddEmail('');
+      load();
+    } catch (e: any) {
+      alert(`添加失败：${e.message}`);
+    }
+  };
+
+  const removeMember = async (canvasId: string, userId: string) => {
+    if (!confirm('确认移除该成员？')) return;
+    try {
+      const r = await authFetch(`/api/dashboard/canvas/${canvasId}/flex-pool/${userId}`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json(); throw new Error(d.error || '移除失败'); }
+      alert('✓ 已移除');
+      load();
+    } catch (e: any) {
+      alert(`移除失败：${e.message}`);
+    }
+  };
+
+  const roleLabel: Record<string, string> = {
+    owner: 'Owner', admin: 'Admin', editor: '编辑', viewer: '查看',
+  };
+  const roleColor: Record<string, string> = {
+    owner: '#6366f1', admin: '#8b5cf6', editor: '#10b981', viewer: '#94a3b8',
+  };
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.6 }}>
+        项目级 Flex Pool：管理画布成员的三层角色（Owner / Admin / Editor / Viewer）。
+        <br />按项目分组，可对每张画布添加/移除成员、修改角色。
+      </p>
+
+      {err && (
+        <div style={{ background: 'rgba(239,68,68,0.12)', color: '#ef4444', padding: 8, borderRadius: 6, marginBottom: 10, fontSize: 12 }}>{err}</div>
+      )}
+      {loading && <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>加载中…</div>}
+
+      {!loading && projects.length === 0 && (
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: 20, textAlign: 'center' }}>
+          暂无项目（请先给画布设置 owner）
+        </div>
+      )}
+
+      {!loading && projects.map((proj) => {
+        const key = String(proj.ownerId);
+        const isExpanded = expandedProject === key;
+        return (
+          <div key={key} style={{ marginBottom: 8 }}>
+            <div
+              onClick={() => setExpandedProject(isExpanded ? null : key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+                border: '1px solid var(--border-color)', background: 'var(--bg-card-body)',
+                borderLeft: `3px solid ${proj.totalStuck > 0 ? '#ef4444' : '#8b5cf6'}`,
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {proj.ownerName} 的项目
+                </span>
+                <span style={{ fontSize: 11, marginLeft: 8, color: 'var(--text-secondary)' }}>
+                  {proj.canvasCount} 画布 · {proj.members.length} 成员
+                </span>
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{isExpanded ? '▾' : '▸'}</span>
+            </div>
+
+            {isExpanded && (
+              <div style={{ marginLeft: 16, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {proj.members.map((m) => (
+                  <div key={m.userId} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '6px 10px', borderRadius: 6,
+                    background: 'var(--bg-card)', border: '1px solid var(--border-color)',
+                  }}>
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: m.color }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ fontSize: 12, color: 'var(--text-primary)' }}>{m.name}</span>
+                      <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--text-muted)' }}>{m.email}</span>
+                    </div>
+                    <span style={{
+                      fontSize: 10, padding: '1px 6px', borderRadius: 8,
+                      background: `${roleColor[m.role] || '#94a3b8'}22`,
+                      color: roleColor[m.role] || '#94a3b8',
+                    }}>{roleLabel[m.role] || m.role}</span>
+                    {m.role !== 'owner' && (
+                      <button onClick={() => {
+                        // 找到该项目下任一画布来操作 flex-pool
+                        // 这里简化为用项目 owner 的第一张画布
+                        const targetCanvasId = proj.ownerId;
+                        if (targetCanvasId) removeMember(targetCanvasId, m.userId);
+                      }} style={{
+                        fontSize: 10, padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
+                        border: '1px solid #ef4444', background: 'transparent', color: '#ef4444',
+                      }}>移除</button>
+                    )}
+                  </div>
+                ))}
+
+                {/* 添加成员 */}
+                <div style={{
+                  display: 'flex', gap: 6, marginTop: 4, padding: '8px 10px',
+                  borderRadius: 6, border: '1px dashed var(--border-color)',
+                }}>
+                  <input
+                    type="email"
+                    placeholder="输入邮箱添加成员"
+                    value={addEmail}
+                    onChange={(e) => setAddEmail(e.target.value)}
+                    style={{
+                      flex: 1, padding: '5px 8px', borderRadius: 5, fontSize: 12,
+                      border: '1px solid var(--border-color)', background: 'var(--bg-input)',
+                      color: 'var(--text-primary)',
+                    }}
+                  />
+                  <select
+                    value={addRole}
+                    onChange={(e) => setAddRole(e.target.value)}
+                    style={{
+                      padding: '5px 8px', borderRadius: 5, fontSize: 12,
+                      border: '1px solid var(--border-color)', background: 'var(--bg-input)',
+                      color: 'var(--text-primary)',
+                    }}
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="editor">编辑</option>
+                    <option value="viewer">查看</option>
+                  </select>
+                  <button
+                    onClick={() => {
+                      if (proj.ownerId) addMember(proj.ownerId);
+                    }}
+                    style={{
+                      padding: '5px 12px', borderRadius: 5, fontSize: 12, fontWeight: 600,
+                      border: 'none', background: 'var(--accent)', color: '#fff', cursor: 'pointer',
+                    }}
+                  >添加</button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

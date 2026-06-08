@@ -76,6 +76,8 @@ import CanvasTabs from './CanvasTabs';
 import SchedulerPanel from './SchedulerPanel';
 import Bell from '../auth/Bell';
 import UserChip from '../auth/UserChip';
+import MentionButton from '../auth/MentionButton';
+import DashboardView from './DashboardView';
 import { useNodeStore, saveCanvasDraft, clearCanvasDraft, pushRecentCanvas, flushRemoteSyncNow, type RecentCanvas } from '../store/nodes';
 
 const nodeTypes = {
@@ -362,6 +364,8 @@ export default function Canvas() {
 
   // ─── v1.5 D3 多画布管理 ───
   const [showCanvasManager, setShowCanvasManager] = useState(false);
+  // ─── v2.0 Phase C 总控画布 ───
+  const [showDashboard, setShowDashboard] = useState(false);
 
   const [showSave, setShowSave] = useState(false);
   const [showApiConfig, setShowApiConfig] = useState(false);
@@ -1640,8 +1644,26 @@ export default function Canvas() {
           // 这样可以避免文件正文里出现"请帮我..."等措辞被 LLM 误当成指令执行。
           const fileChunks: string[] = [];
           const instructionChunks: string[] = [];
-          filteredEdges.forEach((e: any) => {
-            if (e.target !== nodeId) return;
+          // 收集所有指向当前 LLM 的上游边。
+          // v2.0 修复：多个 textPrompt（关键词节点）串/并联汇入同一 LLM 时，
+          // 按各自的 promptNumber 升序拼接，让用户的 #1/#2/#3 编号顺序 == 实际合并顺序。
+          // 非 textPrompt 上游（无 promptNumber）排在已编号节点之后，保持连线先后的相对顺序。
+          const nodeLookup = new Map<string, any>(allNodes.map((n: any) => [n.id, n]));
+          const incomingEdges = filteredEdges
+            .filter((e: any) => e.target === nodeId)
+            .map((e: any, idx: number) => {
+              const srcNode = nodeLookup.get(e.source);
+              const pn = srcNode?.data?.promptNumber;
+              return {
+                edge: e,
+                // 已编号的用 promptNumber 排序；未编号的用一个大数 + 原始连线顺序兜底
+                sortKey: typeof pn === 'number' ? pn : Number.MAX_SAFE_INTEGER,
+                tieBreak: idx,
+              };
+            })
+            .sort((a, b) => (a.sortKey - b.sortKey) || (a.tieBreak - b.tieBreak));
+
+          incomingEdges.forEach(({ edge: e }) => {
             const v = readResultForEdge(e);
             if (!v) return;
             if (typeof v === 'string' && v.startsWith('__PM_FILE__\n')) {
@@ -2908,14 +2930,29 @@ export default function Canvas() {
             justifyContent: 'space-between',
             gap: 8,
             paddingRight: 8,
-            borderBottom: '1px solid var(--border-color, #e2e8f0)',
-            background: 'var(--bg-2, #fff)',
+            borderBottom: '1px solid var(--border-color)',
+            background: 'var(--bg-toolbar)',
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>
             <CanvasTabs onOpenManager={() => setShowCanvasManager(true)} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={() => setShowDashboard(true)}
+              title="📊 项目总控（Flex Pool + 运行状态 + 跨画布依赖）"
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                padding: 6, borderRadius: 6, display: 'flex', alignItems: 'center',
+                justifyContent: 'center', color: 'var(--text-secondary)', fontSize: 16,
+                lineHeight: 1, transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e: any) => (e.currentTarget.style.background = 'var(--accent-bg)')}
+              onMouseLeave={(e: any) => (e.currentTarget.style.background = 'transparent')}
+            >
+              📊
+            </button>
+            <MentionButton />
             <Bell />
             <UserChip />
           </div>
@@ -3552,6 +3589,37 @@ export default function Canvas() {
 
       {/* v1.5 D3 画布管理抽屉 */}
       <CanvasManager open={showCanvasManager} onClose={() => setShowCanvasManager(false)} />
+
+      {/* v2.0 Phase C：总控画布侧滑面板 */}
+      {showDashboard && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'var(--bg-overlay)', zIndex: 10000,
+            display: 'flex', justifyContent: 'flex-end',
+          }}
+          onClick={(e: any) => { if (e.target === e.currentTarget) setShowDashboard(false); }}
+        >
+          <div style={{
+            width: 480, maxWidth: '90vw', height: '100%',
+            background: 'var(--bg-card)', borderLeft: '1px solid var(--border-color)',
+            boxShadow: '-4px 0 24px rgba(0,0,0,0.12)', display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 16px', borderBottom: '1px solid var(--border-color)',
+            }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>📊 项目总控</span>
+              <button onClick={() => setShowDashboard(false)} style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                fontSize: 18, color: 'var(--text-secondary)', padding: 4,
+              }}>✕</button>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              <DashboardView />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 「是否存储画布为常用功能？」确认框（点存常用功能但未选中节点时弹出） */}
       {showSaveAllConfirm && (

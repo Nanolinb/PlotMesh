@@ -15,6 +15,7 @@ import { getDataDir } from '../utils/storePath.js';
 import { readPayload } from '../utils/storeIO.js';
 import { listRuns } from './runStore.js';
 import { notifyDailyDigest } from './pmNotify.js';
+import { runSuggestRound } from './pmSuggest.js';
 
 let _intervalId = null;
 let _digestHour = 9;   // 默认每天 09:00 发日报
@@ -68,6 +69,14 @@ async function runDigestRound() {
   }
   // eslint-disable-next-line no-console
   console.log(`✓ AI PM 日报完成：${sent}/${owned.length} 张有主画布`);
+
+  // L4 主动建议：同一轮顺带跑结构分析（去重窗口内不重复打扰）
+  try {
+    await runSuggestRound(serverLlmCall);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[pmDigest] 主动建议轮失败：', e.message);
+  }
   return sent;
 }
 

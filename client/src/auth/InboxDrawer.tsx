@@ -232,6 +232,8 @@ export default function InboxDrawer({ open, onClose }: Props) {
                   {it.kind === 'reference' && '🔗 '}
                   {it.kind === 'execution' && '⚠️ '}
                   {it.kind === 'daily' && '📊 '}
+                  {it.kind === 'mention' && '💬 '}
+                  {it.kind === 'suggestion' && '💡 '}
                   {it.title}
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>

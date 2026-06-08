@@ -10,12 +10,18 @@
  *
  * 跨域：app.use(cors()) 默认全开；上线时建议改成白名单（读 ALLOWED_ORIGINS）。
  */
-import 'dotenv/config';
+// ⚠️ 必须第一行 import：在任何其它模块（routes/llm.js 等）求值 process.env 之前
+// 完成 server/.env 加载。ESM import 会被提升，故用独立模块承载加载逻辑。
+import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import llmRouter from './routes/llm.js';
 import uploadRouter from './routes/upload.js';
 import syncRouter from './routes/sync.js';
@@ -25,12 +31,11 @@ import canvasRouter from './routes/canvas.js';
 import authRouter from './routes/auth.js';
 import inboxRouter from './routes/inbox.js';
 import eventsRouter from './routes/events.js';
+import dashboardRouter from './routes/dashboard.js';
+import projectRouter from './routes/project.js';
 import { printApiTokenBanner } from './middleware/apiToken.js';
 import { optionalAuth } from './auth/middleware.js';
 import { getServerConfig } from './utils/serverConfig.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -66,6 +71,10 @@ app.use('/api/canvas', canvasRouter);
 // v2.0-α Phase A 步 2：inbox + SSE 多 channel
 app.use('/api/inbox', inboxRouter);
 app.use('/api/events', eventsRouter);
+// v2.0 Phase C：总控画布 + Flex Pool
+app.use('/api/dashboard', dashboardRouter);
+// v2.0 Phase C 续：项目一等实体
+app.use('/api/project', projectRouter);
 
 // 健康检查
 app.get('/health', (_req, res) => {
@@ -114,8 +123,10 @@ app.listen(PORT, HOST, async () => {
   // v2.0 Phase C 步 7：AI PM —— 把 inbox SSE 广播器注入 pmNotify（L1 失败实时推送）
   try {
     const { setPmBroadcaster } = await import('./runner/pmNotify.js');
+    const { setSuggestBroadcaster } = await import('./runner/pmSuggest.js');
     const { broadcastInbox } = await import('./routes/events.js');
     setPmBroadcaster(broadcastInbox);
+    setSuggestBroadcaster(broadcastInbox);
   } catch (e) {
     console.warn('⚠️  注入 AI PM 广播器失败：', e.message);
   }

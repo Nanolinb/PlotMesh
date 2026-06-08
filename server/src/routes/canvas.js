@@ -41,7 +41,7 @@ import { runCanvas } from '../runner/runCanvas.js';
 import { saveRun, getRun, listRuns } from '../runner/runStore.js';
 import { emitRunEvent, disposeRunBus } from '../runner/runEvents.js';
 // v2.0 Phase C 步 7：AI PM L1 stuck/失败通知
-import { notifyRunResult } from '../runner/pmNotify.js';
+import { notifyRunResult, notifyMention } from '../runner/pmNotify.js';
 // v1.7 P2-A：跨画布引用
 import {
   listConnections,
@@ -1267,5 +1267,36 @@ router.patch('/:id/claim-ownership', (req, res) => {
 // =============================================================
 // schedules CRUD 已在 GET /:id 之前注册（路由顺序敏感）
 // =============================================================
+
+// v2.0 Phase C 步 7 L3：@提及卷入项目团队
+// POST /api/canvas/:id/mention  { toUserId | toEmail, nodeId?, message? }
+//   → 自动 share 画布给对方（若未 share）+ 投 mention inbox（带跳转 action）+ SSE
+router.post('/:id/mention', async (req, res) => {
+  const fromId = req.user?.id;
+  if (!fromId) return res.status(401).json({ error: 'unauthorized' });
+  const { toUserId, toEmail, nodeId = null, message = '' } = req.body || {};
+
+  // 解析目标用户（id 优先，否则按 email 查）
+  let target = null;
+  try {
+    if (toUserId) target = await getUserById(toUserId);
+    else if (toEmail) {
+      const { getUserByEmail } = await import('../auth/usersStore.js');
+      target = await getUserByEmail(toEmail);
+    }
+  } catch { /* ignore */ }
+  if (!target) return res.status(404).json({ error: 'user_not_found', message: '找不到要 @ 的用户' });
+  if (target.id === fromId) return res.status(400).json({ error: 'cannot_mention_self', message: '不能 @ 自己' });
+
+  const r = notifyMention({
+    canvasId: req.params.id,
+    nodeId,
+    fromUser: { userId: fromId, name: reqUserName(req) },
+    toUserId: target.id,
+    message,
+  });
+  if (!r.ok) return res.status(400).json(r);
+  return res.json({ ok: true, autoShared: r.autoShared, mentionId: r.entry?.id || null });
+});
 
 export default router;

@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useNodeStore } from '../store/nodes';
-import { listCanvases } from '../store/storage';
+import { listCanvases, getCanvas, putCanvas } from '../store/storage';
 import type { Canvas as CanvasRecord } from '../types/db';
 import {
   type Folder,
@@ -28,6 +28,15 @@ import {
   toggleHidden,
   setHiddenBatch,
 } from '../utils/canvasVisibility';
+import { useAuth } from '../auth/authContext';
+import { authFetch } from '../auth/api';
+
+interface ProjectBrief {
+  id: string;
+  name: string;
+  color: string;
+  myRole: string | null;
+}
 
 interface CanvasManagerProps {
   open: boolean;
@@ -35,6 +44,8 @@ interface CanvasManagerProps {
 }
 
 export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
+  const { phase } = useAuth();
+  const isLoggedIn = phase === 'ready';
   const activeCanvasId = useNodeStore((s) => s.activeCanvasId);
   const activeCanvasName = useNodeStore((s) => s.activeCanvasName);
   const switchActiveCanvas = useNodeStore((s) => s.switchActiveCanvas);
@@ -52,6 +63,9 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
   const [editingFolderName, setEditingFolderName] = useState('');
   const [draggingCanvasId, setDraggingCanvasId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null); // null 不画 hover；'__none__' = 未分类
+  // v2.0：项目归属（仅登录态）
+  const [projects, setProjects] = useState<ProjectBrief[]>([]);
+  const [assignMenuFor, setAssignMenuFor] = useState<string | null>(null); // 正在为哪张画布选项目
 
   const refresh = async () => {
     try {
@@ -69,15 +83,56 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
       setFolderMap(m);
       const hs = await loadHiddenSet();
       setHiddenSet(hs);
+      // 登录态：拉项目列表用于"归属到项目"
+      if (isLoggedIn) {
+        try {
+          const r = await authFetch('/api/project/list');
+          const d = await r.json();
+          if (r.ok) setProjects((d.projects || []).filter((p: any) => p.id !== '__unassigned'));
+        } catch { /* 离线忽略 */ }
+      }
     } catch (e) {
       console.warn('[plotmesh] CanvasManager 读列表失败：', e);
+    }
+  };
+
+  /** 把画布归属到项目（同步 server + 本地 IDB 的 projectId 字段） */
+  const assignToProject = async (canvasId: string, projectId: string | null) => {
+    setAssignMenuFor(null);
+    try {
+      if (projectId) {
+        const r = await authFetch(`/api/project/${projectId}/assign-canvas`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ canvasId }),
+        });
+        if (!r.ok) { const d = await r.json(); alert(`归属失败：${d.error}`); return; }
+        const rec = await getCanvas(canvasId);
+        if (rec) await putCanvas({ ...rec, projectId });
+      } else {
+        // 移出到未分类：找当前所属项目调 unassign
+        const rec = await getCanvas(canvasId);
+        const curPid = (rec as any)?.projectId;
+        if (curPid && curPid !== 'project-default') {
+          const r = await authFetch(`/api/project/${curPid}/assign-canvas`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ canvasId, unassign: true }),
+          });
+          if (!r.ok) { const d = await r.json(); alert(`移出失败：${d.error}`); return; }
+        }
+        if (rec) await putCanvas({ ...rec, projectId: 'project-default' });
+      }
+      refresh();
+    } catch (e: any) {
+      alert(`操作失败：${e.message}`);
     }
   };
 
   useEffect(() => {
     if (open) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeCanvasId, activeCanvasName]);
+  }, [open, activeCanvasId, activeCanvasName, isLoggedIn]);
 
   const handleSwitch = async (id: string) => {
     if (id === activeCanvasId || busy) return;
@@ -266,7 +321,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
           margin: '2px 0',
           borderRadius: 6,
           cursor: isActive ? 'default' : 'pointer',
-          background: isActive ? 'var(--accent-light, #eef2ff)' : 'transparent',
+          background: isActive ? 'var(--accent-bg)' : 'transparent',
           border: isActive
             ? '1px solid var(--accent, #6366f1)'
             : '1px solid transparent',
@@ -275,7 +330,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
         onMouseEnter={(e) => {
           if (!isActive)
             (e.currentTarget as HTMLElement).style.background =
-              'var(--bg-1, #f1f5f9)';
+              'var(--bg-card-body)';
         }}
         onMouseLeave={(e) => {
           if (!isActive)
@@ -316,8 +371,74 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
               hour: '2-digit',
               minute: '2-digit',
             })}
+            {isLoggedIn && (() => {
+              const pid = (rec as any).projectId;
+              const proj = pid && pid !== 'project-default' ? projects.find((p) => p.id === pid) : null;
+              return proj ? (
+                <span style={{
+                  marginLeft: 6, fontSize: 9, padding: '0 5px', borderRadius: 8,
+                  background: `${proj.color}22`, color: proj.color,
+                }}>{proj.name}</span>
+              ) : null;
+            })()}
           </div>
         </div>
+        {/* 归属到项目（仅登录态） */}
+        {isLoggedIn && (
+          <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+            <button
+              className="package-delete-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setAssignMenuFor(assignMenuFor === rec.id ? null : rec.id);
+              }}
+              title="归属到项目"
+              style={{ fontSize: 12 }}
+            >
+              📁→
+            </button>
+            {assignMenuFor === rec.id && (
+              <div style={{
+                position: 'absolute', right: 0, top: '100%', zIndex: 1100,
+                marginTop: 4, minWidth: 160, padding: 4, borderRadius: 6,
+                background: 'var(--bg-card)', border: '1px solid var(--border-color)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+              }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', padding: '4px 8px' }}>归属到项目</div>
+                {projects.length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 8px', fontStyle: 'italic' }}>
+                    暂无项目，请在「📊 项目总控」新建
+                  </div>
+                )}
+                {projects.map((p) => (
+                  <button key={p.id}
+                    onClick={(e) => { e.stopPropagation(); assignToProject(rec.id, p.id); }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                      padding: '6px 8px', fontSize: 12, border: 'none', borderRadius: 4,
+                      background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', textAlign: 'left',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-card-body)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: p.color, flexShrink: 0 }} />
+                    {p.name}
+                  </button>
+                ))}
+                {(rec as any).projectId && (rec as any).projectId !== 'project-default' && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); assignToProject(rec.id, null); }}
+                    style={{
+                      display: 'block', width: '100%', marginTop: 2, padding: '6px 8px',
+                      fontSize: 11, border: 'none', borderTop: '1px solid var(--border-color)',
+                      background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', textAlign: 'left',
+                    }}
+                  >移出项目（未分类）</button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <button
           className="package-delete-btn"
           onClick={(e) => {
@@ -609,7 +730,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
               fontSize: 12,
               border: '1px solid var(--border-color, #e2e8f0)',
               borderRadius: 6,
-              background: 'var(--bg-1, #f8fafc)',
+              background: 'var(--bg-input)',
               color: 'var(--text-primary, #1e293b)',
               boxSizing: 'border-box',
             }}
@@ -646,7 +767,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
                     padding: '6px 4px',
                     background:
                       dragOverFolderId === '__none__'
-                        ? 'var(--accent-light, #eef2ff)'
+                        ? 'var(--accent-bg)'
                         : 'transparent',
                     borderRadius: 4,
                     transition: 'background 0.15s',

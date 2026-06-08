@@ -44,8 +44,8 @@ export default function LoginPage() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'var(--bg, #f8fafc)',
-        color: 'var(--text-primary, #1e293b)',
+        background: 'var(--bg-page)',
+        color: 'var(--text-primary)',
       }}
     >
       <div
@@ -53,9 +53,9 @@ export default function LoginPage() {
           width: 360,
           padding: 28,
           borderRadius: 12,
-          background: 'var(--bg-2, #fff)',
-          border: '1px solid var(--border-color, #e2e8f0)',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.06)',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-color)',
+          boxShadow: 'var(--shadow-card, 0 4px 20px rgba(0,0,0,0.06))',
         }}
       >
         <div style={{ textAlign: 'center', marginBottom: 20 }}>

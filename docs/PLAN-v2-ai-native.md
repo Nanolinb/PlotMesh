@@ -246,15 +246,31 @@ mentions       (id, fromUser, toUser, canvasId, nodeId, message, readAt)
 | 步 | 内容 | 周期 | 复用 / 产出 |
 |---|---|---|---|
 | 5 ✅ | AI 节点 emit MVP：ai-builder + dry-run 预览 + 单次 commit | 1-2 天 | 复用步 1 users + 步 2 ownerId + 步 3 Reference + 步 4 主题节点；emit 不跨边界；契约给步 6/7 |
-| 6 ✅部分 | AI 节点 emit 完整版：ghost 半透明预览 + 显式 Slot 端口；（Flex Pool 三层人员 + PM 调度面板待后续） | 3 天 | 复用步 5 emit；Flex Pool 给步 7 PM 调度 |
-| 7 ✅L1+L2 | AI PM：L1 stuck/失败检测 → inbox + 重试按钮；L2 日报定时；（L3 派发 @人 / L4 主动建议待后续） | 2-3 天 | 复用步 6 完整 emit + 步 2 inbox；为 v3.0 Art Bible 打基础 |
+| 6 ✅ | AI 节点 emit 完整版：ghost 半透明预览 + 显式 Slot 端口 + Flex Pool 三层人员 + PM 调度面板 | 3 天 | 复用步 5 emit；Flex Pool 给步 7 PM 调度 |
+| 7 ✅ | AI PM：L1 stuck/失败 → inbox 重试 / L2 日报 / L3 @提及卷入 / L4 主动建议 + Flex Pool 调度面板 | 2-3 天 | 复用步 6 完整 emit + 步 2 inbox；为 v3.0 Art Bible 打基础 |
 
 **步 6 实现状态（2026-06-02，✅ ghost 预览 + Slot 端口；Flex Pool 待后续）**：
 - ghost 半透明预览：`GhostNode.tsx`（虚线 + 透明度 0.72）；Canvas useMemo 把所有 preview 态 aiBuilder 的 pendingEmit 算成临时 ghost 节点/边（不进 store），合并进 `displayNodes/displayEdges` 传给 ReactFlow；应用后 ghost 自动消失
 - 显式 Slot 端口：节点 data 可声明 `slots: string[]`（可被 AI patch 的字段边界）；`aiEmit.getNodeSlots()` 优先用节点 slots，未声明回退全局 PATCHABLE_FIELDS；`sanitizeEmitPlan(plan, existingNodes)` 按目标节点的 Slot 边界过滤 patch；collectContext 把 slots 暴露给 LLM
 - 浏览器实测：preview → 画布出现 2 个 ghost 节点（react-flow__node-ghostNode）→ slot 护栏拦截越界字段（tp-1 slots=['label']，AI 想改 status 被拦）→ 应用后 ghost 消失 + 真实节点落盘 + label 改成功 status 不变
 - **已知小限制**：React Flow v12 受控模式批量加节点+边时，两端都是新节点的边渲染有测量时序延迟（数据正确，刷新即显）；ghost 边同理。不影响 ghost 节点核心价值
-- **待后续**：Flex Pool 三层人员 + PM 调度面板
+
+**Flex Pool + 总控画布实现状态（2026-06-05，✅ 完成）**：
+- **Flex Pool 三层人员**：画布从 `ownerId + sharedWith[]` 升级为 `flexPool: [{userId, role, joinedAt}]`，role 取值 `owner/admin/editor/viewer`；`migrateToFlexPool()` 自动迁移旧数据（ownerId→owner，sharedWith→editor）；同步维护 `sharedWith` 向后兼容
+- 后端 API（`routes/dashboard.js`）：
+  - `GET /api/dashboard/overview` → 项目级聚合（按 ownerId 分组），含子画布运行状态、跨画布依赖图、堵车预警、成员池
+  - `GET /api/dashboard/project/:ownerId` → 单项目详细总控数据
+  - `GET /api/dashboard/canvas/:id/flex-pool` → 读取画布 Flex Pool（丰富用户名/色/邮箱）
+  - `PATCH /api/dashboard/canvas/:id/flex-pool` → 加人/改角色（action=add/setRole，支持邮箱查用户）
+  - `DELETE /api/dashboard/canvas/:id/flex-pool/:userId` → 移除成员（不能移 owner）
+  - `POST /api/dashboard/broadcast` → owner 一键广播给项目成员（投 inbox kind=mention）
+  - `POST /api/dashboard/batch-retry` → owner 批量重试失败画布
+- 前端组件：
+  - `DashboardView.tsx`：项目总控面板，俯瞰视图（画布状态色标/堵车预警/跨画布依赖）+ Flex Pool 视图（成员角色色标）；宏观操作（📢提醒全员/🔄批量重试）
+  - Canvas 顶栏 `📊` 入口按钮 → 侧滑面板打开 DashboardView
+  - `AdminPanel.tsx` 增加「📊 Flex Pool」子区：按项目分组管理成员（添加/移除/改角色）
+- 数据来源全现成：runner runStore（运行状态）、connections（跨画布依赖图）、inbox（失败事件），缺的只是聚合视图层
+- 验证：进程内 API 测试全通（认领画布→overview聚合4画布→flex-pool读取owner角色→广播sent=0/排除自己→batch-retry触发运行）
 
 **步 7 实现状态（2026-06-02，✅ L1+L2；L3/L4 待后续）**：
 - L1 监听层：`pmNotify.notifyRunResult(run)` —— runCanvasJob 失败时给画布 owner 投 kind=execution inbox（带「重试运行」action）+ SSE 实时推送；成功不打扰、无主画布不发
@@ -262,7 +278,10 @@ mentions       (id, fromUser, toUser, canvasId, nodeId, message, readAt)
 - 前端：InboxDrawer 接 execution 的 `retry-canvas`（调 /:id/run）+ daily 的 `open-canvas`（switchActiveCanvas）；kind 图标 ⚠️/📊/🔗 区分
 - 注入：index.js 启动时 setPmBroadcaster(broadcastInbox) + startPmDigest({digestHour:9})；env PLOTMESH_PM_DIGEST_HOUR 可调
 - 验证：进程内 8 项断言（失败投/成功不打扰/无主不发/重试action/日报LLM总结/无变更不发）全过；浏览器实测 owner 登录 → Bell 见失败通知+重试按钮+日报+打开按钮 → 点重试真调 /run API + 标已处理
-- **待后续**：L3 派发层（stuck 检测主动 @人）、L4 主动建议（server 跑 ai-builder 写 inbox）
+- **L3 @提及卷入（2026-06-02 ✅）**：`pmNotify.notifyMention({canvasId,nodeId,fromUser,toUserId,message})` —— 自动 share 画布给对方（若未 share）+ 投 kind=mention inbox（带跳转 action）+ SSE 推送；`POST /api/canvas/:id/mention`（toUserId 或 toEmail）；前端 `MentionDialog.tsx`（选成员/留言）+ `MentionButton.tsx`（顶栏 @ 入口，仅登录态）。验证：进程内 share+mention 链路通；浏览器 Alice @ Bob → cv-a 自动 share + Bob inbox 收到「Alice 在『营销文案』@了你」带跳转
+- **L4 主动建议（2026-06-02 ✅）**：`pmSuggest.js` —— 规则启发式（analyzeCanvasStructure：llm-no-downstream/crossoutput-no-target/isolated-node/no-output-node）+ 可选 LLM 润色 → 投 kind=suggestion inbox 给 owner（带「查看节点」action）；指纹去重（canvasId+ruleId+nodeId，7天窗口）；并入 pmDigestScheduler 同一日报轮触发。验证：进程内检测 3 问题→投 3 建议→去重重跑投 0
+- 前端 InboxDrawer kind 图标全套：⚠️execution / 📊daily / 🔗reference / 💬mention / 💡suggestion；mention/suggestion 的 open-canvas action 复用已有 handler
+- **待后续**：总控画布更细粒度的 macro 操作（如宏观调节节点参数、AI PM 在总控内嵌入调度卡片）
 
 **管理面板增强（2026-06-02，✅ 完成）**：
 - AdminPanel 拆三子区：👤 成员（原功能）/ ⚙️ server 设置 / 📜 引用审计

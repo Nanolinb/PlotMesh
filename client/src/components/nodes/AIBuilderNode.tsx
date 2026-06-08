@@ -29,6 +29,8 @@ function AIBuilderNode({ id, data, selected }: Props) {
   const status: string = data.status || 'idle';
   const scope: Scope = data.contextScope || 'upstream';
   const plan: EmitPlan | null = data.pendingEmit || null;
+  // 是否在应用时为每个"末端结论节点"自动附加一个输出节点（默认开）
+  const autoOutput: boolean = data.autoOutput !== false;
 
   const set = useCallback((patch: Record<string, any>) => {
     updateNodeData(id, patch as any);
@@ -114,6 +116,49 @@ function AIBuilderNode({ id, data, selected }: Props) {
       target: resolve(e.to),
     })).filter((e) => e.source && e.target);
 
+    // ── v2.0 步5+：一键为"末端结论节点"生成对应数量的输出节点 ──
+    // 末端结论 = 本批新建节点里、在本批 edges 中没有出边的"内容产出型"节点
+    //（llm / textTransform / extract / 各类 chart 等；本身就是 output 的不再挂 output）
+    const autoOutputNodes: any[] = [];
+    const autoOutputEdges: any[] = [];
+    if (autoOutput) {
+      const CONTENT_TYPES = new Set([
+        'llm', 'textTransform', 'extract', 'splitter',
+        'pieChart', 'barChart', 'themeNode', 'condition', 'webLink',
+      ]);
+      // 统计本批每个 tmpId 作为 source 的出边数
+      const outDegree = new Map<string, number>();
+      plan.edges.forEach((e) => {
+        // 只统计指向"本批新节点"的边（resolve 后仍是新 id 才算批内末端判断）
+        outDegree.set(e.from, (outDegree.get(e.from) || 0) + 1);
+      });
+      let oi = 0;
+      plan.nodes.forEach((n) => {
+        const isLeaf = (outDegree.get(n.tmpId) || 0) === 0;
+        if (!isLeaf) return;
+        if (!CONTENT_TYPES.has(n.type)) return; // 非内容产出型（如纯输入）不挂
+        const srcRealId = idMap[n.tmpId];
+        if (!srcRealId) return;
+        const outId = `output-${now}-auto${oi}-${Math.random().toString(36).slice(2, 5)}`;
+        const srcPos = positions[n.tmpId] || { x: anchor.x + 260, y: anchor.y + oi * 160 };
+        autoOutputNodes.push({
+          id: outId,
+          type: 'output',
+          position: { x: srcPos.x + 280, y: srcPos.y },
+          data: {
+            type: 'output', label: `📤 ${n.label || '输出'}`, status: 'idle',
+            format: 'markdown', __emittedBy: id, __commitId: plan.commitId,
+          },
+        });
+        autoOutputEdges.push({
+          id: `e-emit-${now}-auto${oi}`,
+          source: srcRealId,
+          target: outId,
+        });
+        oi += 1;
+      });
+    }
+
     // patches：改现有节点（已护栏过滤字段）
     let patchedNodes = [...store.nodes];
     for (const p of plan.patches) {
@@ -123,12 +168,12 @@ function AIBuilderNode({ id, data, selected }: Props) {
     }
 
     useNodeStore.setState({
-      nodes: [...patchedNodes, ...newNodes],
-      edges: [...store.edges, ...newEdges],
+      nodes: [...patchedNodes, ...newNodes, ...autoOutputNodes],
+      edges: [...store.edges, ...newEdges, ...autoOutputEdges],
     } as any);
     // 标记自身已应用
     updateNodeData(id, { status: 'applied', pendingEmit: null, appliedAt: now } as any);
-  }, [plan, id, updateNodeData]);
+  }, [plan, id, updateNodeData, autoOutput]);
 
   const discardPlan = useCallback(() => {
     set({ status: 'idle', pendingEmit: null, rationale: '' });
@@ -214,6 +259,14 @@ function AIBuilderNode({ id, data, selected }: Props) {
                 </div>
               ))}
             </div>
+            {/* 一键生成输出节点开关 */}
+            <label className="nodrag" onClick={(e) => e.stopPropagation()}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 11, cursor: 'pointer', color: 'var(--text-secondary)' }}>
+              <input type="checkbox" checked={autoOutput}
+                onChange={(e) => set({ autoOutput: e.target.checked })}
+                style={{ cursor: 'pointer' }} />
+              为每个结论节点自动挂输出节点
+            </label>
             <div style={{ display: 'flex', gap: 6 }}>
               <button className="nodrag" onClick={(e) => { e.stopPropagation(); applyPlan(); }}
                 style={{ flex: 1, fontSize: 11, padding: '4px 8px', borderRadius: 5, fontWeight: 600,
