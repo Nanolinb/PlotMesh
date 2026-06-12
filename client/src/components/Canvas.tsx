@@ -61,6 +61,8 @@ import BarChartNode from './nodes/BarChartNode';
 import GenericChartNode, { sanitizeSvg } from './nodes/GenericChartNode';
 // v1.7 alpha：仪表盘（多图形 → HTML grid）
 import DashboardNode, { buildDashboardHtml } from './nodes/DashboardNode';
+// v2.0：成品聚合节点（多上游 → PPT/PDF/合并文档）
+import AggregateNode from './nodes/AggregateNode';
 // v1.7 alpha：通用 LLM 数据提取节点（自由文本 → 标准 JSON）
 import ExtractNode, { EXTRACT_SCHEMAS, extractJsonValue } from './nodes/ExtractNode';
 // v1.7 alpha：图形样式契约（双输入饼图等用）
@@ -108,6 +110,8 @@ const nodeTypes = {
   extract: ExtractNode,
   genericChart: GenericChartNode,
   dashboard: DashboardNode,
+  // v2.0 成品聚合节点
+  aggregate: AggregateNode,
 };
 
 let idCounter = 0;
@@ -268,6 +272,15 @@ function getDefaultData(type: string): any {
       theme: 'light',
       panels: [],            // [{ title, svg }] 收集到的图
       output: '',            // 完整 HTML 文档
+      status: 'idle',
+    };
+    case 'aggregate': return {
+      type: 'aggregate',
+      label: '📦 成品汇总',
+      docTitle: '',
+      format: 'pptx',        // pptx | pdf | docx | markdown | web
+      output: '',            // 聚合后的章节文本
+      sectionCount: 0,
       status: 'idle',
     };
     default: return { type: 'textPrompt', label: '', text: '', promptNumber: 0, status: 'idle' };
@@ -2499,6 +2512,42 @@ export default function Canvas() {
               output: html,
             } as any);
             log(`  📊 仪表盘合成 ${panels.length} 张图 → HTML ${html.length} 字符${layoutIn ? `（布局 ${layoutIn.rows}×${layoutIn.cols}）` : ''}`);
+          }
+        }
+
+        // v2.0 成品聚合节点：把多个上游输出按编号顺序聚成"章节"，导出 PPT/PDF/文档。
+        // 每个上游 = 一个章节；用 SECTION_DELIM 串接，导出时 parseSections 还原。
+        if (data.type === 'aggregate') {
+          // 按编号顺序收集每条上游边的内容（剥文件前缀），各成一段
+          const orderedChunks = filteredEdges
+            .filter((e: any) => e.target === nodeId)
+            .map((e: any, idx: number) => {
+              const pn = nodeLookup.get(e.source)?.data?.promptNumber;
+              return { edge: e, srcId: e.source, sortKey: typeof pn === 'number' ? pn : Number.MAX_SAFE_INTEGER, tieBreak: idx };
+            })
+            .sort((a, b) => (a.sortKey - b.sortKey) || (a.tieBreak - b.tieBreak))
+            .map(({ edge, srcId }) => {
+              const v = stripFilePrefix(readResultForEdge(edge) || '');
+              if (!v.trim()) return '';
+              // 用上游节点的 label 作章节标题（若有），否则让 parseSections 自动取首行
+              const srcNode = nodeLookup.get(srcId);
+              const srcLabel = (srcNode?.data?.label || '').trim();
+              // 已经以 markdown 标题开头就不再加，避免重复
+              const hasHeading = /^#{1,6}\s/.test(v) || /^[^\n:：]{1,24}[:：]\s*$/.test(v.split('\n')[0] || '');
+              return srcLabel && !hasHeading ? `# ${srcLabel}\n${v}` : v;
+            })
+            .filter((s) => s.trim());
+
+          const SECTION_DELIM = '\n\n<<<PLOTMESH_SECTION>>>\n\n';
+          const merged = orderedChunks.join(SECTION_DELIM);
+          if (!merged.trim()) {
+            results.set(nodeId, '');
+            storeUpdateNodeData(nodeId, { status: 'error', error: '无上游输入', output: '', sectionCount: 0 } as any);
+            log(`  📦 成品聚合：上游无输入`);
+          } else {
+            results.set(nodeId, merged);
+            storeUpdateNodeData(nodeId, { status: 'success', output: merged, sectionCount: orderedChunks.length } as any);
+            log(`  📦 成品聚合 ${orderedChunks.length} 个章节（${merged.length} 字符）`);
           }
         }
 

@@ -25,7 +25,7 @@ export const MAX_EMIT_NODES = 20;
 export const EMITTABLE_TYPES = [
   'textPrompt', 'llm', 'output', 'textTransform', 'condition',
   'webLink', 'fileUpload', 'splitter', 'pieChart', 'barChart',
-  'extract', 'themeNode',
+  'extract', 'themeNode', 'aggregate',
 ];
 
 /** patches 允许修改的字段全局白名单（slot 边界兜底，防 AI 改坏关键状态）

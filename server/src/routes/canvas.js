@@ -264,6 +264,14 @@ const NODE_TYPES_SCHEMA = {
     },
     notes: '多输入 target 边：每条上游需含 data.svg（饼图/自由图形）；输出完整 HTML 文档',
   },
+  aggregate: {
+    description: '成品聚合节点（v2.0）：把多个上游输出按编号顺序聚成"章节"，导出 PPT/PDF/Word/Markdown/网页',
+    defaultData: {
+      type: 'aggregate', label: '📦 成品汇总',
+      docTitle: '', format: 'pptx', output: '', sectionCount: 0, status: 'idle',
+    },
+    notes: '多输入 target 边：每条上游 = 一个章节（用上游 label 作章节标题）；format 取 pptx|pdf|docx|markdown|web',
+  },
 };
 
 // =============================================================

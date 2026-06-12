@@ -58,6 +58,7 @@ const NODE_CATEGORIES: Array<{
       { type: 'condition', label: '🔀 条件分支', description: '按关键词分流' },
       { type: 'splitter', label: '🔀 分叉', description: '一段切成 N 路输出' },
       { type: 'output', label: '📤 输出', description: '预览/下载/复制/腾讯文档' },
+      { type: 'aggregate', label: '📦 成品汇总', description: '聚合多个上游 → 导出 PPT/PDF/Word/网页' },
     ],
   },
   {

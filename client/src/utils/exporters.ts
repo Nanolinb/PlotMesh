@@ -531,3 +531,204 @@ export function openAsWeb(text: string, opts?: { title?: string }): void {
     }
   }
 }
+
+/* ───────────────────────────────────────────────────────────────
+ * 成品聚合（Aggregate）导出 —— v2.0 Phase B 步 4
+ * ---------------------------------------------------------------
+ * 把"多个上游各自的输出"按段落（section）聚合成一份成品：
+ *   - PPTX：每个 section 一页幻灯（标题 + 正文要点）
+ *   - PDF ：每个 section 一页（中文受 jsPDF 字体限制，做基础排版）
+ *   - 多段 DOCX / Markdown / Web 复用已有渲染（加分隔标题）
+ * section 的切分：调用方先把每个上游产出拼成
+ *   "=== 标题 ===\n正文"  的块，用 SECTION_DELIM 连接；
+ *   也兼容用户直接喂一整段（按 Markdown H1/H2 或空行兜底切分）。
+ * ─────────────────────────────────────────────────────────────── */
+
+/** 聚合节点用的 section 分隔符（executeFlow 拼接多上游时插入） */
+export const SECTION_DELIM = '\n\n<<<PLOTMESH_SECTION>>>\n\n';
+
+export interface AggregateSection {
+  title: string;
+  body: string;
+}
+
+/**
+ * 把聚合后的大字符串解析成 section[]。
+ * 优先按显式 SECTION_DELIM 切；每块第一行若是「# 标题」/「标题：」/短行，取作标题。
+ * 没有分隔符时，退化为按 Markdown H1/H2 切分；再不行整体作一个 section。
+ */
+export function parseSections(text: string, fallbackTitle = '内容'): AggregateSection[] {
+  const raw = (text || '').trim();
+  if (!raw) return [];
+
+  let blocks: string[];
+  if (raw.includes(SECTION_DELIM.trim())) {
+    blocks = raw.split(/\s*<<<PLOTMESH_SECTION>>>\s*/).map((b) => b.trim()).filter(Boolean);
+  } else {
+    // 按 Markdown 一级/二级标题切分（保留标题行）
+    const parts = raw.split(/\n(?=#{1,2}\s)/).map((b) => b.trim()).filter(Boolean);
+    blocks = parts.length > 1 ? parts : [raw];
+  }
+
+  return blocks.map((block, i): AggregateSection => {
+    const lines = block.split(/\r?\n/);
+    let title = '';
+    let bodyStart = 0;
+    const first = (lines[0] || '').trim();
+    const hMatch = first.match(/^#{1,6}\s+(.*)$/);
+    const colonMatch = first.match(/^([^:：]{1,24})[:：]\s*$/);
+    if (hMatch) {
+      title = hMatch[1].trim();
+      bodyStart = 1;
+    } else if (colonMatch) {
+      title = colonMatch[1].trim();
+      bodyStart = 1;
+    } else if (first.length > 0 && first.length <= 24 && lines.length > 1) {
+      // 短首行当标题
+      title = first;
+      bodyStart = 1;
+    } else {
+      title = `${fallbackTitle} ${i + 1}`;
+    }
+    const body = lines.slice(bodyStart).join('\n').trim() || block;
+    return { title, body };
+  });
+}
+
+/** 把一段正文拆成"要点"行（去掉 markdown 列表符号/空行），用于 PPT 项目符号 */
+function bodyToBullets(body: string, maxBullets = 12): string[] {
+  const lines = body.split(/\r?\n/)
+    .map((l) => l.replace(/^\s*[-*+]\s+/, '').replace(/^\s*\d+\.\s+/, '').trim())
+    .filter((l) => l && !/^#{1,6}\s/.test(l) && !/^[-=*]{3,}$/.test(l));
+  return lines.slice(0, maxBullets);
+}
+
+/**
+ * 导出 PPTX：每个 section 一页（标题 + 要点）。首页为封面。
+ * 用动态 import 避免把 pptxgenjs 打进主包。
+ */
+export async function exportAsPptx(
+  sections: AggregateSection[],
+  { filename, title }: BaseOpts & { title?: string },
+): Promise<void> {
+  const PptxGenJS = (await import('pptxgenjs')).default;
+  const pptx = new PptxGenJS();
+  pptx.defineLayout({ name: 'PM_WIDE', width: 13.333, height: 7.5 });
+  pptx.layout = 'PM_WIDE';
+
+  const ACCENT = '6366F1';
+  const DARK = '1F2937';
+  const GRAY = '6B7280';
+
+  // 封面
+  const cover = pptx.addSlide();
+  cover.background = { color: 'F8FAFC' };
+  cover.addShape(pptx.ShapeType.rect, { x: 0, y: 3.0, w: 13.333, h: 0.08, fill: { color: ACCENT } });
+  cover.addText(title || '成品汇总', {
+    x: 0.8, y: 2.0, w: 11.7, h: 1.0, fontSize: 40, bold: true, color: DARK, align: 'left',
+  });
+  cover.addText(`共 ${sections.length} 个章节 · PlotMesh 生成 · ${new Date().toLocaleDateString('zh-CN')}`, {
+    x: 0.8, y: 3.2, w: 11.7, h: 0.5, fontSize: 14, color: GRAY, align: 'left',
+  });
+
+  // 内容页
+  for (let i = 0; i < sections.length; i++) {
+    const s = sections[i];
+    const slide = pptx.addSlide();
+    slide.background = { color: 'FFFFFF' };
+    // 顶部标题条
+    slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 1.1, fill: { color: ACCENT } });
+    slide.addText(s.title, {
+      x: 0.6, y: 0.15, w: 12.1, h: 0.8, fontSize: 24, bold: true, color: 'FFFFFF',
+      align: 'left', valign: 'middle',
+    });
+    slide.addText(`${i + 1} / ${sections.length}`, {
+      x: 11.6, y: 6.9, w: 1.5, h: 0.4, fontSize: 11, color: GRAY, align: 'right',
+    });
+    const bullets = bodyToBullets(s.body);
+    if (bullets.length) {
+      slide.addText(
+        bullets.map((b) => ({ text: b, options: { bullet: { code: '2022' }, fontSize: 16, color: DARK, paraSpaceAfter: 6 } })),
+        { x: 0.7, y: 1.4, w: 11.9, h: 5.6, valign: 'top', align: 'left' },
+      );
+    } else {
+      slide.addText(s.body.slice(0, 800), {
+        x: 0.7, y: 1.4, w: 11.9, h: 5.6, fontSize: 15, color: DARK, valign: 'top', align: 'left',
+      });
+    }
+  }
+
+  // pptxgenjs 在浏览器用 writeFile 触发下载
+  await pptx.writeFile({ fileName: filename });
+}
+
+/** 多段 DOCX：每个 section 一个 H1 标题 + 正文段落 */
+export async function exportSectionsAsDocx(
+  sections: AggregateSection[],
+  { filename, title }: BaseOpts & { title?: string },
+): Promise<void> {
+  const children: Paragraph[] = [];
+  if (title) children.push(new Paragraph({ text: title, heading: HeadingLevel.TITLE }));
+  for (const s of sections) {
+    children.push(new Paragraph({ text: s.title, heading: HeadingLevel.HEADING_1 }));
+    children.push(...textToDocxParagraphs(s.body));
+    children.push(new Paragraph({ text: '' }));
+  }
+  const doc = new Document({ sections: [{ properties: {}, children }] });
+  const blob = await Packer.toBlob(doc);
+  triggerDownload(blob, filename);
+}
+
+/** 多段 PDF：每个 section 一页（基础排版；中文受 jsPDF 内置字体限制） */
+export function exportSectionsAsPdf(
+  sections: AggregateSection[],
+  { filename, title }: BaseOpts & { title?: string },
+): void {
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 48;
+  const maxW = pageW - margin * 2;
+
+  // 封面
+  doc.setFontSize(26);
+  doc.text(title || 'Aggregated Output', margin, 160);
+  doc.setFontSize(12);
+  doc.setTextColor(120);
+  doc.text(`${sections.length} sections · PlotMesh · ${new Date().toLocaleDateString()}`, margin, 190);
+  doc.setTextColor(0);
+
+  for (let i = 0; i < sections.length; i++) {
+    const s = sections[i];
+    doc.addPage();
+    let y = margin;
+    doc.setFontSize(18);
+    doc.setFont(undefined as any, 'bold');
+    const titleLines = doc.splitTextToSize(s.title, maxW);
+    doc.text(titleLines, margin, y);
+    y += titleLines.length * 22 + 8;
+    doc.setFont(undefined as any, 'normal');
+    doc.setFontSize(12);
+    const bodyLines = doc.splitTextToSize(s.body, maxW);
+    for (const line of bodyLines) {
+      if (y > pageH - margin) { doc.addPage(); y = margin; }
+      doc.text(line, margin, y);
+      y += 18;
+    }
+    doc.setFontSize(9);
+    doc.setTextColor(150);
+    doc.text(`${i + 1} / ${sections.length}`, pageW - margin, pageH - 20, { align: 'right' });
+    doc.setTextColor(0);
+  }
+  doc.save(filename);
+}
+
+/** 多段聚合成一份 Markdown 文本（每段 H1 标题） */
+export function sectionsToMarkdown(sections: AggregateSection[], title?: string): string {
+  const parts: string[] = [];
+  if (title) parts.push(`# ${title}\n`);
+  for (const s of sections) {
+    parts.push(`## ${s.title}\n\n${s.body}\n`);
+  }
+  return parts.join('\n');
+}

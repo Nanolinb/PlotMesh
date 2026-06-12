@@ -223,16 +223,21 @@ mentions       (id, fromUser, toUser, canvasId, nodeId, message, readAt)
 | 步 | 内容 | 周期 | 复用 / 产出 |
 |---|---|---|---|
 | 3 ✅ | Reference 合约状态机（active/pending/accepted/rejected/cancelled）+ 跨用户握手 + CancellationRecord 永久审计（connectionsArchive）+ 前端审批 UI | 2 天 | 复用步 1 users + 步 2 ownerId/inbox/SSE；状态机给步 4 主题节点跨人引用 + 步 5/6 emit patches |
-| 4 ⏳MVP | 主题节点（样式 + 定调合并）+ Slot 语义端口 + 成品聚合节点（PPT/PDF） | 3-4 天 | 复用步 3 Reference；Slot 给步 5/6 emit 识别可改边界 |
+| 4 ✅ | 主题节点（样式 + 定调合并）+ Slot 语义端口 + 成品聚合节点（PPT/PDF） | 3-4 天 | 复用步 3 Reference；Slot 给步 5/6 emit 识别可改边界 |
 
-**步 4 实现状态（2026-06-01，✅ 主题节点 MVP 完成；Slot + 成品聚合导出待后续）**：
+**步 4 实现状态（2026-06-01 主题节点 MVP；2026-06-12 成品聚合节点完成 → 步 4 全部 ✅）**：
 - 决策：作用机制=**连线广播**；第一刀=主题节点 MVP；导出=先复用 exporters，PPT/PDF 后续接 skill
 - `themeNode` 节点：role='tone'(定调:基调/受众/禁忌词) | 'style'(样式:配色/字体/版式) | 'merged'(读上游 tone+style 边实时合成有效主题，只读)
 - `utils/themeMerge.ts`：computeEffectiveTheme 沿入边合并（支持链式 merged 递归一层防环）；themeToSummary 序列化
 - 广播：Canvas useEffect 监听 nodes/edges，merged 沿出边注入下游子节点 data.appliedTheme（变化才写防循环）；OutputNode/LLMNode 显示「🎨 主题」chip
 - 注册 5 处：Canvas import+nodeTypes+getDefaultData、Sidebar（新增"主题"分类）、server NODE_TYPES_SCHEMA
 - 浏览器实测：tone+style→merged 合并2上游 → merged→output 广播 appliedTheme="专业严谨·科技紫/无衬线" → 断连自动清除 ✓
-- **待后续**：Slot 语义端口（标记子节点可改边界，给步5/6 emit 用）+ 成品聚合节点（PPT/PDF 导出）
+- **成品聚合节点（2026-06-12 ✅）**：`AggregateNode.tsx`（type=`aggregate`）—— 把多个上游输出**按 promptNumber 升序**聚成"章节"（每个上游=1章节，用上游 label 作章节标题），导出 PPT/PDF/DOCX/Markdown/网页
+  - 导出器（`utils/exporters.ts` 新增）：`exportAsPptx`（pptxgenjs，封面+每章一页幻灯，标题条+要点项目符号）/ `exportSectionsAsDocx`（每章 H1+正文）/ `exportSectionsAsPdf`（每章一页，jsPDF 中文受限）/ `sectionsToMarkdown` / 复用 `openAsWeb`；`parseSections` 用 `SECTION_DELIM='<<<PLOTMESH_SECTION>>>'` 还原章节（兼容无分隔符时按 Markdown H1/H2 切）
+  - executeFlow `aggregate` 分支：按编号顺序收集各上游、剥文件前缀、上游 label 作标题、SECTION_DELIM 串接；写 output + sectionCount
+  - 依赖：新增 `pptxgenjs@4.0.1`（vite 动态 import 单独 code-split 成 pptxgen.es chunk，不进主包）
+  - 注册 5 处齐全；EMITTABLE_TYPES 加 aggregate（AI 构建器可生成）
+  - 验证：tsc 通过 / vite build 通过（pptxgen 独立 chunk）/ parseSections 3 用例单测 PASS / server types 含 aggregate
 
 **步 3 实现状态（2026-06-01，✅ 后端 + 前端全通）**：
 - 后端：`referenceContract.js` 状态机 + `crossCanvas.js` 投递门 + `canvas.js` 握手路由（accept/reject/cancel/pending）+ inbox(kind=reference)/SSE 联动。21 项端到端断言通过

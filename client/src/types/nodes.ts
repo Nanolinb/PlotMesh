@@ -13,6 +13,7 @@ export enum NodeType {
   LLM = 'llm',
   OUTPUT = 'output',
   WEB_LINK = 'webLink', // v1.5.2 新增：抓取 wiki / 在线文档 / 新闻等
+  AGGREGATE = 'aggregate', // v2.0 新增：成品聚合节点（多上游 → PPT/PDF/合并文档）
 }
 
 // 模型类型
@@ -184,12 +185,39 @@ export interface WebLinkNodeData {
   error?: string;
 }
 
+/** v2.0 成品聚合节点：把多个上游输出按章节聚合后导出为成品 */
+export type AggregateFormat = 'pptx' | 'pdf' | 'docx' | 'markdown' | 'web';
+
+export const AGGREGATE_FORMAT_OPTIONS: { value: AggregateFormat; label: string }[] = [
+  { value: 'pptx', label: 'PPT 幻灯片 (.pptx)' },
+  { value: 'pdf', label: 'PDF 文档 (.pdf)' },
+  { value: 'docx', label: 'Word 文档 (.docx)' },
+  { value: 'markdown', label: 'Markdown (.md)' },
+  { value: 'web', label: '网页 (浏览器打开)' },
+];
+
+export interface AggregateNodeData {
+  type: NodeType.AGGREGATE;
+  label: string;
+  /** 成品标题（封面/文档标题），留空用 label */
+  docTitle?: string;
+  /** 导出格式 */
+  format: AggregateFormat;
+  status: NodeStatus;
+  /** 运行时：聚合后的完整文本（章节用分隔符串接） */
+  output: string;
+  /** 运行时：解析出的章节数（仅展示用） */
+  sectionCount?: number;
+  error?: string;
+}
+
 export type CustomNodeData =
   | FileUploadNodeData
   | TextPromptNodeData
   | LLMNodeData
   | OutputNodeData
-  | WebLinkNodeData;
+  | WebLinkNodeData
+  | AggregateNodeData;
 
 /**
  * v1.6.0-β SwimlaneNode 数据形态（独立类型，故意不进 NodeType enum）
