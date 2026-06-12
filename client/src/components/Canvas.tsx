@@ -3585,7 +3585,7 @@ export default function Canvas() {
             <select
               value={autosaveMin}
               onChange={(e) => setAutosaveMin(parseInt(e.target.value, 10))}
-              style={{ fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border, #d1d5db)', background: 'transparent', color: 'inherit' }}
+              style={{ fontSize: 11, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border-color)', background: 'transparent', color: 'inherit' }}
             >
               <option value="0">关闭</option>
               {[1, 2, 3, 5, 10, 15].map((m) => (

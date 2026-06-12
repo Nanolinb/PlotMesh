@@ -5,6 +5,36 @@
 
 ---
 
+## [2.0.0] — 2026-06-12
+
+> 🎉 **v2.0 正式版**：从「单机离线工具」正式升级为「人 AI 协同 + 多人协作 + AI 原生画布」。
+> Phase A（协作底座）/ B（合约 + 主题 + 成品聚合）/ C（AI emit + AI PM）全部完成。
+
+### Added · 新增
+
+- **项目一等实体**
+  - 项目升级为服务端第一类实体（`store.json.payload.projects[]`），含 name/description/color/flexPool/folders/canvasFolderMap
+  - 完整 CRUD（`/api/project`）：创建/列表/详情/更新/删除；画布一键归属项目；多层文件夹嵌套（parentId）
+  - Flex Pool 三层人员（owner/admin/editor/viewer）项目级成员调度
+  - `DashboardView` 总控面板（📊）：项目俯瞰图 + 成员管理 + 文件夹管理 + 宏观操作（提醒全员/批量重试）
+  - 画布管理抽屉加「归属到项目」入口 + 项目色徽章
+- **成品聚合节点（📦 成品汇总）**
+  - 把多个上游输出**按编号顺序**聚成「章节」（每上游=1 章节，用上游 label 作标题）
+  - 一键导出 **PPT（pptxgenjs，封面+每章一页）/ PDF / Word / Markdown / 网页**
+  - `utils/exporters.ts` 新增 `exportAsPptx` / `exportSectionsAsDocx` / `exportSectionsAsPdf` / `parseSections` / `sectionsToMarkdown`
+- **AI 构建器完整版（Phase C 步 6）**：画布上 ghost 半透明预览 + 显式 Slot 语义端口（标记可改字段边界）+ 一键为结论节点自动挂输出节点
+- **AI PM（Phase C 步 7，L1-L4 全层）**：L1 节点失败/卡住 → inbox 通知带「重试」按钮；L2 每日画布日报定时；L3 @提及自动卷入协作（授权+跳转）；L4 看画布结构主动给优化建议（规则启发式+LLM 润色，指纹去重）
+- **管理员控制台增强**：拆 👤 成员 / ⚙️ 服务端设置（联网/自助注册/远端访问开关）/ 📜 引用审计 三子区
+
+### Fixed · 修复
+
+- **关键词节点(textPrompt)按编号顺序合并**：executeFlow 新增共享 `collectUpstream`，所有单输入下游节点（llm/output/condition/textTransform/extract/timeline/splitter/crossOutput/aggregate）改为按源节点 `promptNumber` 升序收集**全部**上游（旧逻辑只保留最后一条边，串接多个文本提示词时丢内容）
+- **API Key「丢失」**：dotenv 改为 `loadEnv.js` 绝对路径加载（不依赖启动 CWD），作为 index.js 首个 import，任意目录启动都能读到 `server/.env`
+- **项目创建后消失/无法创建**：`/api/sync/snapshot` PUT 时对 server 权威集合做 union-by-id 合并保护（projects/connections/canvases.projectId），避免前端 IDB 全量快照覆盖擦掉 server 管理的项目
+- **暗色模式 hover 看不清画布名**：清理不存在的 CSS 变量（`--bg-1`/`--accent-light`/`--border`/`--bg-2`），换成真实变量（`--bg-card-body`/`--accent-bg`/`--border-color`/`--bg-card`）
+
+---
+
 ## [1.7.0-alpha.5] — 2026-06-02
 
 > v2.0 协作底座 + AI 原生能力一系列落地（Phase A/B/C 主干跑通）+ 双 README 重写。

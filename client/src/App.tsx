@@ -251,9 +251,9 @@ function App() {
           onClick={() => window.location.reload()}
           style={{
             padding: '6px 16px',
-            border: '1px solid var(--border, #e2e8f0)',
+            border: '1px solid var(--border-color)',
             borderRadius: 6,
-            background: 'var(--bg-2, #fff)',
+            background: 'var(--bg-card)',
             cursor: 'pointer',
           }}
         >
@@ -285,9 +285,9 @@ function App() {
           onClick={() => window.location.reload()}
           style={{
             padding: '6px 16px',
-            border: '1px solid var(--border, #e2e8f0)',
+            border: '1px solid var(--border-color)',
             borderRadius: 6,
-            background: 'var(--bg-2, #fff)',
+            background: 'var(--bg-card)',
             cursor: 'pointer',
           }}
         >
