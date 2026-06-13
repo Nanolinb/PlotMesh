@@ -15,7 +15,7 @@
  * 节点本身预览：在节点 body 里显示一个迷你 thumbnails 列表（已收集到几个 SVG）。
  */
 import { Handle, Position } from '@xyflow/react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';
 import { applyLayoutToPanels, type ParsedLayout } from '../../utils/dashboardLayout';
 
@@ -159,6 +159,48 @@ function DashboardNode({ id, data, selected }: Props) {
   // v1.7-alpha 后期：layout 由上游 layout 端口流入，executeFlow 写到 data.layoutIn
   const layoutIn: ParsedLayout | null = data.layoutIn || null;
 
+  /**
+   * 主动抓取上游图形节点的 SVG（不跑整画布），合成 HTML 写入 data.output。
+   * 上游需含 data.svg（饼图/柱图/自由图形已生成过）。按连线顺序去重收集。
+   */
+  const handlePull = useCallback(() => {
+    const state = useNodeStore.getState();
+    const allNodes = state.nodes as any[];
+    const allEdges = state.edges as any[];
+    const seen = new Set<string>();
+    const collected: Array<{ title?: string; svg: string }> = [];
+    allEdges
+      .filter((e: any) => e.target === id && (e.targetHandle === 'data' || !e.targetHandle))
+      .forEach((e: any) => {
+        if (seen.has(e.source)) return;
+        const src = allNodes.find((n: any) => n.id === e.source);
+        const svg = src?.data?.svg;
+        if (svg && typeof svg === 'string') {
+          seen.add(e.source);
+          collected.push({ title: src.data.label || '图', svg });
+        }
+      });
+    if (collected.length === 0) {
+      updateNodeData(id, { status: 'error', error: '上游暂无图形（请先运行图形节点，或确认已生成 SVG）' } as any);
+      return;
+    }
+    const html = buildDashboardHtml(collected, {
+      title: data.gridTitle || data.label || '仪表盘',
+      columns: data.columns ?? 2,
+      theme: (data.theme as 'light' | 'dark') ?? 'light',
+      layout: layoutIn,
+    });
+    updateNodeData(id, { status: 'success', panels: collected, output: html, error: '' } as any);
+  }, [id, updateNodeData, data.gridTitle, data.label, data.columns, data.theme, layoutIn]);
+
+  /** 在浏览器新标签页打开已生成的 HTML */
+  const handleOpen = useCallback(async () => {
+    if (!data.output) return;
+    const { openAsWeb } = await import('../../utils/exporters');
+    openAsWeb(data.output, { title: data.gridTitle || data.label || '仪表盘' });
+  }, [data.output, data.gridTitle, data.label]);
+
+
   return (
     <div className={`node-card dashboard-node ${selected ? 'selected' : ''}`} data-status={status}>
       {/* 双输入：上=数据（图形节点），下=布局（Markdown 表 / grid-template-areas） */}
@@ -300,6 +342,32 @@ function DashboardNode({ id, data, selected }: Props) {
           <div style={{ marginTop: 6, fontSize: 11, color: '#10b981' }}>
             ✅ 已生成 HTML（{(data.output || '').length} 字符）
           </div>
+        )}
+
+        {/* 主动抓取上游图形 + 直接查看（无需再接输出节点） */}
+        <button
+          className="nodrag"
+          onClick={(e) => { e.stopPropagation(); handlePull(); }}
+          title="主动抓取上游图形节点已生成的 SVG 并合成 HTML（无需运行整个画布）"
+          style={{
+            width: '100%', marginTop: 8, fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer',
+            border: '1px solid var(--accent)', background: 'var(--accent-bg)', color: 'var(--accent)', fontWeight: 600,
+          }}
+        >
+          ↯ 抓取上游图形
+        </button>
+        {data.output && (
+          <button
+            className="nodrag"
+            onClick={(e) => { e.stopPropagation(); handleOpen(); }}
+            title="在浏览器新标签页打开生成的仪表盘 HTML"
+            style={{
+              width: '100%', marginTop: 6, fontSize: 12, padding: '5px 8px', borderRadius: 6, cursor: 'pointer',
+              border: '1px solid var(--border-color)', background: 'var(--bg-card-body)', color: 'var(--text-primary)', fontWeight: 600,
+            }}
+          >
+            🌐 浏览器打开
+          </button>
         )}
       </div>
     </div>

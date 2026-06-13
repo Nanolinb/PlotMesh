@@ -167,32 +167,15 @@ export function exportAsXlsx(text: string, { filename }: BaseOpts): void {
   triggerDownload(blob, filename);
 }
 
-/** 导出 PDF（真正的 PDF 文件） */
+/** 导出 PDF（真正的 PDF 文件）。
+ *  v2.0 修复中文乱码：jsPDF 内置字体不含中文字形。改用 canvas 渲染（系统中文字体）
+ *  再把每页贴成图片进 PDF。文字变位图（不可选中），但中文显示正确。 */
 export function exportAsPdf(text: string, { filename }: BaseOpts): void {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  // jsPDF 自带字体不支持中文；需要嵌入中文字体。此处退而求其次：
-  // 把中文字符转写到 UTF-8 字节流后以 Courier 渲染。这里先用自带字体显示英文，
-  // 中文能显示但可能缺字形——作为基础版本，未来可加载 NotoSansSC 字体改善。
-  doc.setFont('helvetica');
-  doc.setFontSize(11);
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 40;
-  const usableW = pageWidth - margin * 2;
-  const lineHeight = 16;
-  let y = margin;
-
-  // 把长段落按宽度切行
-  const lines = doc.splitTextToSize(text, usableW);
-  for (const line of lines) {
-    if (y + lineHeight > pageHeight - margin) {
-      doc.addPage();
-      y = margin;
-    }
-    doc.text(line, margin, y);
-    y += lineHeight;
-  }
-  doc.save(filename);
+  // 复用多段 PDF 的 canvas 渲染：把整段文本当作单个 section（无标题）
+  exportSectionsAsPdf(
+    [{ title: '', body: text }],
+    { filename, title: '' },
+  );
 }
 
 /** 从 URL / base64 下载图片。如果 output 包含图片 URL，就下载它 */
@@ -679,46 +662,125 @@ export async function exportSectionsAsDocx(
   triggerDownload(blob, filename);
 }
 
-/** 多段 PDF：每个 section 一页（基础排版；中文受 jsPDF 内置字体限制） */
+/**
+ * 多段 PDF：每个 section 一页。
+ * v2.0 修复中文乱码：jsPDF 内置字体（Helvetica）不含中文字形，直接 doc.text 写中文会变乱码/方块。
+ * 改用 canvas 渲染——canvas 用系统字体（含中文），把每页画到 canvas 再作为图片贴进 PDF。
+ * 代价：PDF 里文字变成位图（不可选中/搜索），但中文显示正确，对"成品导出"场景更重要。
+ */
 export function exportSectionsAsPdf(
   sections: AggregateSection[],
   { filename, title }: BaseOpts & { title?: string },
 ): void {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const margin = 48;
-  const maxW = pageW - margin * 2;
+  const pageW = doc.internal.pageSize.getWidth();   // ~595pt
+  const pageH = doc.internal.pageSize.getHeight();  // ~842pt
+  const SCALE = 2;                                   // 2x 超采样，文字更清晰
+  const cw = Math.round(pageW * SCALE);
+  const ch = Math.round(pageH * SCALE);
+  const margin = 48 * SCALE;
+  const maxW = cw - margin * 2;
+  const FONT = '-apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif';
+
+  // 在 canvas 上按字宽折行
+  const wrap = (ctx: CanvasRenderingContext2D, text: string, width: number): string[] => {
+    const out: string[] = [];
+    for (const rawLine of String(text).split(/\r?\n/)) {
+      if (rawLine === '') { out.push(''); continue; }
+      let cur = '';
+      for (const chTxt of rawLine) {
+        if (ctx.measureText(cur + chTxt).width > width && cur) {
+          out.push(cur);
+          cur = chTxt;
+        } else {
+          cur += chTxt;
+        }
+      }
+      out.push(cur);
+    }
+    return out;
+  };
+
+  const renderPage = (draw: (ctx: CanvasRenderingContext2D) => void): string => {
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.textBaseline = 'top';
+    draw(ctx);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  };
+
+  let first = true;
+  const addImagePage = (dataUrl: string) => {
+    if (!first) doc.addPage();
+    first = false;
+    doc.addImage(dataUrl, 'JPEG', 0, 0, pageW, pageH);
+  };
 
   // 封面
-  doc.setFontSize(26);
-  doc.text(title || 'Aggregated Output', margin, 160);
-  doc.setFontSize(12);
-  doc.setTextColor(120);
-  doc.text(`${sections.length} sections · PlotMesh · ${new Date().toLocaleDateString()}`, margin, 190);
-  doc.setTextColor(0);
+  addImagePage(renderPage((ctx) => {
+    ctx.fillStyle = '#6366f1';
+    ctx.fillRect(0, 300 * SCALE, cw, 6 * SCALE);
+    ctx.fillStyle = '#1f2937';
+    ctx.font = `bold ${40 * SCALE}px ${FONT}`;
+    const tLines = wrap(ctx, title || '成品汇总', maxW);
+    let y = 200 * SCALE;
+    for (const l of tLines) { ctx.fillText(l, margin, y); y += 52 * SCALE; }
+    ctx.fillStyle = '#6b7280';
+    ctx.font = `${14 * SCALE}px ${FONT}`;
+    ctx.fillText(`共 ${sections.length} 个章节 · PlotMesh 生成 · ${new Date().toLocaleDateString('zh-CN')}`, margin, 320 * SCALE);
+  }));
 
+  // 内容页（每段可能跨多页）
   for (let i = 0; i < sections.length; i++) {
     const s = sections[i];
-    doc.addPage();
-    let y = margin;
-    doc.setFontSize(18);
-    doc.setFont(undefined as any, 'bold');
-    const titleLines = doc.splitTextToSize(s.title, maxW);
-    doc.text(titleLines, margin, y);
-    y += titleLines.length * 22 + 8;
-    doc.setFont(undefined as any, 'normal');
-    doc.setFontSize(12);
-    const bodyLines = doc.splitTextToSize(s.body, maxW);
-    for (const line of bodyLines) {
-      if (y > pageH - margin) { doc.addPage(); y = margin; }
-      doc.text(line, margin, y);
-      y += 18;
+    // 先在一个临时 ctx 上算行
+    const probe = document.createElement('canvas').getContext('2d')!;
+    probe.textBaseline = 'top';
+    probe.font = `bold ${22 * SCALE}px ${FONT}`;
+    const titleLines = wrap(probe, s.title, maxW);
+    probe.font = `${15 * SCALE}px ${FONT}`;
+    const bodyLines = wrap(probe, s.body, maxW);
+
+    const TITLE_LH = 30 * SCALE;
+    const BODY_LH = 24 * SCALE;
+    const topY = margin;
+    const bottomY = ch - margin;
+
+    // 把行拆分到多页
+    let li = 0;
+    let pageNo = 0;
+    while (li < bodyLines.length || pageNo === 0) {
+      const isFirstPageOfSection = pageNo === 0;
+      addImagePage(renderPage((ctx) => {
+        let y = topY;
+        if (isFirstPageOfSection) {
+          // 标题色条
+          ctx.fillStyle = '#eef2ff';
+          ctx.fillRect(0, 0, cw, (titleLines.length * 30 + 28) * SCALE);
+          ctx.fillStyle = '#4338ca';
+          ctx.font = `bold ${22 * SCALE}px ${FONT}`;
+          for (const l of titleLines) { ctx.fillText(l, margin, y + 14 * SCALE); y += TITLE_LH; }
+          y += 28 * SCALE;
+        }
+        ctx.fillStyle = '#1f2937';
+        ctx.font = `${15 * SCALE}px ${FONT}`;
+        while (li < bodyLines.length && y + BODY_LH < bottomY) {
+          ctx.fillText(bodyLines[li], margin, y);
+          y += BODY_LH;
+          li++;
+        }
+        // 页脚页码
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = `${10 * SCALE}px ${FONT}`;
+        ctx.fillText(`${i + 1} / ${sections.length}`, cw - margin - 40 * SCALE, ch - 28 * SCALE);
+      }));
+      pageNo++;
+      if (li >= bodyLines.length) break;
     }
-    doc.setFontSize(9);
-    doc.setTextColor(150);
-    doc.text(`${i + 1} / ${sections.length}`, pageW - margin, pageH - 20, { align: 'right' });
-    doc.setTextColor(0);
   }
   doc.save(filename);
 }

@@ -2575,10 +2575,11 @@ export default function Canvas() {
       log('✅ 全部执行完成！');
     } catch (err: any) {
       log(`❌ 出错：${err.message}`);
+      // 仅在出错时自动弹日志，方便排查；正常运行不打扰，用户可点工具栏 📋 手动查看
+      setShowLog(true);
     } finally {
       setIsRunning(false);
       setRunningGroupId(null);
-      setShowLog(true);
     }
   };
 
