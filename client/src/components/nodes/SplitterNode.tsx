@@ -181,11 +181,20 @@ function SplitterNode({ id, data, selected }: Props) {
     const state = useNodeStore.getState();
     const allNodes = state.nodes as any[];
     const allEdges = state.edges as any[];
-    // 找所有指向本节点的边
-    const incoming = allEdges.filter((e) => e.target === id);
+    // 找所有指向本节点的边。
+    // ⚠ v2.0 修复：按源节点 data.promptNumber 升序排序（与 executeFlow 的 collectUpstream 一致）。
+    //   之前用原始边数组顺序 → 用户只改文本节点编号、内容不变时，combined 结果完全相同，
+    //   导致"改了编号却抓不出新顺序"。现在编号决定合并顺序，改编号后再抓取即生效。
+    const incoming = allEdges
+      .filter((e) => e.target === id)
+      .map((e: any, idx: number) => {
+        const src = allNodes.find((n: any) => n.id === e.source);
+        const pn = src?.data?.promptNumber;
+        return { e, src, sortKey: typeof pn === 'number' ? pn : Number.MAX_SAFE_INTEGER, tieBreak: idx };
+      })
+      .sort((a, b) => (a.sortKey - b.sortKey) || (a.tieBreak - b.tieBreak));
     let combined = '';
-    incoming.forEach((e: any) => {
-      const src = allNodes.find((n: any) => n.id === e.source);
+    incoming.forEach(({ e, src }) => {
       if (!src) return;
       const sd: any = src.data || {};
       let val = '';
@@ -420,12 +429,49 @@ function SplitterNode({ id, data, selected }: Props) {
     });
   }, [id, updateNodeData, splitMode, delimiter, regex, data.autoOutputs, data.outputLayout, data.outputLabelMode, data.derivedOutputIds]);
 
+  /**
+   * 重置分叉节点：清空已抓取的上游缓存 + 端子数，并删除自动派生的 OutputNode 及连边。
+   * 适用场景：
+   *   - 上游结构/编号大改后想从干净状态重抓
+   *   - 自动派生的输出节点连乱了想清掉重来
+   * 不影响上游节点本身，只清本分叉的"抓取产物"。
+   */
+  const resetSplitter = useCallback(() => {
+    const prevDerived: string[] = Array.isArray(data.derivedOutputIds) ? data.derivedOutputIds : [];
+    useNodeStore.setState((s: any) => {
+      // 删掉派生的 output 节点 + 任何与之相连的边
+      const nodesAfter = s.nodes.filter((n: any) => !prevDerived.includes(n.id));
+      const edgesAfter = s.edges.filter(
+        (e: any) => !prevDerived.includes(e.target) && !prevDerived.includes(e.source)
+      );
+      // 清空 splitter 自己的抓取缓存
+      const finalNodes = nodesAfter.map((n: any) => {
+        if (n.id !== id) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            upstreamText: '',
+            autoCommittedCount: 0,
+            derivedOutputIds: [],
+            status: 'idle',
+          },
+        };
+      });
+      return { nodes: finalNodes, edges: edgesAfter };
+    });
+  }, [id, data.derivedOutputIds]);
+
   // 实际渲染的端子数：
   //   manual → 用户固定 N
   //   auto   → 用户点过"生成"按钮的 autoCommittedCount；没点过时给 1（占位）
   const portCount = portMode === 'manual'
     ? manualCount
     : (autoCommittedCount && autoCommittedCount > 0 ? autoCommittedCount : 1);
+
+  // 是否已有"抓取产物"（缓存文本 / 已固化端子数 / 派生节点）→ 决定是否显示重置按钮
+  const hasCapture = !!(data.upstreamText || (autoCommittedCount && autoCommittedCount > 0)
+    || (Array.isArray(data.derivedOutputIds) && data.derivedOutputIds.length > 0));
 
   // 端子数 / 布局变化 → 通知 React Flow 重新读取 handle DOM 位置。
   // 不加这一步的话，刚增/减出来的 handle 或 Position 切换（Right ↔ Bottom）会有
@@ -605,6 +651,32 @@ function SplitterNode({ id, data, selected }: Props) {
                 }}
               >
                 {autoNeedsRegen ? `↻ 重新抓取 (${segments.length})` : `▶ 抓取并生成 (${segments.length || 0})`}
+              </button>
+            )}
+            {/* 重置：清空抓取缓存 + 删除自动派生的输出节点（两种端子模式下都可用） */}
+            {hasCapture && (
+              <button
+                className="nodrag"
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm('重置分叉节点？\n将清空已抓取的上游内容、端子数，并删除自动派生的输出节点（上游节点不受影响）。')) {
+                    resetSplitter();
+                  }
+                }}
+                title="重置：清空抓取缓存 + 删除自动派生的输出节点"
+                style={{
+                  fontSize: 11,
+                  padding: '3px 8px',
+                  borderRadius: 6,
+                  border: '1px solid var(--border-color, #d1d5db)',
+                  background: 'var(--bg-card-body, #fff)',
+                  color: 'var(--text-secondary, #64748b)',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                ⟲ 重置
               </button>
             )}
           </div>
