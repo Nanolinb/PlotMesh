@@ -105,6 +105,35 @@ router.patch('/change-password', requireAuth, async (req, res) => {
   }
 });
 
+// ── 登录页改密（无需 JWT，凭 邮箱 + 当前密码 校验）─────────
+//   场景：用户在登录页就想改密码（忘了想换、或被告知临时密码后首次更换）。
+//   安全级别等同登录：必须先用 邮箱 + 当前密码 通过 verifyBuiltinPassword，
+//   才允许设新密码。失败信息保持模糊（不区分"邮箱不存在"与"密码错"），防枚举。
+router.post('/change-password-with-credentials', async (req, res) => {
+  try {
+    const { email, currentPassword, newPassword } = req.body || {};
+    if (!email || !currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'missing_fields', message: '请填写邮箱、当前密码和新密码' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'weak_password', message: '新密码至少 6 位' });
+    }
+    if (newPassword === currentPassword) {
+      return res.status(400).json({ error: 'same_password', message: '新密码不能与当前密码相同' });
+    }
+    const verified = await verifyBuiltinPassword(email, currentPassword);
+    if (!verified) {
+      // 模糊提示，防账号枚举
+      return res.status(401).json({ error: 'invalid_credentials', message: '邮箱或当前密码不正确' });
+    }
+    await changePassword(verified.id, newPassword);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] change-password-with-credentials failed:', err);
+    return res.status(500).json({ error: 'internal', message: err.message });
+  }
+});
+
 // ── 当前用户 ───────────────────────────────────────────
 router.get('/me', requireAuth, (req, res) => {
   return res.json({ user: req.user });
