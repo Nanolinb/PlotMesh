@@ -30,7 +30,7 @@ import { Router } from 'express';
 import { readPayload, mutateStore } from '../utils/storeIO.js';
 import {
   requireApiToken,
-  requireLocalhost,
+  requireLocalhostOrAdmin,
   getApiToken,
   getTokenSource,
   resetApiToken,
@@ -38,6 +38,7 @@ import {
 import { getServerConfig, updateServerConfig } from '../utils/serverConfig.js';
 // v1.7 P1：server runner 双引擎
 import { runCanvas } from '../runner/runCanvas.js';
+import { formatTimelineTime } from '../runner/timelineNode.js';
 import { saveRun, getRun, listRuns } from '../runner/runStore.js';
 import { emitRunEvent, disposeRunBus } from '../runner/runEvents.js';
 // v2.0 Phase C 步 7：AI PM L1 stuck/失败通知
@@ -65,10 +66,10 @@ import { getUserById } from '../auth/usersStore.js';
 
 const router = Router();
 
-// ─── Auth 子路由（仅本机访问，前端 UI 与本地脚本用） ────────────
-// 这两条**不能**走 requireApiToken：让前端在不知道 token 时也能查/重置
-// 安全模型：requireLocalhost 严格限制只允许 127.0.0.1 / ::1
-router.get('/auth/token', requireLocalhost, (_req, res) => {
+// ─── Auth 子路由（本机或管理员访问） ───────────────────────────
+// 这两条不能走 requireApiToken：管理员需要在不知道 token 时查看或重置它。
+// NAS 下浏览器不在 server localhost，因此允许已经由 optionalAuth 验证的管理员 JWT。
+router.get('/auth/token', requireLocalhostOrAdmin, (_req, res) => {
   res.json({
     token: getApiToken(),
     source: getTokenSource(), // 'env' | 'file' | 'generated'
@@ -76,7 +77,7 @@ router.get('/auth/token', requireLocalhost, (_req, res) => {
   });
 });
 
-router.post('/auth/reset-token', requireLocalhost, (_req, res) => {
+router.post('/auth/reset-token', requireLocalhostOrAdmin, (_req, res) => {
   const result = resetApiToken();
   if (!result.ok) {
     return res.status(409).json(result);
@@ -89,11 +90,11 @@ router.post('/auth/reset-token', requireLocalhost, (_req, res) => {
 });
 
 // v1.6.2 server 行为开关（远端访问等）
-router.get('/auth/server-config', requireLocalhost, (_req, res) => {
+router.get('/auth/server-config', requireLocalhostOrAdmin, (_req, res) => {
   res.json(getServerConfig());
 });
 
-router.patch('/auth/server-config', requireLocalhost, (req, res) => {
+router.patch('/auth/server-config', requireLocalhostOrAdmin, (req, res) => {
   const patch = {};
   if (typeof req.body?.remoteAccess === 'boolean') {
     patch.remoteAccess = req.body.remoteAccess;
@@ -128,23 +129,46 @@ function findCanvas(payload, id, includeDeleted = false) {
 /** 节点类型 schema（让 AI 知道每种节点该填什么 data） */
 const NODE_TYPES_SCHEMA = {
   textPrompt: {
-    description: '文本提示词节点（手工输入文本作为下游输入）',
-    defaultData: { type: 'textPrompt', label: '✏️ 文本提示词', text: '', promptNumber: 1, status: 'idle' },
-    notes: 'text 字段是主要内容；promptNumber 是显示序号',
+    description: '文本提示词节点（可接收上游文本输出，并追加手工提示词）',
+    defaultData: { type: 'textPrompt', label: '✏️ 文本提示词', text: '', receivedText: '', promptNumber: 1, status: 'idle' },
+    notes: 'text 是手工补充内容；receivedText 由运行时从上游写入；输出顺序为上游文本后接手工文本；promptNumber 是显示序号',
   },
   fileUpload: {
     description: '文件上传节点（上传文件解析为文本）',
     defaultData: { type: 'fileUpload', label: '📁 文件上传', files: [], status: 'idle' },
     notes: 'files 数组由前端上传后填充；外部 AI 不应直接写 files',
   },
-  llm: {
-    description: '大模型节点（调用 LLM 处理上游文本）',
+  imageInput: {
+    description: '图片输入节点（上传并预览图片，作为多模态下游输入）',
+    defaultData: { type: 'imageInput', label: '🖼️ 图片输入', images: [], promptNumber: 1, weight: 1, status: 'idle' },
+    notes: 'images 数组由前端上传后填充；promptNumber 决定多图片节点输入顺序；weight 取 0~1、步进 0.1；外部 AI 不应伪造上传文件',
+  },
+  imageAI: {
+    description: '图片AI节点（上游文字 Prompt + 参考图片生成 PNG）',
     defaultData: {
-      type: 'llm', label: '🤖 大模型', model: 'deepseek',
-      customModelName: '', systemPrompt: '', temperature: 0.7,
-      status: 'idle', output: '', streamOutput: '',
+      type: 'imageAI', label: '🎨 图片AI', prompt: '', strength: 0.65,
+      transparent: false, size: '1024x1024', provider: 'openai', model: 'gpt-image-1',
+      images: [], status: 'idle', output: '',
     },
-    notes: 'model 取值: hunyuan/deepseek/glm/gpt/claude/kimi/qwen；customModelName 可填具体版本号',
+    notes: 'provider 取 openai/kimi；model 默认 gpt-image-1/kimi-k3；prompt 可与上游文字合并；reference handle 接 imageInput；strength 为 0~1；transparent=true 请求透明 PNG',
+  },
+  llm: {
+    description: '文本AI节点（调用 LLM 处理上游文本）',
+    defaultData: {
+      type: 'llm', label: '🤖 文本AI', model: 'deepseek',
+      customModelName: '', systemPrompt: '', temperature: 0.7,
+      status: 'idle', output: '', streamOutput: '', cachedOutputEmittedAt: undefined,
+    },
+    notes: 'model 取值: hunyuan/deepseek/glm/gpt/claude/kimi/qwen；customModelName 可填具体版本号；有 output 缓存时前端可手动下发给所有下游节点，不重新调用模型',
+  },
+  agent: {
+    description: 'Agent节点（自主多步推理 + 工具调用，内部跑 ReAct 循环）',
+    defaultData: {
+      type: 'agent', label: '🕵️ Agent', model: 'deepseek', customModelName: '',
+      task: '', systemPrompt: '', temperature: 0.3, maxSteps: 6,
+      status: 'idle', output: '', trace: [],
+    },
+    notes: 'model 不支持 claude（协议不兼容 function calling）；maxSteps 取 1~12，控制 ReAct 循环轮数；task 为节点内任务，可与上游指令文本合并；trace 是运行时循环过程记录',
   },
   output: {
     description: '输出节点（保存最终文本结果）',
@@ -173,7 +197,7 @@ const NODE_TYPES_SCHEMA = {
     defaultData: {
       type: 'timeline', label: '时间轴', durationSec: 15, fps: 30,
       pixelsPerSecond: 60, heightPx: 130, resizeMode: 'compress',
-      timeMode: 'seconds', cuts: [], status: 'idle',
+      timeMode: 'seconds', cuts: [], cutDescriptionsByTime: {}, derivedTextNodeIds: [], status: 'idle',
     },
   },
   swimlane: {
@@ -187,8 +211,12 @@ const NODE_TYPES_SCHEMA = {
   },
   webLink: {
     description: 'Web 链接节点（抓取网页/腾讯文档作为输入）',
-    defaultData: { type: 'webLink', label: '🔗 Web 链接', url: '', status: 'idle' },
-    notes: 'url 是 docs.qq.com 时自动走 MCP；可填 tencentDocsToken',
+    defaultData: {
+      type: 'webLink', label: '🔗 Web 链接', url: '', status: 'idle',
+      extractionMode: 'article', refreshPolicy: 'cache', captureLimit: 32768,
+      analysisMode: 'full', analysisQuery: '', analysisLimit: 24000,
+    },
+    notes: 'url 是 docs.qq.com 时自动走 MCP；采集范围与 LLM 分析范围分离，可配置正文/全文、缓存策略、关键词片段和字符预算',
   },
   crossOutput: {
     description: '跨画布输出（v1.7 P2-A）：把上游内容投递到另一个画布的 crossInput',
@@ -871,7 +899,89 @@ function ensureRunsArray(payload) {
   if (!Array.isArray(payload.runs)) payload.runs = [];
 }
 
-/**
+// 与 client/src/utils/timelineOutputs.ts 的 TIMELINE_DERIVED_TEXT_OFFSET_Y 保持一致。
+const TIMELINE_DERIVED_TEXT_OFFSET_Y = -170;
+
+function syncTimelineDerivedTextNodes(canvas, timelineNode, derived) {
+  if (!canvas || !timelineNode || !derived || !Array.isArray(derived.cuts)) return;
+  const { cuts, descriptionsByTime = {}, fps = 30, durationSec = 15, mode = 'seconds' } = derived;
+  const keyOf = (seconds) => String(Math.round(seconds * 100) / 100);
+  const safeId = (seconds) => keyOf(seconds).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const baseX = timelineNode.position?.x || 0;
+  const baseY = timelineNode.position?.y || 0;
+  const desired = cuts.map((seconds, index) => ({
+    seconds,
+    index,
+    id: `timeline-text-${timelineNode.id}-${safeId(seconds)}`,
+    text: descriptionsByTime[keyOf(seconds)] || `时间点 ${formatTimelineTime(seconds, mode, fps)}`,
+    position: {
+      x: Math.round(baseX + 30 + index * 216),
+      y: Math.round(baseY + TIMELINE_DERIVED_TEXT_OFFSET_Y),
+    },
+  }));
+  const desiredIds = new Set(desired.map((item) => item.id));
+  const previous = (canvas.nodes || []).filter((node) =>
+    node.data?.timelineAutoGenerated === true && node.data?.timelineSourceId === timelineNode.id
+  );
+  const previousById = new Map(previous.map((node) => [node.id, node]));
+  const removedIds = new Set(previous.filter((node) => !desiredIds.has(node.id)).map((node) => node.id));
+  const nodesAfterDelete = (canvas.nodes || []).filter((node) => !removedIds.has(node.id));
+  const updatedNodes = nodesAfterDelete.map((node) => {
+    const item = desired.find((candidate) => candidate.id === node.id);
+    if (!item) return node;
+    const oldGeneratedText = node.data?.timelineGeneratedText;
+    const userEdited = typeof oldGeneratedText === 'string' && node.data?.text !== oldGeneratedText;
+    return {
+      ...node,
+      position: item.position,
+      data: {
+        ...node.data,
+        label: `✏️ ${formatTimelineTime(item.seconds, mode, fps)}`,
+        text: userEdited ? node.data.text : item.text,
+        timelineGeneratedText: item.text,
+        timelineSeconds: item.seconds,
+        status: 'idle',
+      },
+    };
+  });
+  const created = desired
+    .filter((item) => !previousById.has(item.id) && !nodesAfterDelete.some((node) => node.id === item.id))
+    .map((item) => ({
+      id: item.id,
+      type: 'textPrompt',
+      position: item.position,
+      ...(timelineNode.parentId ? { parentId: timelineNode.parentId } : {}),
+      data: {
+        type: 'textPrompt',
+        label: `✏️ ${formatTimelineTime(item.seconds, mode, fps)}`,
+        text: item.text,
+        promptNumber: 0,
+        status: 'idle',
+        timelineAutoGenerated: true,
+        timelineSourceId: timelineNode.id,
+        timelineSeconds: item.seconds,
+        timelineGeneratedText: item.text,
+      },
+    }));
+  const edgesAfter = (canvas.edges || []).filter((edge) =>
+    !(edge.timelineAutoGenerated === true && edge.timelineSourceId === timelineNode.id)
+    && !removedIds.has(edge.source)
+    && !removedIds.has(edge.target)
+  );
+  const autoEdges = desired.map((item) => ({
+    id: `edge-timeline-${timelineNode.id}-${item.id}`,
+    source: timelineNode.id,
+    sourceHandle: `cut__${item.index}`,
+    target: item.id,
+    timelineAutoGenerated: true,
+    timelineSourceId: timelineNode.id,
+  }));
+  canvas.nodes = [...updatedNodes, ...created].map((node) => node.id === timelineNode.id
+    ? { ...node, data: { ...node.data, derivedTextNodeIds: desired.map((item) => item.id) } }
+    : node);
+  canvas.edges = [...edgesAfter, ...autoEdges];
+}
+
 /**
  * 内部函数：在 server 端跑一次画布。POST /:id/run 和跨画布 cascade 都用它。
  * v1.7 alpha：导出供定时调度器调用。
@@ -937,10 +1047,14 @@ export async function runCanvasJob(canvasId, opts = {}) {
               if (!c || !Array.isArray(c.nodes)) return;
               const idx = c.nodes.findIndex((n) => n.id === nodeId);
               if (idx < 0) return;
+              const { timelineDerived, ...persistedPatch } = dataPatch;
               c.nodes[idx] = {
                 ...c.nodes[idx],
-                data: { ...c.nodes[idx].data, ...dataPatch, status },
+                data: { ...c.nodes[idx].data, ...persistedPatch, status },
               };
+              if (timelineDerived && (c.nodes[idx].data?.type || c.nodes[idx].type) === 'timeline') {
+                syncTimelineDerivedTextNodes(c, c.nodes[idx], timelineDerived);
+              }
               c.updatedAt = Date.now();
             });
           } catch {/* swallow */}
@@ -987,6 +1101,7 @@ export async function runCanvasJob(canvasId, opts = {}) {
       ctx: {
         webFetchUrl: `http://localhost:${process.env.PORT || 3001}/api/web-fetch`,
         llmChatUrl: `http://localhost:${process.env.PORT || 3001}/api/llm/chat`,
+        imageGenerateUrl: `http://localhost:${process.env.PORT || 3001}/api/llm/image`,
         // 让 chartNodes 能直接读 uploads 目录的图片转 base64（不走 HTTP）
         uploadsDir: process.env.PLOTMESH_UPLOADS_DIR || undefined,
       },

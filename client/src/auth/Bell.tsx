@@ -32,32 +32,8 @@ export default function Bell() {
     };
   }, []);
 
-  // v2.0-α Phase A 步 2：SSE inbox channel（实时推送）
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: number | null = null;
-
-    const connect = () => {
-      try {
-        const token = localStorage.getItem('plotmesh_jwt');
-        if (!token) return; // 未登录不连
-        const url = `${import.meta.env.VITE_API_BASE || ''}/api/events?channel=inbox`;
-        es = new EventSource(url, { withCredentials: false });
-        // EventSource 不支持自定义 header，我们用 query param 传 token
-        // 但标准 EventSource 不支持。这里用轮询兜底，后续换 fetch-based SSE 或 ws
-        // v2.0-α 暂用轮询，SSE 用 fetch + ReadableStream 实现
-      } catch {
-        /* ignore */
-      }
-    };
-    connect();
-    return () => {
-      if (es) es.close();
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-    };
-  }, []);
-
-  // fetch-based SSE 实时 inbox（兼容 EventSource 不支持 header 的限制）
+  // fetch-based SSE 实时 inbox。标准 EventSource 无法设置 Authorization header，
+  // 因此不能并行建立 EventSource 连接，否则服务端必然返回 401 并污染控制台。
   useEffect(() => {
     let cancelled = false;
     let retryMs = 5000;

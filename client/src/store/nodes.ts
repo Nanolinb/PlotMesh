@@ -32,6 +32,9 @@ import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
 import type { CustomNodeData, NodePackage, PackageGroup } from '../types/nodes';
 import { inferExposedPorts } from '../utils/composite';
+import { authFetch } from '../auth/api';
+import { cloneCanvasGraph, isTemplateCanvas } from '../utils/canvasTemplate';
+import { fitExpandedGroupChains, getCanvasNodeSize } from '../utils/groupBounds';
 import { SAMPLE_PACKAGES, SAMPLE_GROUPS } from '../data/presets';
 import {
   getMeta,
@@ -108,6 +111,8 @@ interface NodeStore {
     options?: { group?: string; mode?: 'create' | 'overwrite' }
   ) => { ok: boolean; action: 'created' | 'overwritten' | 'renamed'; pkgId?: string; message?: string };
   loadPackage: (pkgId: string) => void;
+  /** 将服务器共享模板复制到个人常用功能，并立即加载到当前画布。 */
+  importLibraryPackage: (pkg: NodePackage) => void;
   deletePackage: (pkgId: string) => void;
   renamePackage: (pkgId: string, newName: string) => boolean;
   movePackageToGroup: (pkgId: string, group: string) => void;
@@ -149,9 +154,22 @@ interface NodeStore {
   renameActiveCanvas: (newName: string) => Promise<void>;
   /** 重命名指定画布。 */
   renameCanvasById: (canvasId: string, newName: string) => Promise<void>;
-  /** 删除某张画布；如果删的是 active，自动切到剩下的最近一张（或新建空白）。 */
+  /** 删除某张画布；如果删的是 active，自动切到剩下的普通画布（或新建空白）。 */
   deleteCanvasById: (canvasId: string) => Promise<void>;
-  /** 刷新 store.recentCanvases（从 IDB 读最新 8 条，排除当前 active）。 */
+  /** 把当前内存中的画布另存为可编辑模板；不切换当前画布。 */
+  saveActiveCanvasAsTemplate: (
+    name: string,
+    description?: string,
+    ownerId?: string
+  ) => Promise<string | null>;
+  /** 从模板创建一张权限隔离的普通画布并切换过去。 */
+  instantiateTemplate: (
+    templateId: string,
+    name?: string,
+    ownerId?: string,
+    projectId?: string
+  ) => Promise<string | null>;
+  /** 刷新 store.recentCanvases（从 IDB 读最新普通画布，排除当前 active）。 */
   refreshRecentCanvases: () => Promise<void>;
 }
 
@@ -266,6 +284,7 @@ function flushActiveCanvasToIDB(
       }
       const now = Date.now();
       const rec: CanvasRecord = {
+        ...(existing || {}),
         id: canvasId,
         workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
         projectId: existing?.projectId || DEFAULT_PROJECT_ID,
@@ -310,6 +329,7 @@ async function flushActiveCanvasToIDBAsync(
     }
     const now = Date.now();
     const rec: CanvasRecord = {
+      ...(existing || {}),
       id: canvasId,
       workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
       projectId: existing?.projectId || DEFAULT_PROJECT_ID,
@@ -435,23 +455,25 @@ export async function flushRemoteSyncNow(): Promise<boolean> {
  */
 export async function reloadCanvasFromServer(canvasId: string): Promise<boolean> {
   try {
-    const r = await fetch(`/api/canvas/${canvasId}`);
+    const r = await authFetch(`/api/canvas/${canvasId}`);
     if (!r.ok) return false;
     const data = await r.json();
     const c = data?.canvas;
     if (!c) return false;
     const { putCanvas } = await import('./storage');
+    const existing = await getCanvas(c.id);
     await putCanvas({
+      ...(existing || {}),
+      ...c,
       id: c.id,
-      name: c.name,
+      workspaceId: c.workspaceId || existing?.workspaceId || DEFAULT_WORKSPACE_ID,
+      projectId: c.projectId || existing?.projectId || DEFAULT_PROJECT_ID,
+      name: c.name || existing?.name || '未命名画布',
       nodes: c.nodes || [],
       edges: c.edges || [],
-      createdAt: c.createdAt || Date.now(),
+      createdAt: c.createdAt || existing?.createdAt || Date.now(),
       updatedAt: c.updatedAt || Date.now(),
-      lastOpenedAt: c.lastOpenedAt,
-      thumbnail: c.thumbnail,
-      viewport: c.viewport,
-    } as any);
+    } as CanvasRecord);
     // 如果该画布是当前活动画布，同步刷新 store 内存中的 nodes/edges
     const state = useNodeStore.getState();
     if (state.activeCanvasId === canvasId) {
@@ -630,6 +652,7 @@ export function pushRecentCanvas(name: string, nodes: any[], edges: any[]) {
         workspaceId: DEFAULT_WORKSPACE_ID,
         projectId: DEFAULT_PROJECT_ID,
         name: item.name,
+        kind: 'canvas',
         nodes: cleanNodes,
         edges,
         lastOpenedAt: now,
@@ -713,6 +736,7 @@ export async function hydrateNodeStore(): Promise<void> {
       activeName = existing?.name || activeName;
       const now = Date.now();
       await putCanvas({
+        ...(existing || {}),
         id: activeId,
         workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
         projectId: existing?.projectId || DEFAULT_PROJECT_ID,
@@ -743,6 +767,7 @@ export async function hydrateNodeStore(): Promise<void> {
         workspaceId: DEFAULT_WORKSPACE_ID,
         projectId: DEFAULT_PROJECT_ID,
         name: activeName,
+        kind: 'canvas',
         nodes: [],
         edges: [],
         lastOpenedAt: now,
@@ -1115,6 +1140,8 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     // 节点类型对应的默认尺寸（极简紧凑版）
     const nodeSizes: Record<string, { w: number; h: number }> = {
       fileUpload: { w: 150, h: 90 },
+      imageInput: { w: 350, h: 300 },
+      imageAI: { w: 340, h: 560 },
       textPrompt: { w: 150, h: 110 },
       llm: { w: 150, h: 150 },
       output: { w: 150, h: 110 },
@@ -1342,8 +1369,9 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       if (n.id === groupId) {
         // 切到折叠：保存当前展开尺寸到 data.expandedSize；切到展开：恢复
         if (collapsed) {
-          const prevW = n.style?.width || n.width || 240;
-          const prevH = n.style?.height || n.height || 160;
+          const previousSize = getCanvasNodeSize(n);
+          const prevW = previousSize.w;
+          const prevH = previousSize.h;
           return {
             ...n,
             width: COLLAPSED_W,
@@ -1375,8 +1403,9 @@ export const useNodeStore = create<NodeStore>((set, get) => {
         if (collapsed) {
           // 折叠：所有后代隐藏；嵌套 group 也强制折叠（保存其展开尺寸方便后续恢复）
           if (n.type === 'group') {
-            const prevW = n.style?.width || n.width || 240;
-            const prevH = n.style?.height || n.height || 160;
+            const previousSize = getCanvasNodeSize(n);
+            const prevW = previousSize.w;
+            const prevH = previousSize.h;
             const innerH = Math.max(
               90,
               ((n.data?.exposedPorts?.length || 1) * 16) + 70
@@ -1415,87 +1444,11 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       return n;
     });
 
-    // ---- Bug 2 修复：展开时如果内层 group 的尺寸超出父 group 范围，自动级联扩大父级 ----
-    // 仅在切换为"展开态"时执行（折叠时父 group 反而会变小，无需扩展）。
-    let finalNodes = updated;
-    if (!collapsed) {
-      // 找到本 group 自身的祖先链（不包括本身）
-      const ancestorChain: string[] = [];
-      let p = group.parentId;
-      while (p) {
-        ancestorChain.push(p);
-        const parentNode: any = updated.find((x: any) => x.id === p);
-        p = parentNode?.parentId;
-      }
-      // 同时处理本 group：它的子节点变可见，自身尺寸由 expandedSize 恢复，但仍可能不够大
-      // → 把本 group 也加进"待扩展集合"，从最内层向外扩
-      const toFix: string[] = [groupId, ...ancestorChain];
-
-      // 节点尺寸估算（同 savePackage / loadPackage 中的预设）
-      const nodeSizes: Record<string, { w: number; h: number }> = {
-        fileUpload: { w: 150, h: 90 },
-        textPrompt: { w: 150, h: 110 },
-        llm: { w: 150, h: 150 },
-        output: { w: 150, h: 110 },
-      };
-      const sizeOf = (n: any): { w: number; h: number } => {
-        const w = n.style?.width || n.width;
-        const h = n.style?.height || n.height;
-        if (w && h) return { w, h };
-        return nodeSizes[n.type] || { w: 200, h: 130 };
-      };
-
-      const PAD = 30;          // group 内边距（右/下侧）
-
-      // 从内向外依次扩展
-      for (const gid of toFix) {
-        const idx = finalNodes.findIndex((x: any) => x.id === gid);
-        if (idx < 0) continue;
-        const g: any = finalNodes[idx];
-        if (g.type !== 'group') continue;
-        // 折叠态的 group 自身视作单节点，无须容纳子节点 → 跳过
-        if (g.data?.collapsed) continue;
-        // 收集"直接子节点"（一层）
-        const directChildren = finalNodes.filter((c: any) => c.parentId === gid);
-        if (!directChildren.length) continue;
-        // 计算子节点占用的最右下角（相对 g 自身的局部坐标）
-        let needW = 0;
-        let needH = 0;
-        directChildren.forEach((c: any) => {
-          const sz = sizeOf(c);
-          const rx = (c.position?.x || 0) + sz.w;
-          const ry = (c.position?.y || 0) + sz.h;
-          if (rx > needW) needW = rx;
-          if (ry > needH) needH = ry;
-        });
-        // 加边距 + 顶部标题
-        const minW = needW + PAD;
-        const minH = needH + PAD;
-        const curW = g.style?.width || g.width || 0;
-        const curH = g.style?.height || g.height || 0;
-        const newW = Math.max(curW, minW);
-        const newH = Math.max(curH, minH);
-        if (newW !== curW || newH !== curH) {
-          finalNodes = finalNodes.map((n: any, i: number) =>
-            i === idx
-              ? {
-                  ...n,
-                  width: newW,
-                  height: newH,
-                  style: { ...(n.style || {}), width: newW, height: newH },
-                  data: {
-                    ...n.data,
-                    // 同步更新 expandedSize，让用户下次手动折叠/展开时按当前已扩展尺寸记忆
-                    expandedSize: { w: newW, h: newH },
-                  },
-                }
-              : n
-          );
-        }
-        // 注意：此处不修改 HEADER_PAD 偏移（仅把 group 拉大），子节点位置不动 —— 与现有 group 创建时的"节点相对父级坐标已含 header"约定一致。
-      }
-    }
-
+    // 展开是用户明确触发的一次“范围重置”：先恢复显示，再按所有直属子节点的真实尺寸
+    // 精确收紧/扩展当前 Group 与祖先 Group，不沿用收折前可能过大的 expandedSize。
+    const finalNodes = collapsed
+      ? updated
+      : fitExpandedGroupChains(updated, [groupId], { reset: true });
     set({ nodes: finalNodes });
   },
 
@@ -1508,6 +1461,8 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     // 节点类型默认尺寸（和 savePackage 保持一致，极简紧凑版）
     const nodeSizes: Record<string, { w: number; h: number }> = {
       fileUpload: { w: 150, h: 90 },
+      imageInput: { w: 350, h: 300 },
+      imageAI: { w: 340, h: 560 },
       textPrompt: { w: 150, h: 110 },
       llm: { w: 150, h: 150 },
       output: { w: 150, h: 110 },
@@ -1803,6 +1758,24 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     setTimeout(() => get().updatePromptNumbers(), 0);
   },
 
+  importLibraryPackage: (pkg) => {
+    const now = new Date().toISOString();
+    const imported: NodePackage = {
+      ...pkg,
+      id: `imported-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      name: pkg.name || '共享模板',
+      group: '共享导入',
+      nodes: JSON.parse(JSON.stringify(pkg.nodes || [])),
+      edges: JSON.parse(JSON.stringify(pkg.edges || [])),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const packages = [...get().packages, imported];
+    set({ packages });
+    persistPackages(packages);
+    get().loadPackage(imported.id);
+  },
+
   deletePackage: (pkgId) => {
     const packages = get().packages.filter((p) => p.id !== pkgId);
     savePackages(packages);
@@ -1813,69 +1786,44 @@ export const useNodeStore = create<NodeStore>((set, get) => {
 
   updatePromptNumbers: () => {
     const { nodes } = get();
-    const textNodes = nodes.filter((n) => n.data.type === 'textPrompt');
-
-    // 优先按已有 promptNumber 排序，没有的按 x 坐标填充
-    const withNumber = textNodes.filter((n: any) => typeof n.data.promptNumber === 'number' && n.data.promptNumber > 0);
-    const withoutNumber = textNodes.filter((n: any) => !(typeof n.data.promptNumber === 'number' && n.data.promptNumber > 0));
-    withoutNumber.sort((a, b) => (a.position?.x || 0) - (b.position?.x || 0));
-    withNumber.sort((a: any, b: any) => (a.data.promptNumber || 0) - (b.data.promptNumber || 0));
-    // 合并：已编号在前，未编号在后
-    const sorted = [...withNumber, ...withoutNumber];
-    // 按顺序重新分配 1..N 避免重复
-    const idToIndex = new Map<string, number>();
-    sorted.forEach((n, i) => idToIndex.set(n.id, i + 1));
-
-    const updatedNodes = nodes.map((node) => {
-      if (node.data.type === 'textPrompt') {
-        const idx = idToIndex.get(node.id) || 1;
-        return {
-          ...node,
-          data: { ...node.data, promptNumber: idx },
-        };
-      }
-      return node;
-    });
-
-    const changed = updatedNodes.some((n, i) => {
-      const old = nodes[i];
-      return (old.data as any).promptNumber !== (n.data as any).promptNumber;
-    });
-    if (changed) {
-      set({ nodes: updatedNodes });
+    // 文本提示词和图片输入各自维护独立的 1..N 编号序列。
+    const orderedTypes = ['textPrompt', 'imageInput'];
+    const numberById = new Map<string, number>();
+    for (const type of orderedTypes) {
+      const sameType = nodes.filter((n: any) => n.data.type === type);
+      const withNumber = sameType.filter((n: any) => typeof n.data.promptNumber === 'number' && n.data.promptNumber > 0);
+      const withoutNumber = sameType.filter((n: any) => !(typeof n.data.promptNumber === 'number' && n.data.promptNumber > 0));
+      withoutNumber.sort((a, b) => (a.position?.x || 0) - (b.position?.x || 0));
+      withNumber.sort((a: any, b: any) => (a.data.promptNumber || 0) - (b.data.promptNumber || 0));
+      [...withNumber, ...withoutNumber].forEach((n, index) => numberById.set(n.id, index + 1));
     }
+
+    const updatedNodes = nodes.map((node: any) => {
+      if (!orderedTypes.includes(node.data.type)) return node;
+      const promptNumber = numberById.get(node.id) || 1;
+      return node.data.promptNumber === promptNumber
+        ? node
+        : { ...node, data: { ...node.data, promptNumber } };
+    });
+
+    const changed = updatedNodes.some((node, index) => node !== nodes[index]);
+    if (changed) set({ nodes: updatedNodes });
   },
 
   // 根据用户通过 ▲▼ 按钮修改的 promptNumber 重排（解决冲突、去重）
   reorderPromptsByManual: () => {
-    const { nodes } = get();
-    const textNodes = nodes.filter((n) => n.data.type === 'textPrompt');
-    // 按 promptNumber 升序（同值时保持原序）
-    const sorted = [...textNodes].sort((a: any, b: any) => {
-      const an = a.data.promptNumber || 999999;
-      const bn = b.data.promptNumber || 999999;
-      return an - bn;
-    });
-    const idToIdx = new Map<string, number>();
-    sorted.forEach((n, i) => idToIdx.set(n.id, i + 1));
-
-    const updatedNodes = nodes.map((node) => {
-      if (node.data.type === 'textPrompt') {
-        const idx = idToIdx.get(node.id) || 1;
-        if ((node.data as any).promptNumber !== idx) {
-          return { ...node, data: { ...node.data, promptNumber: idx } };
-        }
-      }
-      return node;
-    });
-    set({ nodes: updatedNodes });
+    // 统一处理文本提示词 / 图片输入的独立编号序列。
+    get().updatePromptNumbers();
   },
 
-  // 用户点击 ▲ / ▼ 时：和相邻编号的节点交换
+  // 用户点击 ▲ / ▼ 时：只和同类型的相邻编号节点交换。
   swapPromptOrder: (nodeId: string, direction: 'up' | 'down') => {
     const { nodes } = get();
-    const textNodes = nodes.filter((n: any) => n.data.type === 'textPrompt');
-    const sorted = [...textNodes].sort((a: any, b: any) => {
+    const target = nodes.find((node: any) => node.id === nodeId);
+    const targetType = (target?.data as any)?.type;
+    if (!target || !['textPrompt', 'imageInput'].includes(targetType)) return;
+    const orderedNodes = nodes.filter((node: any) => node.data.type === targetType);
+    const sorted = [...orderedNodes].sort((a: any, b: any) => {
       return (a.data.promptNumber || 0) - (b.data.promptNumber || 0);
     });
     const idx = sorted.findIndex((n: any) => n.id === nodeId);
@@ -1996,6 +1944,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
         } else {
           const now = Date.now();
           await putCanvas({
+            ...(existing || {}),
             id: cur.activeCanvasId,
             workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
             projectId: existing?.projectId || DEFAULT_PROJECT_ID,
@@ -2017,9 +1966,14 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       }
     }
 
-    // 2) 灌入目标画布
+    // 2) 灌入目标画布。Assignment 接受后可能由 server 新建下游画布，
+    // 项目 Owner 的本地 IDB 尚未见过它；先尝试从 server 拉取，避免误建同 id 空白画布再覆盖远端。
     let target = await getCanvas(canvasId);
     const now = Date.now();
+    if (!target) {
+      await reloadCanvasFromServer(canvasId);
+      target = await getCanvas(canvasId);
+    }
 
     // v1.7 P2-A：切画布时**对含 crossInput/crossOutput 的画布**先从 server reload 一次，
     // 因为这些节点的 text/output/status 是 server 单方面写的，本地 IDB 可能比 server 旧。
@@ -2031,7 +1985,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       if (hasCrossNodes) {
         // 异步拉 server 端最新数据并合并 crossInput/crossOutput 节点的 data
         try {
-          const r = await fetch(`/api/canvas/${canvasId}`);
+          const r = await authFetch(`/api/canvas/${canvasId}`);
           if (r.ok) {
             const remote = (await r.json())?.canvas;
             if (remote && Array.isArray(remote.nodes)) {
@@ -2066,6 +2020,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
         workspaceId: DEFAULT_WORKSPACE_ID,
         projectId: DEFAULT_PROJECT_ID,
         name: '未命名画布',
+        kind: 'canvas',
         nodes: [],
         edges: [],
         lastOpenedAt: now,
@@ -2103,6 +2058,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
         const existing = await getCanvas(cur.activeCanvasId);
         const now = Date.now();
         await putCanvas({
+          ...(existing || {}),
           id: cur.activeCanvasId,
           workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
           projectId: existing?.projectId || DEFAULT_PROJECT_ID,
@@ -2129,6 +2085,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       workspaceId: DEFAULT_WORKSPACE_ID,
       projectId: DEFAULT_PROJECT_ID,
       name: finalName,
+      kind: 'canvas',
       nodes: [],
       edges: [],
       lastOpenedAt: now,
@@ -2161,6 +2118,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       // 重命名时 store 才是 source of truth：用当前 store 的 nodes/edges 写盘，
       // 避免 IDB 中旧 nodes 把 store 里更新过的内容覆盖掉
       await putCanvas({
+        ...(existing || {}),
         id: cur.activeCanvasId,
         workspaceId: existing?.workspaceId || DEFAULT_WORKSPACE_ID,
         projectId: existing?.projectId || DEFAULT_PROJECT_ID,
@@ -2214,7 +2172,7 @@ export const useNodeStore = create<NodeStore>((set, get) => {
       // 删的是当前 active —— 找一张候补的最近画布切过去；都没有就开张空白
       const all = await listCanvases({ workspaceId: DEFAULT_WORKSPACE_ID });
       const sorted = all
-        .filter((c) => c.id !== canvasId)
+        .filter((c) => c.id !== canvasId && !isTemplateCanvas(c))
         .sort((a, b) => (b.lastOpenedAt ?? b.updatedAt) - (a.lastOpenedAt ?? a.updatedAt));
       if (sorted.length > 0) {
         await get().switchActiveCanvas(sorted[0].id);
@@ -2224,6 +2182,81 @@ export const useNodeStore = create<NodeStore>((set, get) => {
     } else {
       // 不是 active，单独刷一下 recent 列表即可
       await get().refreshRecentCanvases();
+    }
+  },
+
+  saveActiveCanvasAsTemplate: async (name, description, ownerId) => {
+    const trimmedName = (name || '').trim();
+    const cur = get();
+    if (!trimmedName || !cur.activeCanvasId) return null;
+
+    try {
+      const source = await getCanvas(cur.activeCanvasId);
+      const graph = cloneCanvasGraph(cur.nodes, cur.edges);
+      const now = Date.now();
+      const id = `template-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const template: CanvasRecord = {
+        id,
+        workspaceId: source?.workspaceId || DEFAULT_WORKSPACE_ID,
+        projectId: DEFAULT_PROJECT_ID,
+        name: trimmedName,
+        kind: 'template',
+        template: {
+          status: 'draft',
+          description: (description || '').trim() || undefined,
+          sourceCanvasId: cur.activeCanvasId,
+        },
+        nodes: graph.nodes,
+        edges: graph.edges,
+        ownerId: ownerId || null,
+        sharedWith: [],
+        flexPool: ownerId ? [{ userId: ownerId, role: 'owner', joinedAt: now }] : [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await putCanvas(template);
+      scheduleRemoteSync();
+      await get().refreshRecentCanvases();
+      return id;
+    } catch (e) {
+      console.warn('[plotmesh] saveActiveCanvasAsTemplate 失败：', e);
+      return null;
+    }
+  },
+
+  instantiateTemplate: async (templateId, name, ownerId, projectId) => {
+    try {
+      const template = await getCanvas(templateId);
+      if (!template || !isTemplateCanvas(template)) return null;
+
+      const graph = cloneCanvasGraph(template.nodes as any[], template.edges as any[]);
+      const now = Date.now();
+      const id = `canvas-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const finalName = (name || '').trim() || `${template.name || '模板'} · 实例`;
+      const instance: CanvasRecord = {
+        id,
+        workspaceId: template.workspaceId || DEFAULT_WORKSPACE_ID,
+        projectId: projectId || DEFAULT_PROJECT_ID,
+        name: finalName,
+        kind: 'canvas',
+        sourceTemplateId: template.id,
+        sourceTemplateUpdatedAt: template.updatedAt,
+        nodes: graph.nodes,
+        edges: graph.edges,
+        ownerId: ownerId || null,
+        sharedWith: [],
+        flexPool: ownerId ? [{ userId: ownerId, role: 'owner', joinedAt: now }] : [],
+        lastOpenedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await putCanvas(instance);
+      scheduleRemoteSync();
+      await get().switchActiveCanvas(id);
+      return id;
+    } catch (e) {
+      console.warn('[plotmesh] instantiateTemplate 失败：', e);
+      return null;
     }
   },
 

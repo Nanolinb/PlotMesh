@@ -106,8 +106,12 @@ export async function listDeletedCanvases(workspaceId?: string): Promise<Canvas[
 export async function listRecentCanvases(limit = 4): Promise<Canvas[]> {
   const db = await getDB();
   const all = await db.getAllFromIndex(STORE.CANVASES, 'by-lastOpenedAt');
-  // idb 的 getAllFromIndex 是升序，反转一下 + 过滤 deleted
-  return all.reverse().filter((c) => !c.deleted).slice(0, limit);
+  // idb 的 getAllFromIndex 是升序，反转一下 + 过滤 deleted / 模板。
+  // 模板使用同一 Canvas schema，但不进入普通画布的“最近使用”列表。
+  return all
+    .reverse()
+    .filter((c) => !c.deleted && c.kind !== 'template')
+    .slice(0, limit);
 }
 
 export async function getCanvas(id: string): Promise<Canvas | undefined> {

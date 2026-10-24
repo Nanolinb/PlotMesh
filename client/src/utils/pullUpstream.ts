@@ -42,6 +42,24 @@ export function readNodeCachedOutput(srcData: any, edge: any): string {
       return sd.upstreamText || '';
     case 'webLink':
       return sd.fetchedText || '';
+    case 'imageInput': {
+      const images = (sd.images || [])
+        .filter((image: any) => image.filename && !image.error && !image.uploading)
+        .map((image: any) => ({
+          filename: image.filename,
+          name: image.name,
+          mime: image.type || 'image/png',
+          url: image.path || `/uploads/${image.filename}`,
+          weight: Math.max(0, Math.min(1, Number(sd.weight ?? 1))),
+          promptNumber: Number(sd.promptNumber || 1),
+        }));
+      if (!images.length) return '';
+      const documents = images.map((image: any) => {
+        const filenameAttr = String(image.name || '').replace(/"/g, '&quot;');
+        return `<document filename="${filenameAttr}">\n[图片文件，请用多模态节点读取]\n</document>`;
+      });
+      return `__PM_IMAGES__\n${JSON.stringify(images)}\n__PM_FILE__\n<documents>\n${documents.join('\n')}\n</documents>`;
+    }
     case 'fileUpload': {
       const files = (sd.files || []).filter((f: any) => !f.error && !f.uploading);
       if (!files.length) return '';

@@ -62,7 +62,11 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = META_T
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
+    const headers = new Headers(init.headers);
+    let token: string | null = null;
+    try { token = localStorage.getItem('plotmesh_jwt'); } catch { /* offline / restricted storage */ }
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    return await fetch(url, { ...init, headers, signal: ctrl.signal });
   } finally {
     clearTimeout(t);
   }
@@ -204,15 +208,69 @@ export async function dumpLocalSnapshot(): Promise<SnapshotPayload> {
   };
 }
 
-/** SHA-1 短摘要（与 server 保持一致的算法） */
+/**
+ * SHA-1 短摘要（与 server 保持一致的算法）。
+ *
+ * LAN 的 HTTP 页面不是 Secure Context，部分浏览器不会暴露 crypto.subtle；
+ * 同步探测不能因摘要 API 缺失而阻断整个应用启动，所以以纯 JS 实现作降级。
+ */
 async function sha1Hex16(text: string): Promise<string> {
-  const buf = new TextEncoder().encode(text);
-  // crypto.subtle 在 http://localhost 下可用；https/http 都 OK（除非很老的浏览器）
-  const digest = await crypto.subtle.digest('SHA-1', buf);
-  const hex = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  return hex.slice(0, 16);
+  const bytes = new TextEncoder().encode(text);
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    try {
+      const digest = await subtle.digest('SHA-1', bytes);
+      const hex = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      return hex.slice(0, 16);
+    } catch {
+      // 继续走纯 JS SHA-1，保证 LAN HTTP 与 HTTPS 产生同一摘要。
+    }
+  }
+  return sha1HexFallback(bytes).slice(0, 16);
+}
+
+/** 无 Web Crypto 时的标准 SHA-1 实现；输入为 UTF-8 字节。 */
+function sha1HexFallback(input: Uint8Array): string {
+  const bitLength = input.length * 8;
+  const paddedLength = Math.ceil((input.length + 9) / 64) * 64;
+  const bytes = new Uint8Array(paddedLength);
+  bytes.set(input);
+  bytes[input.length] = 0x80;
+  const view = new DataView(bytes.buffer);
+  // JS number 可安全精确表示实际同步 payload 的位长；写入 SHA-1 的 64-bit 长度字段。
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x1_0000_0000), false);
+  view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+
+  let h0 = 0x67452301;
+  let h1 = 0xefcdab89;
+  let h2 = 0x98badcfe;
+  let h3 = 0x10325476;
+  let h4 = 0xc3d2e1f0;
+  const words = new Uint32Array(80);
+
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    for (let i = 0; i < 16; i += 1) words[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 80; i += 1) {
+      const value = words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16];
+      words[i] = (value << 1) | (value >>> 31);
+    }
+    let a = h0; let b = h1; let c = h2; let d = h3; let e = h4;
+    for (let i = 0; i < 80; i += 1) {
+      let f: number; let k: number;
+      if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+      else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+      else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+      else { f = b ^ c ^ d; k = 0xca62c1d6; }
+      const rotated = (a << 5) | (a >>> 27);
+      const next = (rotated + f + e + k + words[i]) >>> 0;
+      e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = next;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+  }
+  return [h0, h1, h2, h3, h4].map((word) => word.toString(16).padStart(8, '0')).join('');
 }
 
 /** 计算 payload 的稳定 hash（SHA-1 hex 前 16 位）+ 摘要 */

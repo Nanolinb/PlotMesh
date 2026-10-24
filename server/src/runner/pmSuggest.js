@@ -56,9 +56,9 @@ export function analyzeCanvasStructure(canvas) {
   // 规则1：LLM 节点没有下游（结果没人接，可能漏接 output）
   for (const n of nodes) {
     const t = n.data?.type || n.type;
-    if (t === 'llm' && !hasOutgoing.has(n.id)) {
-      out.push({ ruleId: 'llm-no-downstream', nodeId: n.id,
-        text: `大模型节点「${n.data?.label || n.id}」没有下游节点，生成的结果没有被使用，建议接一个输出节点。` });
+    if ((t === 'llm' || t === 'imageAI') && !hasOutgoing.has(n.id)) {
+      out.push({ ruleId: `${t}-no-downstream`, nodeId: n.id,
+        text: `${t === 'imageAI' ? '图片AI' : '文本AI'}节点「${n.data?.label || n.id}」没有下游节点，生成的结果没有被使用，建议接一个输出节点。` });
     }
   }
 
@@ -72,7 +72,7 @@ export function analyzeCanvasStructure(canvas) {
   }
 
   // 规则3：孤立节点（既无上游也无下游，且不是源/主题类）
-  const sourceLike = new Set(['fileUpload', 'webLink', 'textPrompt', 'themeNode', 'aiBuilder', 'crossInput']);
+  const sourceLike = new Set(['fileUpload', 'imageInput', 'webLink', 'textPrompt', 'themeNode', 'aiBuilder', 'crossInput']);
   for (const n of nodes) {
     const t = n.data?.type || n.type;
     if (sourceLike.has(t)) continue;

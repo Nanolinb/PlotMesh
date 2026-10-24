@@ -24,7 +24,7 @@ export const MAX_EMIT_NODES = 20;
 /** AI 可生成的节点类型白名单（避免 AI 造出不存在的类型） */
 export const EMITTABLE_TYPES = [
   'textPrompt', 'llm', 'output', 'textTransform', 'condition',
-  'webLink', 'fileUpload', 'splitter', 'pieChart', 'barChart',
+  'webLink', 'fileUpload', 'imageInput', 'imageAI', 'splitter', 'pieChart', 'barChart',
   'extract', 'themeNode', 'aggregate',
 ];
 

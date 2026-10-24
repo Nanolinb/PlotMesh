@@ -9,9 +9,10 @@
  * 用户可以双击标题改名，正文双击进入"编辑 URL"输入态。
  */
 import { Handle, Position } from '@xyflow/react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNodeStore } from '../../store/nodes';
 import type { WebLinkNodeData } from '../../types/nodes';
+import { selectWebContent } from '../../utils/webContent';
 
 type Props = {
   id: string;
@@ -28,11 +29,16 @@ export default function WebLinkNode({ id, data, selected }: Props) {
   const [localUrl, setLocalUrl] = useState(data.url || '');
   const [localTitle, setLocalTitle] = useState(data.label || '🔗 Web 链接');
   const [localToken, setLocalToken] = useState(data.tencentDocsToken || '');
+  const [localAnalysisQuery, setLocalAnalysisQuery] = useState(data.analysisQuery || '');
   const [fetching, setFetching] = useState(false);
+  const composingQueryRef = useRef(false);
 
   useEffect(() => { setLocalUrl(data.url || ''); }, [data.url]);
   useEffect(() => { setLocalTitle(data.label || '🔗 Web 链接'); }, [data.label]);
   useEffect(() => { setLocalToken(data.tencentDocsToken || ''); }, [data.tencentDocsToken]);
+  useEffect(() => {
+    if (!composingQueryRef.current) setLocalAnalysisQuery(data.analysisQuery || '');
+  }, [data.analysisQuery]);
 
   /** URL 是否是腾讯文档（决定要不要露 token 输入框） */
   const isTencentDocs = (() => {
@@ -47,8 +53,24 @@ export default function WebLinkNode({ id, data, selected }: Props) {
   const commitUrl = useCallback(() => {
     setEditing(false);
     const v = localUrl.trim();
-    updateNodeData(id, { url: v });
-  }, [id, localUrl, updateNodeData]);
+    if (v === (data.url || '')) return;
+    updateNodeData(id, {
+      url: v,
+      status: 'idle',
+      fetchedText: undefined,
+      fetchedTitle: undefined,
+      fetchedFinalUrl: undefined,
+      fetchedAt: undefined,
+      fetchedSource: undefined,
+      fetchedOriginalChars: undefined,
+      fetchedCapturedChars: undefined,
+      fetchedTruncated: undefined,
+      fetchedContentHash: undefined,
+      analyzedChars: undefined,
+      analysisTruncated: undefined,
+      analysisMatchedChunks: undefined,
+    });
+  }, [id, localUrl, data.url, updateNodeData]);
 
   const commitTitle = useCallback(() => {
     setEditingTitle(false);
@@ -61,6 +83,14 @@ export default function WebLinkNode({ id, data, selected }: Props) {
     setEditingToken(false);
     updateNodeData(id, { tencentDocsToken: localToken.trim() });
   }, [id, localToken, updateNodeData]);
+
+  const commitAnalysisQuery = useCallback((value?: string) => {
+    const next = (value ?? localAnalysisQuery).trim();
+    setLocalAnalysisQuery(next);
+    if (next !== (data.analysisQuery || '')) {
+      updateNodeData(id, { analysisQuery: next });
+    }
+  }, [id, localAnalysisQuery, data.analysisQuery, updateNodeData]);
 
   /** 立即抓取一次（不等执行器，方便用户预览） */
   const handleFetch = useCallback(async () => {
@@ -79,6 +109,8 @@ export default function WebLinkNode({ id, data, selected }: Props) {
         body: JSON.stringify({
           url,
           token: data.tencentDocsToken || undefined,
+          extractionMode: data.extractionMode || 'article',
+          captureLimit: data.captureLimit || 32768,
         }),
       });
       const body = await r.json();
@@ -95,6 +127,10 @@ export default function WebLinkNode({ id, data, selected }: Props) {
           fetchedAt: new Date().toISOString(),
           fetchedText: body.text || '',
           fetchedSource: body.source || 'http',
+          fetchedOriginalChars: body.originalChars ?? (body.text || '').length,
+          fetchedCapturedChars: body.capturedChars ?? (body.text || '').length,
+          fetchedTruncated: !!body.truncated,
+          fetchedContentHash: body.contentHash || '',
           error: undefined,
         });
       }
@@ -103,10 +139,19 @@ export default function WebLinkNode({ id, data, selected }: Props) {
     } finally {
       setFetching(false);
     }
-  }, [id, data.url, data.tencentDocsToken, updateNodeData]);
+  }, [id, data.url, data.tencentDocsToken, data.extractionMode, data.captureLimit, updateNodeData]);
 
   const fetched = !!data.fetchedText;
   const charCount = data.fetchedText ? data.fetchedText.length : 0;
+  const analysisSelection = selectWebContent(data.fetchedText || '', {
+    mode: data.analysisMode || 'full',
+    query: data.analysisQuery || '',
+    maxChars: data.analysisLimit || 24000,
+  });
+  const fieldStyle: React.CSSProperties = {
+    width: '100%', minWidth: 0, padding: '4px 6px', borderRadius: 5, fontSize: 11,
+    border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)',
+  };
 
   return (
     <div className={`node-card web-link-node ${selected ? 'selected' : ''}`} data-status={data.status || 'idle'}>
@@ -239,13 +284,107 @@ export default function WebLinkNode({ id, data, selected }: Props) {
           </div>
         )}
 
+        <div style={{ marginTop: 8, padding: 7, borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-card-body)' }}>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 5 }}>采集范围</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
+            <select
+              value={data.extractionMode || 'article'}
+              onChange={(e) => updateNodeData(id, { extractionMode: e.target.value as 'article' | 'full', fetchedText: undefined, status: 'idle' })}
+              style={fieldStyle}
+              title="正文优先会尽量剔除导航、页头和页尾"
+            >
+              <option value="article">正文优先</option>
+              <option value="full">页面全文</option>
+            </select>
+            <select
+              value={data.refreshPolicy || 'cache'}
+              onChange={(e) => updateNodeData(id, { refreshPolicy: e.target.value as 'cache' | 'always' })}
+              style={fieldStyle}
+            >
+              <option value="cache">复用缓存</option>
+              <option value="always">每次运行刷新</option>
+            </select>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5, fontSize: 10, color: 'var(--text-secondary)' }}>
+            <span style={{ whiteSpace: 'nowrap' }}>采集上限</span>
+            <input
+              type="number"
+              min={1000}
+              max={131072}
+              step={1000}
+              value={data.captureLimit || 32768}
+              onChange={(e) => updateNodeData(id, { captureLimit: Math.max(1000, Number(e.target.value) || 32768), fetchedText: undefined, status: 'idle' })}
+              style={{ ...fieldStyle, flex: 1 }}
+            />
+          </label>
+        </div>
+
+        <div style={{ marginTop: 6, padding: 7, borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-card-body)' }}>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 5 }}>LLM 分析范围</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>
+            <select
+              value={data.analysisMode || 'full'}
+              onChange={(e) => updateNodeData(id, { analysisMode: e.target.value as 'full' | 'keyword' })}
+              style={fieldStyle}
+            >
+              <option value="full">按预算取全文</option>
+              <option value="keyword">关键词附近</option>
+            </select>
+            <input
+              type="number"
+              min={1000}
+              max={64000}
+              step={1000}
+              value={data.analysisLimit || 24000}
+              onChange={(e) => updateNodeData(id, { analysisLimit: Math.max(1000, Number(e.target.value) || 24000) })}
+              style={fieldStyle}
+              title="最多送入下游 LLM 的字符数"
+            />
+          </div>
+          {(data.analysisMode || 'full') === 'keyword' && (
+            <input
+              className="nodrag nowheel"
+              value={localAnalysisQuery}
+              onChange={(e) => setLocalAnalysisQuery(e.target.value)}
+              onCompositionStart={() => { composingQueryRef.current = true; }}
+              onCompositionEnd={(e) => {
+                composingQueryRef.current = false;
+                const value = e.currentTarget.value;
+                setLocalAnalysisQuery(value);
+                commitAnalysisQuery(value);
+              }}
+              onBlur={() => {
+                if (!composingQueryRef.current) commitAnalysisQuery();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                } else if (e.key === 'Escape') {
+                  composingQueryRef.current = false;
+                  setLocalAnalysisQuery(data.analysisQuery || '');
+                  e.currentTarget.blur();
+                }
+              }}
+              placeholder="关键词，空格或逗号分隔"
+              style={{ ...fieldStyle, marginTop: 5 }}
+            />
+          )}
+        </div>
+
         {fetched && (
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.4 }}>
             <div style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 12 }}>
               📄 {data.fetchedTitle || '(无标题)'}
             </div>
             <div>
-              已抓取 {charCount.toLocaleString()} 字符 · {new Date(data.fetchedAt!).toLocaleString('zh-CN')}
+              原文 {(data.fetchedOriginalChars ?? charCount).toLocaleString()} · 采集 {charCount.toLocaleString()} · 本次分析 {analysisSelection.selectedChars.toLocaleString()} 字符
+              {data.fetchedTruncated && <span style={{ marginLeft: 5, color: '#f59e0b' }}>采集已截断</span>}
+              {analysisSelection.truncated && <span style={{ marginLeft: 5, color: '#f59e0b' }}>分析已筛选</span>}
+            </div>
+            <div>
+              {data.fetchedAt ? new Date(data.fetchedAt).toLocaleString('zh-CN') : ''}
+              {data.fetchedContentHash && <span style={{ marginLeft: 5 }}>#{data.fetchedContentHash}</span>}
               {data.fetchedSource && data.fetchedSource.startsWith('mcp:') && (
                 <span style={{ marginLeft: 6, padding: '0 5px', borderRadius: 4, background: '#dbeafe', color: '#1e40af', fontSize: 10 }}>
                   MCP

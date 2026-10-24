@@ -106,6 +106,27 @@ export function markAllRead(userId) {
   return changed;
 }
 
+/**
+ * 将某个 Assignment 的决策卡持久化为已处理，避免刷新后再次出现接受/拒绝按钮。
+ */
+export function resolveAssignmentInbox(userId, assignmentId, resultLabel) {
+  const items = readInbox(userId);
+  const now = Date.now();
+  let changed = 0;
+  for (const item of items) {
+    const matches = item.target?.assignmentId === assignmentId
+      || (item.actions || []).some((action) => action.payload?.assignmentId === assignmentId);
+    if (!matches) continue;
+    item.actions = [];
+    item.readAt = item.readAt || now;
+    const suffix = `（${resultLabel}）`;
+    if (resultLabel && !String(item.body || '').endsWith(suffix)) item.body = `${item.body || ''}${suffix}`;
+    changed += 1;
+  }
+  if (changed) writeInbox(userId, items);
+  return changed;
+}
+
 export function deleteInboxItem(userId, inboxId) {
   const items = readInbox(userId);
   const idx = items.findIndex((x) => x.id === inboxId);

@@ -633,26 +633,22 @@ export async function runExtract(node, _upstreamList, ctx = {}) {
 /** pieChart: 解析数据 + 渲染 SVG */
 export function runPieChart(node, _upstreamList, ctx = {}) {
   const byHandle = ctx.upstreamByHandle || {};
-  // data 端口可能没 targetHandle（旧画布），按 'data' 收
+  // runCanvas 会把无 targetHandle 的旧边统一归入 data。
   const dataItems = (byHandle.data || byHandle.null || []).map((x) => x.value);
   const styleItems = (byHandle.style || []).map((x) => x.value);
-  // 兼容：如果没有任何 handle 标记，把所有上游都当 data
+  const hasDataConnection = dataItems.length > 0;
   let dataUp = dataItems[0] || '';
   for (const v of dataItems.slice(1)) if (v) dataUp = v;
-  if (!dataUp && byHandle === ctx.upstreamByHandle) {
-    // fallback：扁平上游
-    const allUp = Object.values(byHandle).flat().map((x) => x.value);
-    dataUp = allUp[0] || '';
-  }
   let styleUp = styleItems[0] || '';
   for (const v of styleItems.slice(1)) if (v) styleUp = v;
 
   dataUp = stripFilePrefix(dataUp);
   styleUp = stripFilePrefix(styleUp);
-  const slices = parsePieData(dataUp);
+  const slices = parsePieData(dataUp) || (!hasDataConnection ? parsePieData(node.data?.slices) : null);
   const styleIn = styleUp ? parseChartStyle(styleUp) : null;
   if (!slices || slices.length === 0) {
-    return { output: '', status: 'error', error: dataUp ? '上游数据不是合法的饼图数据' : '无上游数据输入' };
+    if (!hasDataConnection) return { output: '', status: 'idle', dataPatch: { error: '' } };
+    return { output: '', status: 'error', error: dataUp ? '上游数据不是合法的饼图数据' : '上游节点没有产生可用数据' };
   }
   const label = node.data?.label || '饼图';
   const svg = renderPieChartSvg(slices, styleIn, { title: label });
@@ -660,7 +656,7 @@ export function runPieChart(node, _upstreamList, ctx = {}) {
   return {
     output: out,
     status: 'success',
-    dataPatch: { slices, styleIn: styleIn || undefined, output: out, svg },
+    dataPatch: { slices, styleIn: styleIn || undefined, output: out, svg, error: '' },
   };
 }
 
@@ -669,20 +665,18 @@ export function runBarChart(node, _upstreamList, ctx = {}) {
   const byHandle = ctx.upstreamByHandle || {};
   const dataItems = (byHandle.data || byHandle.null || []).map((x) => x.value);
   const styleItems = (byHandle.style || []).map((x) => x.value);
+  const hasDataConnection = dataItems.length > 0;
   let dataUp = dataItems[0] || '';
   for (const v of dataItems.slice(1)) if (v) dataUp = v;
-  if (!dataUp) {
-    const allUp = Object.values(byHandle).flat().map((x) => x.value);
-    dataUp = allUp[0] || '';
-  }
   let styleUp = styleItems[0] || '';
   for (const v of styleItems.slice(1)) if (v) styleUp = v;
   dataUp = stripFilePrefix(dataUp);
   styleUp = stripFilePrefix(styleUp);
-  const bars = parsePieData(dataUp);
+  const bars = parsePieData(dataUp) || (!hasDataConnection ? parsePieData(node.data?.bars) : null);
   const styleIn = styleUp ? parseChartStyle(styleUp) : null;
   if (!bars || bars.length === 0) {
-    return { output: '', status: 'error', error: dataUp ? '上游数据不是合法的柱状图数据' : '无上游数据输入' };
+    if (!hasDataConnection) return { output: '', status: 'idle', dataPatch: { error: '' } };
+    return { output: '', status: 'error', error: dataUp ? '上游数据不是合法的柱状图数据' : '上游节点没有产生可用数据' };
   }
   const label = node.data?.label || '柱状图';
   const svg = renderBarChartSvg(bars, styleIn, { title: label });
@@ -690,7 +684,7 @@ export function runBarChart(node, _upstreamList, ctx = {}) {
   return {
     output: out,
     status: 'success',
-    dataPatch: { bars, styleIn: styleIn || undefined, output: out, svg },
+    dataPatch: { bars, styleIn: styleIn || undefined, output: out, svg, error: '' },
   };
 }
 

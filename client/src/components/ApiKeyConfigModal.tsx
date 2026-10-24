@@ -183,7 +183,7 @@ export default function ApiKeyConfigModal({ open, onClose }: Props) {
           }}
         >
           {([
-            { key: 'llm', label: '🤖 大模型 API Key', desc: '调用 LLM 的密钥（写入 server/.env）' },
+            { key: 'llm', label: '🤖 AI 模型 API Key', desc: '文本AI与图片AI共用厂商 Key（写入 server/.env）' },
             { key: 'external', label: '🔑 外部 AI 接入', desc: 'codex / kimi / Claude Desktop 操作画布的 token' },
             ...(isAdmin ? [{ key: 'admin' as Tab, label: '👥 成员管理', desc: '管理已注册成员：重置密码 / 删除 / 角色' }] : []),
           ] as Array<{ key: Tab; label: string; desc: string }>).map((t) => {

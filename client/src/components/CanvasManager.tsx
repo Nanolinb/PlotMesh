@@ -18,6 +18,7 @@ import {
   listFolders,
   loadFolderMap,
   addFolder,
+  ensureProjectCanvasFolder,
   updateFolder,
   removeFolder,
   assignCanvasToFolder,
@@ -44,7 +45,7 @@ interface CanvasManagerProps {
 }
 
 export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
-  const { phase } = useAuth();
+  const { phase, user } = useAuth();
   const isLoggedIn = phase === 'ready';
   const activeCanvasId = useNodeStore((s) => s.activeCanvasId);
   const activeCanvasName = useNodeStore((s) => s.activeCanvasName);
@@ -52,7 +53,10 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
   const createNewCanvas = useNodeStore((s) => s.createNewCanvas);
   const renameCanvasById = useNodeStore((s) => s.renameCanvasById);
   const deleteCanvasById = useNodeStore((s) => s.deleteCanvasById);
+  const saveActiveCanvasAsTemplate = useNodeStore((s) => s.saveActiveCanvasAsTemplate);
+  const instantiateTemplate = useNodeStore((s) => s.instantiateTemplate);
 
+  const [viewMode, setViewMode] = useState<'canvas' | 'template'>('canvas');
   const [items, setItems] = useState<CanvasRecord[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderMap, setFolderMap] = useState<Record<string, string>>({});
@@ -67,11 +71,17 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
   const [projects, setProjects] = useState<ProjectBrief[]>([]);
   const [assignMenuFor, setAssignMenuFor] = useState<string | null>(null); // 正在为哪张画布选项目
 
+  /** 通知顶部页签组与其它 CanvasManager 实例刷新本地文件夹关系。 */
+  const notifyFoldersChanged = () => {
+    window.dispatchEvent(new CustomEvent('plotmesh-folders-changed'));
+  };
+
   const refresh = async () => {
     try {
       const all = await listCanvases({ workspaceId: 'workspace-default' });
       const filtered = all
         .filter((c) => !c.id.startsWith('recent-'))
+        .filter((c) => viewMode === 'template' ? c.kind === 'template' : c.kind !== 'template')
         .sort(
           (a, b) =>
             (b.lastOpenedAt ?? b.updatedAt) - (a.lastOpenedAt ?? a.updatedAt)
@@ -109,6 +119,15 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
         if (!r.ok) { const d = await r.json(); alert(`归属失败：${d.error}`); return; }
         const rec = await getCanvas(canvasId);
         if (rec) await putCanvas({ ...rec, projectId });
+        // 项目内第一张画布会自动建立项目默认文件夹；后续画布复用该文件夹。
+        const project = projects.find((item) => item.id === projectId);
+        const folder = await ensureProjectCanvasFolder({
+          projectId,
+          name: project?.name || '项目画布',
+          color: project?.color,
+        });
+        await assignCanvasToFolder(canvasId, folder.id);
+        notifyFoldersChanged();
       } else {
         // 移出到未分类：找当前所属项目调 unassign
         const rec = await getCanvas(canvasId);
@@ -122,6 +141,8 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
           if (!r.ok) { const d = await r.json(); alert(`移出失败：${d.error}`); return; }
         }
         if (rec) await putCanvas({ ...rec, projectId: 'project-default' });
+        await assignCanvasToFolder(canvasId, null);
+        notifyFoldersChanged();
       }
       refresh();
     } catch (e: any) {
@@ -132,7 +153,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
   useEffect(() => {
     if (open) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeCanvasId, activeCanvasName, isLoggedIn]);
+  }, [open, activeCanvasId, activeCanvasName, isLoggedIn, viewMode]);
 
   const handleSwitch = async (id: string) => {
     if (id === activeCanvasId || busy) return;
@@ -149,7 +170,49 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
     if (busy) return;
     setBusy(true);
     try {
-      await createNewCanvas();
+      // 在项目画布中点“新建”时，默认延续当前项目，并自动进入该项目的默认画布文件夹。
+      const current = activeCanvasId ? await getCanvas(activeCanvasId) : undefined;
+      const projectId = current?.projectId && current.projectId !== 'project-default'
+        ? current.projectId
+        : null;
+      const createdId = await createNewCanvas();
+      if (projectId) await assignToProject(createdId, projectId);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSaveAsTemplate = async () => {
+    if (busy || !activeCanvasId) return;
+    const name = prompt('模板名称：', `${activeCanvasName || '未命名画布'} · 模板`);
+    if (!name || !name.trim()) return;
+    const description = prompt('模板说明（可留空）：', '') || '';
+    setBusy(true);
+    try {
+      const id = await saveActiveCanvasAsTemplate(name.trim(), description.trim(), user?.id);
+      if (!id) {
+        alert('保存模板失败，请稍后重试。');
+        return;
+      }
+      await refresh();
+      alert(`模板「${name.trim()}」已保存，可在“模板”页签中编辑或使用。`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleInstantiate = async (rec: CanvasRecord) => {
+    if (busy) return;
+    const name = prompt('新画布名称：', `${rec.name || '模板'} · 实例`);
+    if (name === null) return;
+    setBusy(true);
+    try {
+      const id = await instantiateTemplate(rec.id, name.trim() || undefined, user?.id);
+      if (!id) {
+        alert('创建实例失败，请稍后重试。');
+        return;
+      }
       onClose();
     } finally {
       setBusy(false);
@@ -157,15 +220,16 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
   };
 
   const handleRename = async (rec: CanvasRecord) => {
-    const next = prompt('修改画布名称：', rec.name || '');
+    const next = prompt(`修改${rec.kind === 'template' ? '模板' : '画布'}名称：`, rec.name || '');
     if (!next || !next.trim() || next.trim() === rec.name) return;
     await renameCanvasById(rec.id, next.trim());
     refresh();
   };
 
   const handleDelete = async (rec: CanvasRecord) => {
+    const typeLabel = rec.kind === 'template' ? '模板' : '画布';
     const ok = confirm(
-      `确定删除画布「${rec.name || '未命名'}」？\n此操作不可撤销。`
+      `确定删除${typeLabel}「${rec.name || '未命名'}」？\n该项目会进入回收站。`
     );
     if (!ok) return;
     await deleteCanvasById(rec.id);
@@ -177,6 +241,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
     const name = prompt('新建文件夹，输入名称：', '新文件夹');
     if (!name || !name.trim()) return;
     await addFolder({ name: name.trim() });
+    notifyFoldersChanged();
     refresh();
   };
 
@@ -189,6 +254,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
     const name = editingFolderName.trim();
     if (name) {
       await updateFolder(id, { name });
+      notifyFoldersChanged();
       refresh();
     }
     setEditingFolderId(null);
@@ -202,16 +268,19 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
     );
     if (!ok) return;
     await removeFolder(f.id);
+    notifyFoldersChanged();
     refresh();
   };
 
   const handlePickColor = async (f: Folder, color: string) => {
     await updateFolder(f.id, { color });
+    notifyFoldersChanged();
     refresh();
   };
 
   const handleToggleFolder = async (f: Folder) => {
     await updateFolder(f.id, { collapsed: !f.collapsed });
+    // 抽屉自己的折叠状态不影响顶部页签组，故无需发 folders-changed。
     refresh();
   };
 
@@ -276,6 +345,7 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
   const handleDropOnFolder = async (folderId: string | null) => {
     if (!draggingCanvasId) return;
     await assignCanvasToFolder(draggingCanvasId, folderId);
+    notifyFoldersChanged();
     setDraggingCanvasId(null);
     setDragOverFolderId(null);
     refresh();
@@ -472,6 +542,87 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
             handleDelete(rec);
           }}
           title="删除画布"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  };
+
+  const renderTemplateRow = (rec: CanvasRecord) => {
+    const isActive = rec.id === activeCanvasId;
+    const nodeCount = Array.isArray(rec.nodes) ? rec.nodes.length : 0;
+    return (
+      <div
+        key={rec.id}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '10px',
+          margin: '4px 0',
+          borderRadius: 8,
+          background: isActive ? 'var(--accent-bg)' : 'transparent',
+          border: isActive ? '1px solid var(--accent)' : '1px solid var(--border-color)',
+        }}
+      >
+        <div style={{ flex: '1 1 100%', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{
+              fontSize: 9,
+              padding: '1px 5px',
+              borderRadius: 8,
+              color: 'var(--accent)',
+              background: 'var(--accent-bg)',
+            }}>模板</span>
+            <strong style={{
+              fontSize: 13,
+              color: 'var(--text-primary)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>{rec.name || '未命名模板'}</strong>
+          </div>
+          {rec.template?.description && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.4 }}>
+              {rec.template.description}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+            {nodeCount} 节点 · 草稿
+            {rec.template?.sourceCanvasId ? ' · 来源于画布' : ''}
+          </div>
+        </div>
+        <button
+          className="save-pkg-btn"
+          onClick={() => handleSwitch(rec.id)}
+          disabled={busy || isActive}
+          title={isActive ? '正在编辑此模板' : '打开并编辑模板'}
+          style={{ fontSize: 11, whiteSpace: 'nowrap' }}
+        >
+          {isActive ? '编辑中' : '编辑模板'}
+        </button>
+        <button
+          className="save-pkg-btn"
+          onClick={() => handleInstantiate(rec)}
+          disabled={busy}
+          title="从模板创建一张独立的可编辑画布"
+          style={{ fontSize: 11, whiteSpace: 'nowrap' }}
+        >
+          使用模板
+        </button>
+        <button
+          className="package-delete-btn"
+          onClick={() => handleRename(rec)}
+          title="重命名模板"
+        >
+          ✎
+        </button>
+        <button
+          className="package-delete-btn"
+          onClick={() => handleDelete(rec)}
+          title="删除模板"
         >
           ✕
         </button>
@@ -697,31 +848,68 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
         >
           <div style={{ fontSize: 14, fontWeight: 700 }}>📑 画布管理</div>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              className="save-pkg-btn"
-              onClick={handleAddFolder}
-              title="新建文件夹"
-              disabled={busy}
-            >
-              📁＋
-            </button>
-            <button
-              className="save-pkg-btn"
-              onClick={handleCreate}
-              title="新建画布"
-              disabled={busy}
-            >
-              📄＋
-            </button>
+            {viewMode === 'canvas' && (
+              <>
+                <button
+                  className="save-pkg-btn"
+                  onClick={handleSaveAsTemplate}
+                  title="将当前画布另存为可编辑模板"
+                  disabled={busy || !activeCanvasId}
+                  style={{ fontSize: 11 }}
+                >
+                  模板＋
+                </button>
+                <button
+                  className="save-pkg-btn"
+                  onClick={handleAddFolder}
+                  title="新建文件夹"
+                  disabled={busy}
+                >
+                  📁＋
+                </button>
+                <button
+                  className="save-pkg-btn"
+                  onClick={handleCreate}
+                  title="新建画布"
+                  disabled={busy}
+                >
+                  📄＋
+                </button>
+              </>
+            )}
             <button className="save-pkg-btn" onClick={onClose} title="关闭">
               ✕
             </button>
           </div>
         </div>
 
+        <div style={{ display: 'flex', gap: 4, padding: '8px 12px 0' }}>
+          {(['canvas', 'template'] as const).map((mode) => {
+            const active = viewMode === mode;
+            return (
+              <button
+                key={mode}
+                className="save-pkg-btn"
+                onClick={() => {
+                  setViewMode(mode);
+                  setSearch('');
+                }}
+                style={{
+                  flex: 1,
+                  background: active ? 'var(--accent-bg)' : 'var(--bg-card-body)',
+                  color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                  borderColor: active ? 'var(--accent)' : 'var(--border-color)',
+                }}
+              >
+                {mode === 'canvas' ? '画布' : '模板'}
+              </button>
+            );
+          })}
+        </div>
+
         <div style={{ padding: '8px 12px' }}>
           <input
-            placeholder="搜索画布..."
+            placeholder={viewMode === 'template' ? '搜索模板...' : '搜索画布...'}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{
@@ -753,8 +941,10 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
                 textAlign: 'center',
               }}
             >
-              没有匹配的画布
+              {viewMode === 'template' ? '没有匹配的模板' : '没有匹配的画布'}
             </div>
+          ) : viewMode === 'template' ? (
+            <>{filtered.map((rec) => renderTemplateRow(rec))}</>
           ) : (
             <>
               {/* 各文件夹 */}
@@ -807,9 +997,15 @@ export default function CanvasManager({ open, onClose }: CanvasManagerProps) {
             color: 'var(--text-muted, #94a3b8)',
           }}
         >
-          共 {items.length} 张画布 · {folders.length} 个文件夹
-          {hiddenSet.size > 0 && (
-            <span style={{ marginLeft: 8 }}>· 🚫 {hiddenSet.size} 张已从页签条隐藏</span>
+          {viewMode === 'template' ? (
+            <>共 {items.length} 个可编辑模板</>
+          ) : (
+            <>
+              共 {items.length} 张画布 · {folders.length} 个文件夹
+              {hiddenSet.size > 0 && (
+                <span style={{ marginLeft: 8 }}>· 🚫 {hiddenSet.size} 张已从页签条隐藏</span>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -11,6 +11,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { authFetch } from '../auth/api';
 import { useAuth } from '../auth/authContext';
 import { useNodeStore } from '../store/nodes';
+import ProjectMemberPicker from './ProjectMemberPicker';
 
 /* ─── 类型 ──────────────────────────────────────────────────── */
 
@@ -21,6 +22,9 @@ interface PoolMember {
   email: string;
   color: string;
   joinedAt?: number;
+  activeAssignments?: number;
+  pendingAssignments?: number;
+  expertiseScore?: number | null;
 }
 
 interface FolderItem {
@@ -36,6 +40,10 @@ interface FolderItem {
 interface CanvasStat {
   id: string;
   name: string;
+  ownerId?: string | null;
+  ownerName?: string;
+  parentCanvasId?: string | null;
+  sourceAssignmentId?: string | null;
   nodeCount: number;
   folderId: string | null;
   lastRunStatus: string | null;
@@ -52,6 +60,20 @@ interface DepConn {
   dstCanvasId: string;
   dstCanvasName: string;
   status: string;
+}
+
+interface AssignmentBrief {
+  id: string;
+  sourceCanvasId: string;
+  sourceCanvasName: string;
+  targetUserId: string;
+  targetUserName: string;
+  targetCanvasName?: string;
+  proposedCanvasName?: string;
+  effectiveTargetCanvasId?: string;
+  decisionStatus: 'pending' | 'accepted' | 'declined' | 'cancelled';
+  workStatus?: 'active' | 'completed' | null;
+  requestedExpertiseTags?: string[];
 }
 
 interface ProjectBrief {
@@ -74,6 +96,7 @@ interface ProjectDetail extends ProjectBrief {
   canvasFolderMap: Record<string, string>;
   canvases: CanvasStat[];
   connections: DepConn[];
+  assignments: AssignmentBrief[];
 }
 
 /* ─── Toast 通知 ──────────────────────────────────────────── */
@@ -115,8 +138,6 @@ export default function DashboardView() {
 
   // ── 成员添加内联表单 ──
   const [showAddMember, setShowAddMember] = useState(false);
-  const [memberEmail, setMemberEmail] = useState('');
-  const [memberRole, setMemberRole] = useState('editor');
 
   // ── 项目名/描述编辑 ──
   const [editingName, setEditingName] = useState(false);
@@ -225,29 +246,6 @@ export default function DashboardView() {
 
   /* ─── 成员管理 ─────────────────────────────────────────── */
 
-  const addMember = async () => {
-    if (!detail || !memberEmail.trim()) return;
-    try {
-      const r = await authFetch(`/api/project/${detail.id}/flex-pool`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'add', email: memberEmail.trim(), role: memberRole }),
-      });
-      const d = await r.json();
-      if (r.ok) {
-        toast('成员已添加');
-        setShowAddMember(false);
-        setMemberEmail('');
-        setMemberRole('editor');
-        loadDetail(detail.id);
-      } else {
-        toast(`添加失败：${d.error}`, 'err');
-      }
-    } catch (e: any) {
-      toast(`添加失败：${e.message}`, 'err');
-    }
-  };
-
   const removeMember = async (userId: string) => {
     if (!detail) return;
     if (!confirm('确认移除该成员？')) return;
@@ -343,6 +341,18 @@ export default function DashboardView() {
     } catch (e: any) { toast(`发送失败：${e.message}`, 'err'); }
   };
 
+  const completeAssignment = async (assignmentId: string) => {
+    try {
+      const r = await authFetch(`/api/assignment/${assignmentId}/complete`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || '标记完成失败');
+      toast('协作分配已标记完成');
+      if (detail) loadDetail(detail.id);
+    } catch (e: any) {
+      toast(`标记失败：${e.message}`, 'err');
+    }
+  };
+
   const batchRetry = async (canvasIds: string[]) => {
     if (!confirm(`确认批量重试 ${canvasIds.length} 张画布？`)) return;
     try {
@@ -369,9 +379,11 @@ export default function DashboardView() {
 
   const roleColor: Record<string, string> = {
     owner: '#6366f1', admin: '#8b5cf6', editor: '#10b981', viewer: '#94a3b8',
+    'system-admin': '#ef4444', 'canvas-owner': '#3b82f6',
   };
   const roleLabel: Record<string, string> = {
     owner: 'Owner', admin: 'Admin', editor: '编辑', viewer: '查看',
+    'system-admin': '系统管理员', 'canvas-owner': '需求 Owner',
   };
 
   const btnSmall: React.CSSProperties = {
@@ -428,7 +440,7 @@ export default function DashboardView() {
   if (detail) {
     const { roots, unassigned } = buildFolderTree(detail.folders, detail.canvasFolderMap, detail.canvases);
     const failedCanvases = detail.canvases.filter((c) => c.stuckCount > 0);
-    const canManage = detail.myRole === 'owner' || detail.myRole === 'admin';
+    const canManage = detail.myRole === 'owner' || detail.myRole === 'admin' || detail.myRole === 'system-admin';
 
     const renderFolderNode = (f: any, depth = 0) => (
       <div key={f.id} style={{ marginLeft: depth * 16, marginTop: 4 }}>
@@ -463,9 +475,10 @@ export default function DashboardView() {
           width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
           background: statusColor[c.lastRunStatus || 'null'],
         }} />
-        <span style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer', flex: 1 }}
+        <span style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer', flex: 1, minWidth: 0 }}
           onClick={() => switchCanvas(c.id)}>
           {c.name}
+          {c.ownerName && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-muted)' }}>· {c.ownerName}</span>}
         </span>
         <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
           {c.nodeCount}n
@@ -565,6 +578,51 @@ export default function DashboardView() {
               </>
             )}
 
+            {/* Assignment 定义工作层级；跨画布 connection 只表示数据依赖。 */}
+            {detail.assignments.length > 0 && (
+              <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--bg-card-body)' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>向下协作链路</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>
+                  由成员接受的卷入关系构成需求上下游；数据连线不等于人员层级。
+                </div>
+                {detail.assignments.map((assignment) => {
+                  const status = assignment.decisionStatus === 'accepted'
+                    ? (assignment.workStatus === 'completed' ? '已完成' : '进行中')
+                    : assignment.decisionStatus === 'pending'
+                      ? '待成员接受'
+                      : assignment.decisionStatus === 'declined'
+                        ? '已拒绝'
+                        : '已取消';
+                  const color = assignment.decisionStatus === 'accepted'
+                    ? (assignment.workStatus === 'completed' ? '#22c55e' : '#3b82f6')
+                    : assignment.decisionStatus === 'pending' ? '#f59e0b' : '#94a3b8';
+                  return (
+                    <div key={assignment.id} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 5, fontSize: 11, color: 'var(--text-secondary)' }}>
+                      <button onClick={() => switchCanvas(assignment.sourceCanvasId)} style={{ padding: 0, border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>
+                        {assignment.sourceCanvasName}
+                      </button>
+                      <span>→</span>
+                      <strong style={{ color: 'var(--text-primary)' }}>{assignment.targetUserName}</strong>
+                      <span>→</span>
+                      {assignment.effectiveTargetCanvasId ? (
+                        <button onClick={() => switchCanvas(assignment.effectiveTargetCanvasId!)} style={{ padding: 0, border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>
+                          {assignment.targetCanvasName || assignment.proposedCanvasName || '下游画布'}
+                        </button>
+                      ) : (
+                        <span>{assignment.targetCanvasName || assignment.proposedCanvasName || '待创建下游画布'}</span>
+                      )}
+                      {assignment.decisionStatus === 'accepted' && assignment.workStatus === 'active' && (canManage || assignment.targetUserId === user?.id) && (
+                        <button onClick={() => completeAssignment(assignment.id)} style={{ marginLeft: 'auto', padding: '2px 7px', borderRadius: 5, border: '1px solid #22c55e', background: 'transparent', color: '#22c55e', cursor: 'pointer', fontSize: 10 }}>
+                          标记完成
+                        </button>
+                      )}
+                      <span style={{ marginLeft: assignment.decisionStatus === 'accepted' && assignment.workStatus === 'active' && (canManage || assignment.targetUserId === user?.id) ? 0 : 'auto', fontSize: 10, padding: '1px 6px', borderRadius: 8, background: `${color}22`, color }}>{status}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {/* 跨画布依赖 */}
             {detail.connections.length > 0 && (
               <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: 8, border: '1px dashed var(--border-color)', background: 'var(--bg-card-body)' }}>
@@ -622,31 +680,23 @@ export default function DashboardView() {
         {/* 成员管理 */}
         {tab === 'pool' && (
           <>
+            <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--accent-bg)', color: 'var(--text-secondary)', fontSize: 11, lineHeight: 1.6 }}>
+              Flex Pool 是项目的人员候选池，不是画布列表。画布通过 Assignment 在成员接受后生成或授权。
+            </div>
             {canManage && (
               <>
-                <button onClick={() => { setShowAddMember(!showAddMember); setMemberEmail(''); setMemberRole('editor'); }} style={{
+                <button onClick={() => setShowAddMember(!showAddMember)} style={{
                   ...btnSmall, marginBottom: showAddMember ? 4 : 8, borderColor: 'var(--accent)', color: 'var(--accent)',
                 }}>{showAddMember ? '取消' : '＋ 添加成员'}</button>
                 {showAddMember && (
-                  <div style={{
-                    display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8,
-                    padding: '8px 10px', borderRadius: 6, background: 'var(--bg-card)', border: '1px solid var(--accent)',
-                  }}>
-                    <input placeholder="邮箱" value={memberEmail} onChange={(e) => setMemberEmail(e.target.value)}
-                      style={{ flex: 1, fontSize: 12, padding: '4px 8px', border: '1px solid var(--border-color)', borderRadius: 4 }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') addMember(); }}
-                    />
-                    <select value={memberRole} onChange={(e) => setMemberRole(e.target.value)}
-                      style={{ fontSize: 11, padding: '4px 6px', borderRadius: 4, border: '1px solid var(--border-color)' }}>
-                      <option value="admin">Admin</option>
-                      <option value="editor">编辑</option>
-                      <option value="viewer">查看</option>
-                    </select>
-                    <button onClick={addMember} style={{
-                      fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
-                      border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 600,
-                    }}>确认</button>
-                  </div>
+                  <ProjectMemberPicker
+                    projectId={detail.id}
+                    onAdded={async () => {
+                      toast('成员已添加');
+                      await loadDetail(detail.id);
+                    }}
+                    onError={(message) => toast(`添加失败：${message}`, 'err')}
+                  />
                 )}
               </>
             )}
@@ -664,8 +714,13 @@ export default function DashboardView() {
                   }}>
                     <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: m.color }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ fontSize: 12 }}>{m.name}</span>
-                      <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--text-muted)' }}>{m.email}</span>
+                      <div>
+                        <span style={{ fontSize: 12 }}>{m.name}</span>
+                        <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--text-muted)' }}>{m.email}</span>
+                      </div>
+                      <div style={{ marginTop: 2, fontSize: 10, color: 'var(--text-muted)' }}>
+                        活跃分配 {m.activeAssignments || 0} · 待确认 {m.pendingAssignments || 0} · 擅长度待积累
+                      </div>
                     </div>
                     {canManage && m.role !== 'owner' ? (
                       <select value={m.role} onChange={(e) => changeMemberRole(m.userId, e.target.value)}

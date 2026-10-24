@@ -33,6 +33,8 @@ import inboxRouter from './routes/inbox.js';
 import eventsRouter from './routes/events.js';
 import dashboardRouter from './routes/dashboard.js';
 import projectRouter from './routes/project.js';
+import assignmentRouter from './routes/assignment.js';
+import packageLibraryRouter from './routes/packageLibrary.js';
 import { printApiTokenBanner } from './middleware/apiToken.js';
 import { optionalAuth } from './auth/middleware.js';
 import { getServerConfig } from './utils/serverConfig.js';
@@ -75,6 +77,10 @@ app.use('/api/events', eventsRouter);
 app.use('/api/dashboard', dashboardRouter);
 // v2.0 Phase C 续：项目一等实体
 app.use('/api/project', projectRouter);
+// v2.0：基于项目人员池的协作分配
+app.use('/api/assignment', assignmentRouter);
+// v2.0：公共模板与项目 Team 分享常用功能库
+app.use('/api/package-library', packageLibraryRouter);
 
 // 健康检查
 app.get('/health', (_req, res) => {

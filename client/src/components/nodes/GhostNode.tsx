@@ -13,7 +13,7 @@ type Props = { data: { ghostType?: string; ghostLabel?: string } };
 
 const TYPE_EMOJI: Record<string, string> = {
   textPrompt: '✏️', llm: '🤖', output: '📤', textTransform: '🔤',
-  condition: '🔀', webLink: '🔗', fileUpload: '📁', splitter: '🍴',
+  condition: '🔀', webLink: '🔗', fileUpload: '📁', imageInput: '🖼️', imageAI: '🎨', splitter: '🍴',
   pieChart: '🥧', barChart: '📊', extract: '📊', themeNode: '🎨',
 };
 

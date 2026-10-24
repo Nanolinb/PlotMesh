@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { authFetch } from './api';
+import { reloadCanvasFromServer, useNodeStore } from '../store/nodes';
 
 export interface InboxItem {
   id: string;
@@ -12,7 +13,7 @@ export interface InboxItem {
   title: string;
   body: string;
   from: { userId: string; name: string };
-  target: { canvasId?: string; nodeId?: string } | null;
+  target: { canvasId?: string; nodeId?: string; assignmentId?: string } | null;
   actions: { label: string; action: string; payload?: any }[];
   readAt: number | null;
   createdAt: number;
@@ -85,6 +86,7 @@ export default function InboxDrawer({ open, onClose }: Props) {
   const handleAction = async (it: InboxItem, action: string, payload?: any) => {
     const connId = payload?.connId;
     const canvasId = payload?.canvasId;
+    const assignmentId = payload?.assignmentId;
     try {
       setActingId(it.id);
       if (action === 'accept-reference' && connId) {
@@ -97,6 +99,21 @@ export default function InboxDrawer({ open, onClose }: Props) {
           body: JSON.stringify({ reason: '' }),
         });
         if (!r.ok) throw new Error((await r.json()).error || '拒绝失败');
+      } else if (action === 'accept-assignment' && assignmentId) {
+        const r = await authFetch(`/api/assignment/${assignmentId}/accept`, { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || '接受分配失败');
+        if (d.sourceCanvasId) await reloadCanvasFromServer(d.sourceCanvasId);
+        if (d.effectiveTargetCanvasId) {
+          await reloadCanvasFromServer(d.effectiveTargetCanvasId);
+          await useNodeStore.getState().switchActiveCanvas(d.effectiveTargetCanvasId);
+          onClose();
+        }
+      } else if (action === 'decline-assignment' && assignmentId) {
+        const r = await authFetch(`/api/assignment/${assignmentId}/decline`, { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || '拒绝分配失败');
+        if (d.sourceCanvasId) await reloadCanvasFromServer(d.sourceCanvasId);
       } else if (action === 'retry-canvas' && canvasId) {
         // AI PM L1：失败画布一键重跑
         const r = await authFetch(`/api/canvas/${canvasId}/run`, { method: 'POST' });
@@ -230,6 +247,7 @@ export default function InboxDrawer({ open, onClose }: Props) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4, color: 'var(--text-primary)' }}>
                   {it.kind === 'reference' && '🔗 '}
+                  {it.kind === 'assignment' && '👥 '}
                   {it.kind === 'execution' && '⚠️ '}
                   {it.kind === 'daily' && '📊 '}
                   {it.kind === 'mention' && '💬 '}
@@ -246,7 +264,7 @@ export default function InboxDrawer({ open, onClose }: Props) {
               {it.actions.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   {it.actions.map((a, idx) => {
-                    const isReject = a.action === 'reject-reference';
+                    const isReject = a.action === 'reject-reference' || a.action === 'decline-assignment';
                     return (
                       <button
                         key={idx}

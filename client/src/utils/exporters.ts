@@ -5,6 +5,7 @@
 import { Document, Packer, Paragraph, HeadingLevel, TextRun } from 'docx';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
+import { extractImagesFromPayload, resolveImageUrl } from './imagePayload';
 
 type BaseOpts = { filename: string };
 
@@ -180,6 +181,16 @@ export function exportAsPdf(text: string, { filename }: BaseOpts): void {
 
 /** 从 URL / base64 下载图片。如果 output 包含图片 URL，就下载它 */
 export async function exportAsImage(text: string, { filename }: BaseOpts): Promise<void> {
+  // 0) PlotMesh 图片 envelope（支持稳定的 /uploads 相对路径）
+  const payloadImage = extractImagesFromPayload(text)[0];
+  const payloadUrl = resolveImageUrl(payloadImage);
+  if (payloadUrl) {
+    const response = await fetch(payloadUrl);
+    if (!response.ok) throw new Error(`图片下载失败（HTTP ${response.status}）`);
+    triggerDownload(await response.blob(), filename);
+    return;
+  }
+
   // 1) data URL
   const dataMatch = text.match(/data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+/);
   if (dataMatch) {

@@ -212,15 +212,16 @@ router.delete('/canvas/:id/flex-pool/:targetUserId', (req, res) => {
  */
 router.get('/overview', async (req, res) => {
   const userId = req.user?.id;
+  const systemAdmin = req.user?.role === 'admin';
   const p = readPayload();
   const allUsers = await listAllUsersWithRoles();
   const userMap = Object.fromEntries(allUsers.map((u) => [u.id, u]));
   const connections = p.connections || [];
 
-  // 按 ownerId 分组，无主画布各自独立
-  const projects = new Map(); // ownerId → [canvas]
+  // 按 ownerId 分组；所有无主画布统一归入一个“待整理”组，避免一张画布铺成一个项目。
+  const projects = new Map(); // ownerId / __orphan → [canvas]
   for (const c of (p.canvases || []).filter((c) => !c.deleted)) {
-    const key = c.ownerId || `__orphan_${c.id}`;
+    const key = c.ownerId || '__orphan';
     if (!projects.has(key)) projects.set(key, []);
     projects.get(key).push(c);
   }
@@ -228,8 +229,9 @@ router.get('/overview', async (req, res) => {
   const result = [];
   for (const [ownerKey, canvases] of projects) {
     // 只返回当前用户有权限看的项目（owner/admin/editor/viewer 或无主画布）
-    const realOwnerId = ownerKey.startsWith('__orphan_') ? null : ownerKey;
+    const realOwnerId = ownerKey === '__orphan' ? null : ownerKey;
     const memberCanvases = canvases.filter((c) => {
+      if (systemAdmin) return true;
       const role = getRoleInCanvas(c, userId);
       return role || !c.ownerId; // 在 pool 里 或 无主
     });

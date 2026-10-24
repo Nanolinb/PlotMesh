@@ -1,5 +1,5 @@
 /**
- * LLMNode · 大模型调用节点
+ * LLMNode · 文本 AI 调用节点
  * ---------------------------------------------------------------
  * 工作流的"大脑"：把上游的提示词 + 文件内容打包发给某个 LLM 服务商，
  * 把模型的回答作为输出传给下游。
@@ -24,27 +24,36 @@ type Props = {
 };
 
 function LLMNode({ id, data, selected }: Props) {
+  const normalizedTitle = !data.label || data.label === '大模型' || data.label === '🤖 大模型'
+    ? '文本AI'
+    : data.label;
   const [isEditingSystem, setIsEditingSystem] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [localTitle, setLocalTitle] = useState(data.label || '大模型');
+  const [localTitle, setLocalTitle] = useState(normalizedTitle);
   const [localSystemPrompt, setLocalSystemPrompt] = useState(data.systemPrompt || '');
   const [localModel, setLocalModel] = useState(data.model || 'deepseek');
   const [localCustomModel, setLocalCustomModel] = useState(data.customModelName || '');
   const [localTemp, setLocalTemp] = useState(data.temperature ?? 0.7);
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
+  const cachedOutput = String(data.output || (data as any).streamOutput || '').trim();
 
   useEffect(() => { setLocalSystemPrompt(data.systemPrompt || ''); }, [data.systemPrompt]);
   useEffect(() => { setLocalModel(data.model || 'deepseek'); }, [data.model]);
   useEffect(() => { setLocalCustomModel(data.customModelName || ''); }, [data.customModelName]);
   useEffect(() => { setLocalTemp(data.temperature ?? 0.7); }, [data.temperature]);
-  useEffect(() => { setLocalTitle(data.label || '大模型'); }, [data.label]);
+  useEffect(() => { setLocalTitle(normalizedTitle); }, [normalizedTitle]);
+  useEffect(() => {
+    if (data.label === '大模型' || data.label === '🤖 大模型') {
+      updateNodeData(id, { label: '文本AI' } as any);
+    }
+  }, [data.label, id, updateNodeData]);
 
   const commitTitle = useCallback(() => {
     setEditingTitle(false);
     const v = localTitle.trim();
     if (v) updateNodeData(id, { label: v } as any);
-    else setLocalTitle(data.label || '大模型');
-  }, [id, localTitle, updateNodeData, data.label]);
+    else setLocalTitle(normalizedTitle);
+  }, [id, localTitle, updateNodeData, normalizedTitle]);
 
   const handleSystemPromptChange = useCallback((value: string) => {
     setLocalSystemPrompt(value);
@@ -65,6 +74,11 @@ function LLMNode({ id, data, selected }: Props) {
     setLocalTemp(value);
     updateNodeData(id, { temperature: value });
   }, [id, updateNodeData]);
+
+  const handleEmitCachedOutput = useCallback(() => {
+    if (!cachedOutput || data.status === 'running') return;
+    window.dispatchEvent(new CustomEvent('plotmesh-emit-cached-llm-output', { detail: { nodeId: id } }));
+  }, [cachedOutput, data.status, id]);
 
   /** 各厂商默认版本号（仅 placeholder 提示用，不参与运行） */
   const DEFAULT_MODEL_NAMES: Record<string, string> = {
@@ -96,7 +110,7 @@ function LLMNode({ id, data, selected }: Props) {
             onBlur={commitTitle}
             onKeyDown={(e) => {
               if (e.key === 'Enter') commitTitle();
-              if (e.key === 'Escape') { setEditingTitle(false); setLocalTitle(data.label || '大模型'); }
+              if (e.key === 'Escape') { setEditingTitle(false); setLocalTitle(normalizedTitle); }
               e.stopPropagation();
             }}
             onClick={(e) => e.stopPropagation()}
@@ -104,7 +118,7 @@ function LLMNode({ id, data, selected }: Props) {
           />
         ) : (
           <span className="node-title" onDoubleClick={(e) => { e.stopPropagation(); setEditingTitle(true); }} title="双击重命名" style={{ flex: 1, cursor: 'text' }}>
-            {data.label || '大模型'}
+            {normalizedTitle}
           </span>
         )}
       </div>
@@ -316,11 +330,34 @@ function LLMNode({ id, data, selected }: Props) {
           })()}
         </div>
 
-        {(data as any).streamOutput || data.output ? (
-          <div style={{ background: '#f0fdf4', borderRadius: '6px', padding: '6px', fontSize: '11px', maxHeight: '100px', overflow: 'auto', color: '#166534' }}>
-            {((data as any).streamOutput || data.output).substring(0, 200)}
-            {((data as any).streamOutput || data.output).length > 200 ? '...' : ''}
-          </div>
+        {cachedOutput ? (
+          <>
+            <div style={{ background: '#f0fdf4', borderRadius: '6px', padding: '6px', fontSize: '11px', maxHeight: '100px', overflow: 'auto', color: '#166534' }}>
+              {cachedOutput.substring(0, 200)}
+              {cachedOutput.length > 200 ? '...' : ''}
+            </div>
+            <button
+              className="nodrag"
+              type="button"
+              onClick={(event) => { event.stopPropagation(); handleEmitCachedOutput(); }}
+              disabled={data.status === 'running'}
+              title="不重新调用模型，直接使用当前缓存结果执行所有下游节点"
+              style={{
+                width: '100%', marginTop: 6, padding: '5px 7px', borderRadius: 5,
+                border: '1px solid #f59e0b', background: 'rgba(245,158,11,.10)',
+                color: '#b45309', fontSize: 11, fontWeight: 600,
+                cursor: data.status === 'running' ? 'not-allowed' : 'pointer',
+                opacity: data.status === 'running' ? 0.55 : 1,
+              }}
+            >
+              ↪ 下发缓存结果到下游
+            </button>
+            {(data as any).cachedOutputEmittedAt && (
+              <div style={{ marginTop: 3, fontSize: 9, color: 'var(--text-muted)' }}>
+                已手动下发
+              </div>
+            )}
+          </>
         ) : null}
 
         {data.status === 'running' && (

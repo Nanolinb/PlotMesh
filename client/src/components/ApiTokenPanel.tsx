@@ -15,9 +15,10 @@
  *   - 后端从 v1.6.1 起把 token 持久化到 ~/.plotmesh/api-token，重启不丢
  *   - PLOTMESH_API_TOKEN env 优先级最高；写在 .env 里时 source='env'，
  *     此时 canReset=false（重置无效，要先取消 env 变量）
- *   - 这两个端点只允许 localhost 访问，前端在 dev 与生产都能用
+ *   - 开发时允许 localhost；NAS / 生产环境仅已登录管理员可访问
  */
 import { useEffect, useState, useCallback } from 'react';
+import { authFetch } from '../auth/api';
 
 // v1.6.3：相对路径，让 Vite dev proxy（dev）和 nginx 反代（生产/Docker）都生效
 const API_BASE = '/api/canvas/auth';
@@ -80,7 +81,7 @@ export default function ApiTokenPanel({ embedded = false }: Props) {
     try {
       setLoading(true);
       setErr(null);
-      const r = await fetch(`${API_BASE}/token`);
+      const r = await authFetch(`${API_BASE}/token`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = (await r.json()) as TokenInfo;
       setInfo(data);
@@ -94,7 +95,7 @@ export default function ApiTokenPanel({ embedded = false }: Props) {
   // 同时拉远端访问开关状态
   const fetchServerConfig = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/server-config`);
+      const r = await authFetch(`${API_BASE}/server-config`);
       if (!r.ok) return;
       const data = await r.json();
       setRemoteAccess(!!data.remoteAccess);
@@ -124,7 +125,7 @@ export default function ApiTokenPanel({ embedded = false }: Props) {
     }
     try {
       setRemoteSaving(true);
-      const r = await fetch(`${API_BASE}/server-config`, {
+      const r = await authFetch(`${API_BASE}/server-config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ remoteAccess: next }),
@@ -161,7 +162,7 @@ export default function ApiTokenPanel({ embedded = false }: Props) {
     try {
       setLoading(true);
       setErr(null);
-      const r = await fetch(`${API_BASE}/reset-token`, { method: 'POST' });
+      const r = await authFetch(`${API_BASE}/reset-token`, { method: 'POST' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.message || `HTTP ${r.status}`);
       setInfo({ token: data.token, source: data.source, canReset: data.source !== 'env' });

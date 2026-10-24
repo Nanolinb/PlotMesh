@@ -32,6 +32,8 @@
 import { Router } from 'express';
 import fs from 'fs';
 import crypto from 'crypto';
+import { requireAuth } from '../auth/middleware.js';
+import { getServerConfig } from '../utils/serverConfig.js';
 import {
   getStoreFilePath,
   getStoreTempPath,
@@ -39,6 +41,13 @@ import {
 } from '../utils/storePath.js';
 
 const router = Router();
+
+// 联网多人模式下，同步快照包含整个共享项目数据，必须使用登录身份保护；
+// 离线模式保持原有本机无登录体验。
+router.use((req, res, next) => {
+  if (getServerConfig().auth?.required) return requireAuth(req, res, next);
+  return next();
+});
 
 /**
  * 同步读取并解析 store.json；不存在返 null；损坏抛错（调用方决定如何处理）。
@@ -109,6 +118,96 @@ function hashPayload(payload) {
   return h.digest('hex').slice(0, 16);
 }
 
+function projectRole(project, userId) {
+  if (!project || !userId) return null;
+  if (project.ownerId === userId) return 'owner';
+  return (project.flexPool || []).find((entry) => entry.userId === userId)?.role || null;
+}
+
+function visibleCanvasIds(payload, user) {
+  const canvases = (payload.canvases || []).filter((canvas) => !canvas.deleted);
+  if (!user || user.role === 'admin') return new Set(canvases.map((canvas) => canvas.id));
+  const projects = payload.projects || [];
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const visible = new Set();
+  for (const canvas of canvases) {
+    const role = projectRole(projectById.get(canvas.projectId), user.id);
+    if (role === 'owner' || role === 'admin'
+      || canvas.ownerId === user.id
+      || (canvas.sharedWith || []).includes(user.id)) {
+      visible.add(canvas.id);
+    }
+  }
+  for (const assignment of (payload.assignments || [])) {
+    if (assignment.targetUserId === user.id && assignment.effectiveTargetCanvasId) {
+      visible.add(assignment.effectiveTargetCanvasId);
+    }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const assignment of (payload.assignments || [])) {
+      if (assignment.decisionStatus !== 'accepted' || !assignment.effectiveTargetCanvasId) continue;
+      if (visible.has(assignment.sourceCanvasId) && !visible.has(assignment.effectiveTargetCanvasId)) {
+        visible.add(assignment.effectiveTargetCanvasId);
+        changed = true;
+      }
+    }
+  }
+  return visible;
+}
+
+function filterPayloadForUser(payload, user) {
+  if (!payload || !user || user.role === 'admin') return payload;
+  const visible = visibleCanvasIds(payload, user);
+  const visibleCanvases = (payload.canvases || []).filter((canvas) => visible.has(canvas.id));
+  const visibleProjectIds = new Set(visibleCanvases.map((canvas) => canvas.projectId).filter(Boolean));
+  for (const project of (payload.projects || [])) {
+    if (projectRole(project, user.id)) visibleProjectIds.add(project.id);
+  }
+  return {
+    ...payload,
+    projects: (payload.projects || []).filter((project) =>
+      !Array.isArray(project.flexPool) || visibleProjectIds.has(project.id)
+    ),
+    canvases: visibleCanvases,
+    connections: (payload.connections || []).filter((connection) =>
+      visible.has(connection.srcCanvasId) && visible.has(connection.dstCanvasId)
+    ),
+    assignments: (payload.assignments || []).filter((assignment) =>
+      assignment.requestedByUserId === user.id
+      || assignment.targetUserId === user.id
+      || visible.has(assignment.sourceCanvasId)
+      || visible.has(assignment.effectiveTargetCanvasId)
+    ),
+  };
+}
+
+function summaryForPayload(payload) {
+  const canvases = (payload?.canvases || []).filter((canvas) => !canvas.deleted);
+  return {
+    canvasCount: canvases.length,
+    nodeCount: canvases.reduce((sum, canvas) => sum + (canvas.nodes || []).length, 0),
+    sizeBytes: Buffer.byteLength(JSON.stringify(payload || null), 'utf8'),
+  };
+}
+
+function canEditCanvas(payload, canvas, user) {
+  if (!user || user.role === 'admin') return true;
+  if (canvas.ownerId === user.id || (canvas.sharedWith || []).includes(user.id)) return true;
+  const project = (payload.projects || []).find((item) => item.id === canvas.projectId && !item.deleted);
+  const role = projectRole(project, user.id);
+  return role === 'owner' || role === 'admin';
+}
+
+function canCreateCanvas(payload, canvas, user) {
+  if (!user || user.role === 'admin') return true;
+  const project = (payload.projects || []).find((item) => item.id === canvas.projectId && !item.deleted);
+  if (!project || !Array.isArray(project.flexPool)) return true;
+  const role = projectRole(project, user.id);
+  return role === 'owner' || role === 'admin' || role === 'editor';
+}
+
 /**
  * 原子写盘：先写 tmp 再 rename。
  */
@@ -124,7 +223,7 @@ function writeStoreAtomic(obj) {
  * GET /api/sync/meta
  * 轻量元数据。前端启动时调它判断是否需要弹冲突窗。
  */
-router.get('/meta', (_req, res) => {
+router.get('/meta', (req, res) => {
   let store;
   try {
     store = readStoreSync();
@@ -145,12 +244,13 @@ router.get('/meta', (_req, res) => {
       summary: null,
     });
   }
+  const visiblePayload = filterPayloadForUser(store.payload, req.user);
   return res.json({
     exists: true,
     version: store.version || 0,
     updatedAt: store.updatedAt || null,
-    hash: hashPayload(store.payload),
-    summary: store.summary || null,
+    hash: hashPayload(visiblePayload),
+    summary: summaryForPayload(visiblePayload),
   });
 });
 
@@ -158,7 +258,7 @@ router.get('/meta', (_req, res) => {
  * GET /api/sync/snapshot
  * 完整快照。文件不存在返 200 + null（不返 404，避免前端 fetch 误把 404 当致命错）。
  */
-router.get('/snapshot', (_req, res) => {
+router.get('/snapshot', (req, res) => {
   let store;
   try {
     store = readStoreSync();
@@ -171,11 +271,12 @@ router.get('/snapshot', (_req, res) => {
     });
   }
   if (!store) return res.json(null);
+  const visiblePayload = filterPayloadForUser(store.payload || null, req.user);
   return res.json({
     version: store.version || 0,
     updatedAt: store.updatedAt || null,
-    payload: store.payload || null,
-    summary: store.summary || null,
+    payload: visiblePayload,
+    summary: summaryForPayload(visiblePayload),
   });
 });
 
@@ -246,50 +347,117 @@ router.put('/snapshot', (req, res) => {
     const cur = current && current.payload ? current.payload : null;
     const patch = {};
 
-    // connections：前端不带就用 server 旧的
-    if (cur && Array.isArray(cur.connections) && !Array.isArray(payload.connections)) {
-      patch.connections = cur.connections;
-    }
+    // connections / assignments 是 server 权威集合。当前客户端不管理它们；即使旧客户端
+    // 显式传空数组，也不能覆盖服务端状态机数据。
+    if (cur && Array.isArray(cur.connections)) patch.connections = cur.connections;
+    if (cur && Array.isArray(cur.assignments)) patch.assignments = cur.assignments;
 
-    // projects 合并保护（union by id）：
-    // server 端第一类实体项目（带 flexPool 标记，id 形如 proj-xxx）由 /api/project 管理，
-    // 前端 IDB 只携带它自己的 Project（如 project-default），不含这些。
-    // 直接覆盖会丢失 server 项目 → 这里做按 id 合并：
-    //   - 前端带来的 projects 全部保留
-    //   - server 上前端没带、且是"被管理的"项目（有 flexPool）的，补回去
+    // 一等项目及其人员池由 /api/project 管理；客户端快照只能携带旧式本地 Project，
+    // 不得通过同 id 对象覆盖 owner/flexPool/folders 等服务端字段。
     if (cur && Array.isArray(cur.projects)) {
+      const serverProjectById = new Map(cur.projects.map((project) => [project.id, project]));
       const frontProjects = Array.isArray(payload.projects) ? payload.projects : [];
-      const frontIds = new Set(frontProjects.map((p) => p && p.id));
-      const managedMissing = cur.projects.filter(
-        (p) => p && p.flexPool && !frontIds.has(p.id)
+      const mergedProjects = frontProjects.map((project) => {
+        const serverProject = serverProjectById.get(project?.id);
+        return serverProject && Array.isArray(serverProject.flexPool) ? serverProject : project;
+      });
+      const frontIds = new Set(frontProjects.map((project) => project && project.id));
+      const serverMissing = cur.projects.filter(
+        (project) => project && Array.isArray(project.flexPool) && !frontIds.has(project.id),
       );
-      if (managedMissing.length) {
-        patch.projects = [...frontProjects, ...managedMissing];
-      }
+      patch.projects = [...mergedProjects, ...serverMissing];
     }
 
-    // canvases.projectId 保护：用 server 旧值回填到同 id 画布上
-    // （仅当前端该画布没有显式 projectId，或仍是默认值时）
+    // Canvas 元数据合并保护：旧客户端在保存 nodes/edges 时会重建对象，可能丢掉
+    // server 管理的 owner/shared/legacy ACL/projectId；Assignment 接受后由 server 创建的
+    // 下游画布也必须做 union，否则尚未拉到本地的客户端快照会把它整张擦掉。
     if (cur && Array.isArray(cur.canvases) && Array.isArray(payload.canvases)) {
-      const oldProjById = new Map(
-        cur.canvases.map((c) => [c.id, c.projectId])
-      );
-      patch.canvases = payload.canvases.map((c) => {
-        const serverPid = oldProjById.get(c.id);
-        // server 上有明确归属（非空/非默认），而前端没带或还是默认 → 用 server 的
-        const frontPid = c.projectId;
-        const frontIsUnset = !frontPid || frontPid === 'project-default';
-        if (serverPid && serverPid !== 'project-default' && frontIsUnset) {
-          return { ...c, projectId: serverPid };
+      const oldById = new Map(cur.canvases.map((c) => [c.id, c]));
+      const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+      const authorizedFrontCanvases = payload.canvases.map((canvas) => {
+        const old = oldById.get(canvas?.id);
+        if (old) return canEditCanvas(cur, old, req.user) ? canvas : old;
+        if (!canCreateCanvas(cur, canvas, req.user)) return null;
+        return { ...canvas, ownerId: canvas.ownerId || req.user?.id || null, sharedWith: canvas.sharedWith || [] };
+      }).filter(Boolean);
+      const frontIds = new Set(authorizedFrontCanvases.map((c) => c && c.id));
+      const terminalAssignmentStates = new Set(['accepted', 'declined', 'completed']);
+      const assignmentById = new Map((cur.assignments || []).map((assignment) => [assignment.id, assignment]));
+      const isProtectedAssignmentNode = (node) => {
+        const id = node?.data?.assignmentId;
+        if (!id) return false;
+        const assignment = assignmentById.get(id);
+        return !!assignment && assignment.decisionStatus !== 'cancelled';
+      };
+      const mergedCanvases = authorizedFrontCanvases.map((c) => {
+        const old = oldById.get(c.id);
+        if (!old) return c;
+
+        const next = {
+          ...c,
+          projectId: old.projectId,
+          ownerId: old.ownerId || null,
+          sharedWith: old.sharedWith || [],
+          ...(hasOwn(old, 'flexPool') ? { flexPool: old.flexPool } : {}),
+          ...(hasOwn(old, 'parentCanvasId') ? { parentCanvasId: old.parentCanvasId } : {}),
+          ...(hasOwn(old, 'sourceAssignmentId') ? { sourceAssignmentId: old.sourceAssignmentId } : {}),
+        };
+
+        for (const key of ['kind', 'template', 'sourceTemplateId', 'sourceTemplateUpdatedAt']) {
+          if (!hasOwn(c, key) && hasOwn(old, key)) next[key] = old[key];
         }
-        return c;
+
+        // Assignment 状态与接受后生成的 target 链接由 server 状态机管理。
+        // 只在同一 assignment 上保护终态/已接受态，避免旧浏览器把它回写成 pending。
+        if (Array.isArray(c.nodes) && Array.isArray(old.nodes)) {
+          const oldNodeById = new Map(old.nodes.map((node) => [node.id, node]));
+          const frontNodeIds = new Set(c.nodes.map((node) => node && node.id));
+          const mergedNodes = c.nodes.map((node) => {
+            const serverNode = oldNodeById.get(node.id);
+            const serverData = serverNode?.data || {};
+            const frontData = node?.data || {};
+            if (!serverData.assignmentId) return node;
+            const shouldProtect = terminalAssignmentStates.has(serverData.assignmentStatus)
+              || isProtectedAssignmentNode(serverNode)
+              || !!serverData.assignmentId;
+            if (!shouldProtect) return node;
+            const protectedData = { ...frontData };
+            for (const key of [
+              'assignmentId', 'assignmentStatus', 'assigneeUserId', 'assigneeName',
+              'targetCanvasId', 'targetCanvasName', 'targetNodeId',
+              'sourceCanvasId', 'sourceCanvasName', 'sourceNodeId', 'sourceNodeLabel',
+            ]) {
+              if (hasOwn(serverData, key)) protectedData[key] = serverData[key];
+            }
+            return { ...node, data: protectedData };
+          });
+          const missingAssignmentNodes = old.nodes.filter(
+            (node) => !frontNodeIds.has(node.id) && isProtectedAssignmentNode(node),
+          );
+          next.nodes = [...mergedNodes, ...missingAssignmentNodes];
+        }
+        return next;
       });
+      // 客户端只收到其可见子集，因此任何未出现在本次快照中的 server 画布都必须保留。
+      // 删除继续走 deleted 软标记，而不是依赖数组缺失。
+      const serverMissing = cur.canvases.filter((canvas) => canvas && !frontIds.has(canvas.id));
+      patch.canvases = [...mergedCanvases, ...serverMissing];
     }
 
     if (Object.keys(patch).length) {
       mergedPayload = { ...payload, ...patch };
     }
-  } catch {/* swallow */}
+  } catch (error) {
+    console.warn('[sync] 合并 server 权威数据失败，保留关键集合：', error.message);
+    const cur = current?.payload || {};
+    mergedPayload = {
+      ...payload,
+      ...(Array.isArray(cur.connections) ? { connections: cur.connections } : {}),
+      ...(Array.isArray(cur.assignments) ? { assignments: cur.assignments } : {}),
+      ...(Array.isArray(cur.projects) ? { projects: cur.projects } : {}),
+      ...(Array.isArray(cur.canvases) ? { canvases: cur.canvases } : {}),
+    };
+  }
 
   const next = {
     version: currentVersion + 1,

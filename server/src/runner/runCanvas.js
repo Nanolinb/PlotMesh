@@ -153,8 +153,15 @@ export async function runCanvas(canvas, options = {}) {
     // v1.7 alpha：按 targetHandle 分流给图形/提取节点（pieChart 的 data/style；
     // genericChart 的 data/reference；dashboard 多入但都按 source 收 SVG）
     const upstreamByHandle = {};
-    filteredEdges.forEach((e) => {
-      if (e.target === nodeId) {
+    filteredEdges
+      .filter((edge) => edge.target === nodeId)
+      .map((edge, index) => ({
+        edge,
+        index,
+        order: Number(allNodes.find((candidate) => candidate.id === edge.source)?.data?.promptNumber || Number.MAX_SAFE_INTEGER),
+      }))
+      .sort((left, right) => (left.order - right.order) || (left.index - right.index))
+      .forEach(({ edge: e }) => {
         const v = readResultForEdge(e);
         if (v !== undefined) {
           upstreamList.push(v);
@@ -162,8 +169,7 @@ export async function runCanvas(canvas, options = {}) {
           if (!upstreamByHandle[handle]) upstreamByHandle[handle] = [];
           upstreamByHandle[handle].push({ sourceId: e.source, value: v });
         }
-      }
-    });
+      });
 
     setStatus(nodeId, 'running');
 
@@ -198,6 +204,12 @@ export async function runCanvas(canvas, options = {}) {
           const portCount = r.portCount || r.segments.length;
           for (let i = 0; i < portCount; i++) {
             results.set(`${nodeId}__out__${i}`, r.segments[i] ?? '');
+          }
+        }
+        // timeline 等动态端口直接返回 {handleId: value}。
+        if (r.portOutputs && typeof r.portOutputs === 'object') {
+          for (const [handleId, value] of Object.entries(r.portOutputs)) {
+            results.set(`${nodeId}__${handleId}`, value ?? '');
           }
         }
         results.set(nodeId, r.output ?? '');

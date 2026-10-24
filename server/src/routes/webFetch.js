@@ -21,11 +21,13 @@
  *   - 不做 SSRF 防护（v1.5.x 假设是单机本地服务）；上线前应加内网 IP block 列表
  */
 import { Router } from 'express';
+import crypto from 'crypto';
 import axios from 'axios';
 
 const router = Router();
 
-const MAX_BYTES = 32 * 1024;
+const DEFAULT_CAPTURE_CHARS = 32 * 1024;
+const MAX_CAPTURE_CHARS = 128 * 1024;
 const TIMEOUT_MS = 15_000;
 const MCP_ENDPOINT = process.env.TENCENT_DOCS_MCP_URL || 'https://docs.qq.com/openapi/mcp';
 
@@ -142,7 +144,7 @@ async function fetchTencentDocs(urlObj, token) {
       if (piece) allText += (allText ? '\n\n' : '') + String(piece);
       nextToken = r.next_token || '';
       pages++;
-      if (allText.length >= MAX_BYTES) break;
+      if (allText.length >= MAX_CAPTURE_CHARS) break;
       if (pages >= 20) break; // 最多 20 页保险
     } while (nextToken);
     if (!allText.trim()) {
@@ -160,8 +162,16 @@ async function fetchTencentDocs(urlObj, token) {
   }
 }
 
-/** 老的 axios.get 抓取流程（非腾讯文档） */
-async function fetchGeneric(url) {
+function extractHtmlScope(html, mode) {
+  if (mode === 'full') return html;
+  const article = /<article\b[^>]*>([\s\S]*?)<\/article>/i.exec(html)?.[1];
+  const main = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(html)?.[1];
+  const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(html)?.[1];
+  return article || main || body || html;
+}
+
+/** axios.get 抓取流程（非腾讯文档） */
+async function fetchGeneric(url, extractionMode = 'article') {
   const resp = await axios.get(url, {
     timeout: TIMEOUT_MS,
     maxRedirects: 5,
@@ -181,11 +191,15 @@ async function fetchGeneric(url) {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   const title = titleMatch ? decodeEntities(stripTags(titleMatch[1])).trim() : '';
 
-  const cleaned = html
+  const scopedHtml = extractHtmlScope(html, extractionMode);
+  let cleaned = scopedHtml
     .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
     .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
+  if (extractionMode !== 'full') {
+    cleaned = cleaned.replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1>/gi, ' ');
+  }
   let text = stripTags(cleaned);
   text = decodeEntities(text)
     .replace(/[ \t\r\f\v]+/g, ' ')
@@ -210,9 +224,29 @@ async function fetchGeneric(url) {
  *
  * token 优先级：query > body > 环境变量 TENCENT_DOCS_TOKEN
  */
+function clampCaptureLimit(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_CAPTURE_CHARS;
+  return Math.max(1000, Math.min(MAX_CAPTURE_CHARS, Math.floor(n)));
+}
+
+function captureSnapshot(text, limit) {
+  const source = String(text || '');
+  const captured = source.slice(0, limit);
+  return {
+    text: captured,
+    originalChars: source.length,
+    capturedChars: captured.length,
+    truncated: source.length > captured.length,
+    contentHash: crypto.createHash('sha256').update(captured).digest('hex').slice(0, 16),
+  };
+}
+
 async function handle(req, res) {
   const url = String(req.query.url || req.body?.url || '').trim();
   const tokenIn = String(req.query.token || req.body?.token || '').trim();
+  const extractionMode = String(req.query.extractionMode || req.body?.extractionMode || 'article') === 'full' ? 'full' : 'article';
+  const captureLimit = clampCaptureLimit(req.query.captureLimit || req.body?.captureLimit);
 
   if (!url) {
     return res.status(400).json({ error: 'bad_request', message: 'url is required' });
@@ -236,17 +270,15 @@ async function handle(req, res) {
     }
     try {
       const r = await fetchTencentDocs(urlObj, token);
-      let text = r.text;
-      if (text.length > MAX_BYTES) {
-        text = text.slice(0, MAX_BYTES) + `\n\n[内容截断，超过 ${MAX_BYTES} 字符]`;
-      }
+      const snapshot = captureSnapshot(r.text, captureLimit);
       return res.json({
         url,
         finalUrl: r.finalUrl,
         status: 200,
         contentType: 'text/markdown',
         title: r.title,
-        text,
+        ...snapshot,
+        extractionMode: 'full',
         source: r.source,
         fileId: r.fileId,
       });
@@ -260,18 +292,16 @@ async function handle(req, res) {
 
   // 非腾讯文档：老路径
   try {
-    const r = await fetchGeneric(url);
-    let text = r.text;
-    if (text.length > MAX_BYTES) {
-      text = text.slice(0, MAX_BYTES) + `\n\n[内容截断，超过 ${MAX_BYTES} 字符]`;
-    }
+    const r = await fetchGeneric(url, extractionMode);
+    const snapshot = captureSnapshot(r.text, captureLimit);
     return res.json({
       url,
       finalUrl: r.finalUrl,
       status: r.status,
       contentType: r.contentType,
       title: r.title,
-      text,
+      ...snapshot,
+      extractionMode,
       source: r.source,
     });
   } catch (err) {

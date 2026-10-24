@@ -10,6 +10,7 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../store/nodes';
+import { authFetch } from '../auth/api';
 
 interface Props {
   open: boolean;
@@ -52,18 +53,11 @@ export default function SchedulerPanel({ open, onClose }: Props) {
   const [formDailyHH, setFormDailyHH] = useState(9);
   const [formDailyMM, setFormDailyMM] = useState(30);
 
-  const headers = useCallback(() => {
-    // 前端走同源访问 server，server 对 localhost 默认豁免 token；
-    // 如果用户开了"远端访问"会强制 token，到时再支持（可从 localStorage 读）
-    const stored = localStorage.getItem('plotmesh.apiToken') || '';
-    return stored ? { 'Authorization': `Bearer ${stored}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' } as Record<string, string>;
-  }, []);
-
   const refresh = useCallback(async () => {
     setLoading(true);
     setErr('');
     try {
-      const r = await fetch('/api/canvas/_schedules', { headers: headers() });
+      const r = await authFetch('/api/canvas/_schedules');
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       setSchedules(j.schedules || []);
@@ -72,7 +66,7 @@ export default function SchedulerPanel({ open, onClose }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [headers]);
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -94,9 +88,9 @@ export default function SchedulerPanel({ open, onClose }: Props) {
     if (!formCanvasId) { alert('请选择目标画布'); return; }
     const expr = buildExpr();
     try {
-      const r = await fetch('/api/canvas/_schedules', {
+      const r = await authFetch('/api/canvas/_schedules', {
         method: 'POST',
-        headers: headers(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           canvasId: formCanvasId,
           name: formName.trim() || undefined,
@@ -115,9 +109,9 @@ export default function SchedulerPanel({ open, onClose }: Props) {
 
   const handleToggle = async (sch: Schedule) => {
     try {
-      const r = await fetch(`/api/canvas/_schedules/${sch.id}`, {
+      const r = await authFetch(`/api/canvas/_schedules/${sch.id}`, {
         method: 'PATCH',
-        headers: headers(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !sch.enabled }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -130,9 +124,8 @@ export default function SchedulerPanel({ open, onClose }: Props) {
   const handleDelete = async (sch: Schedule) => {
     if (!confirm(`删除「${sch.name}」？`)) return;
     try {
-      const r = await fetch(`/api/canvas/_schedules/${sch.id}`, {
+      const r = await authFetch(`/api/canvas/_schedules/${sch.id}`, {
         method: 'DELETE',
-        headers: headers(),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       refresh();

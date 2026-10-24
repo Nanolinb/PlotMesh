@@ -55,6 +55,31 @@ export interface Canvas extends BaseEntity {
   thumbnail?: string;
   /** 上次打开时间（用于"最近画布"排序） */
   lastOpenedAt?: number;
+  /**
+   * 画布用途。旧数据缺省视为普通工作画布；模板与普通画布复用同一 schema 和编辑器。
+   */
+  kind?: 'canvas' | 'template';
+  /** 模板草稿元数据；已发布不可变版本留待后续扩展。 */
+  template?: {
+    status: 'draft';
+    description?: string;
+    sourceCanvasId?: string;
+  };
+  /** 普通画布由哪个模板实例化而来（仅追踪来源，不建立实时绑定）。 */
+  sourceTemplateId?: string;
+  sourceTemplateUpdatedAt?: number;
+  /** 接受人员卷入后形成的工作层级；与跨画布数据依赖分开。 */
+  parentCanvasId?: string | null;
+  sourceAssignmentId?: string;
+  /** v2.0 联网协作元数据。离线画布可以为空。 */
+  ownerId?: string | null;
+  sharedWith?: string[];
+  /** @deprecated 仅作旧版画布 ACL 兼容元数据；人员候选池是 project.flexPool。 */
+  flexPool?: Array<{
+    userId: string;
+    role: 'owner' | 'admin' | 'editor' | 'viewer';
+    joinedAt?: number;
+  }>;
 }
 
 /** 包（自定义节点 / 常用功能） */

@@ -31,6 +31,8 @@ export interface Folder {
   order?: number;
   /** 是否在 UI 中折叠 */
   collapsed?: boolean;
+  /** 若存在，表示这是某项目自动建立的默认画布文件夹。 */
+  projectId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -73,6 +75,7 @@ export async function saveFolderMap(map: Record<string, string>): Promise<void> 
 export async function addFolder(input: {
   name: string;
   color?: string;
+  projectId?: string;
 }): Promise<Folder> {
   const all = await listFolders();
   const now = Date.now();
@@ -82,11 +85,31 @@ export async function addFolder(input: {
     color: input.color || FOLDER_PRESET_COLORS[all.length % FOLDER_PRESET_COLORS.length],
     order: now,
     collapsed: false,
+    ...(input.projectId ? { projectId: input.projectId } : {}),
     createdAt: now,
     updatedAt: now,
   };
   await saveFolders([...all, folder]);
   return folder;
+}
+
+/**
+ * 为项目准备一个默认画布文件夹。一个 projectId 始终复用同一文件夹，
+ * 因而后续在该项目内创建/归属的画布会自动出现在同一个 CanvasManager 分组中。
+ */
+export async function ensureProjectCanvasFolder(input: {
+  projectId: string;
+  name: string;
+  color?: string;
+}): Promise<Folder> {
+  const all = await listFolders();
+  const existing = all.find((folder) => folder.projectId === input.projectId);
+  if (existing) return existing;
+  return addFolder({
+    name: input.name.trim() || '项目画布',
+    color: input.color,
+    projectId: input.projectId,
+  });
 }
 
 export async function updateFolder(

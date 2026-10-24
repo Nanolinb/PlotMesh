@@ -19,22 +19,54 @@
  */
 import axios from 'axios';
 import { splitText } from './splitText.js';
+import { selectWebContent } from './webContent.js';
 import { runExtract, runPieChart, runBarChart, runGenericChart, runDashboard } from './chartNodes.js';
+import { runTimeline } from './timelineNode.js';
+import { runAgent } from './agentNode.js';
 
 const FILE_PREFIX = '__PM_FILE__\n';
 
 /** 剥文件块前缀（普通节点不需要前缀）*/
 function stripFilePrefix(s) {
-  if (typeof s === 'string' && s.startsWith(FILE_PREFIX)) {
-    return s.slice(FILE_PREFIX.length);
-  }
-  return s;
+  if (typeof s !== 'string') return s;
+  let output = s;
+  const imageMatch = output.match(/^__PM_IMAGES__\n[^\n]*\n/);
+  if (imageMatch) output = output.slice(imageMatch[0].length);
+  if (output.startsWith(FILE_PREFIX)) output = output.slice(FILE_PREFIX.length);
+  return output;
 }
 
-/** textPrompt：直接输出 data.text */
-export function runTextPrompt(node) {
-  const text = node.data?.text || '';
-  return { output: text, status: 'success' };
+function extractImages(s) {
+  if (typeof s !== 'string') return [];
+  const match = s.match(/^__PM_IMAGES__\n([^\n]*)\n/);
+  if (!match) return [];
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** textPrompt：接收上游文本并在其后拼接节点内手写提示词。 */
+export function runTextPrompt(node, upstreamList = []) {
+  const receivedText = upstreamList
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => stripFilePrefix(value).trim())
+    .filter(Boolean)
+    .join('\n\n');
+  const manualText = String(node.data?.text || '').trim();
+  const output = [receivedText, manualText].filter(Boolean).join('\n\n');
+  return {
+    output,
+    status: 'success',
+    dataPatch: {
+      receivedText,
+      receivedAt: receivedText ? new Date().toISOString() : undefined,
+      output,
+      error: '',
+    },
+  };
 }
 
 /** textTransform：各种字符串变换 */
@@ -107,8 +139,15 @@ export function runSplitter(node, upstream) {
 
 /** output：把上游内容存为 data.output，剥前缀 */
 export function runOutput(node, upstream) {
-  const t = stripFilePrefix(upstream || '');
-  return { output: t, status: 'success', dataPatch: { output: t } };
+  const raw = upstream || '';
+  const images = extractImages(raw);
+  const isImageOutput = node.data?.format === 'image' || images.length > 0;
+  const output = isImageOutput ? raw : stripFilePrefix(raw);
+  return {
+    output,
+    status: 'success',
+    dataPatch: { output, ...(images.length ? { format: 'image' } : {}) },
+  };
 }
 
 /**
@@ -117,43 +156,61 @@ export function runOutput(node, upstream) {
  */
 export async function runWebLink(node, _upstream, ctx = {}) {
   const url = String(node.data?.url || '').trim();
-  if (!url) {
-    return { output: '', status: 'idle' };
-  }
+  if (!url) return { output: '', status: 'idle' };
+
   let text = node.data?.fetchedText;
   let title = node.data?.fetchedTitle;
   let finalUrl = node.data?.fetchedFinalUrl;
+  let fetchPatch = {};
+  const shouldRefresh = node.data?.refreshPolicy === 'always';
 
-  if (!text) {
+  if (!text || shouldRefresh) {
     try {
       const r = await axios.post(
         ctx.webFetchUrl || `http://localhost:${process.env.PORT || 3001}/api/web-fetch`,
-        { url, token: node.data?.tencentDocsToken || undefined },
+        {
+          url,
+          token: node.data?.tencentDocsToken || undefined,
+          extractionMode: node.data?.extractionMode || 'article',
+          captureLimit: node.data?.captureLimit || 32768,
+        },
         { timeout: 30000 },
       );
       text = r.data?.text || '';
       title = r.data?.title || '';
       finalUrl = r.data?.finalUrl || url;
-      const dataPatch = {
+      fetchPatch = {
         fetchedText: text,
         fetchedTitle: title,
         fetchedFinalUrl: finalUrl,
         fetchedSource: r.data?.source || 'http',
         fetchedAt: new Date().toISOString(),
+        fetchedOriginalChars: r.data?.originalChars ?? text.length,
+        fetchedCapturedChars: r.data?.capturedChars ?? text.length,
+        fetchedTruncated: !!r.data?.truncated,
+        fetchedContentHash: r.data?.contentHash || '',
       };
-      const titleAttr = (title || '').replace(/"/g, '&quot;');
-      const urlAttr = (finalUrl || url).replace(/"/g, '&quot;');
-      const wrapped = `${FILE_PREFIX}<web-source url="${urlAttr}" title="${titleAttr}">\n${text}\n</web-source>`;
-      return { output: wrapped, status: 'success', dataPatch };
     } catch (e) {
       return { output: '', status: 'error', error: e.message || '抓取失败' };
     }
-  } else {
-    const titleAttr = (title || '').replace(/"/g, '&quot;');
-    const urlAttr = (finalUrl || url).replace(/"/g, '&quot;');
-    const wrapped = `${FILE_PREFIX}<web-source url="${urlAttr}" title="${titleAttr}">\n${text}\n</web-source>`;
-    return { output: wrapped, status: 'success' };
   }
+
+  const selection = selectWebContent(text || '', {
+    mode: node.data?.analysisMode || 'full',
+    query: node.data?.analysisQuery || '',
+    maxChars: node.data?.analysisLimit || 24000,
+  });
+  const dataPatch = {
+    ...fetchPatch,
+    analyzedChars: selection.selectedChars,
+    analysisTruncated: selection.truncated,
+    analysisMatchedChunks: selection.matchedChunks,
+  };
+  const titleAttr = (title || '').replace(/"/g, '&quot;');
+  const urlAttr = (finalUrl || url).replace(/"/g, '&quot;');
+  const modeAttr = String(node.data?.analysisMode || 'full');
+  const wrapped = `${FILE_PREFIX}<web-source url="${urlAttr}" title="${titleAttr}" analysis-mode="${modeAttr}" captured-chars="${String(text || '').length}" selected-chars="${selection.selectedChars}" truncated="${selection.truncated}">\n${selection.text}\n</web-source>`;
+  return { output: wrapped, status: 'success', dataPatch };
 }
 
 /**
@@ -240,6 +297,79 @@ export async function runLLM(node, upstreamList, ctx = {}) {
   }
 }
 
+/** imageInput：图片已上传到 server/uploads，运行时输出统一的多模态 envelope */
+export function runImageInput(node) {
+  const images = (Array.isArray(node.data?.images) ? node.data.images : [])
+    .filter((image) => image?.filename && !image?.error && !image?.uploading)
+    .map((image) => ({
+      filename: image.filename,
+      name: image.name || image.originalName || image.filename,
+      mime: image.type || image.mimetype || 'image/png',
+      url: image.path || `/uploads/${image.filename}`,
+      weight: Math.max(0, Math.min(1, Number(node.data?.weight ?? 1))),
+      promptNumber: Number(node.data?.promptNumber || 1),
+    }));
+  if (!images.length) return { output: '', status: 'idle' };
+  const documents = images.map((image) => {
+    const name = String(image.name || '').replace(/"/g, '&quot;');
+    return `<document filename="${name}">\n[图片文件，请用多模态节点读取。已附在请求的 image_url 字段]\n</document>`;
+  }).join('\n');
+  const output = `__PM_IMAGES__\n${JSON.stringify(images)}\n${FILE_PREFIX}<documents>\n${documents}\n</documents>`;
+  return { output, status: 'success', dataPatch: { output } };
+}
+
+/** 图片AI：合并上游文字和参考图，调用统一图片生成网关。 */
+export async function runImageAI(node, upstreamList = [], ctx = {}) {
+  const promptChunks = [];
+  const referenceImages = [];
+  for (const value of upstreamList) {
+    if (!value) continue;
+    const images = extractImages(value);
+    if (images.length) referenceImages.push(...images);
+    const text = stripFilePrefix(value).trim();
+    if (!images.length && text) promptChunks.push(text);
+  }
+  const data = node.data || {};
+  const basePrompt = String(data.prompt || '').trim();
+  const prompt = [...promptChunks, basePrompt].filter(Boolean).join('\n\n');
+  if (!prompt) return { output: '', status: 'error', error: '请填写基础 Prompt 或连接上游文字节点' };
+
+  try {
+    const response = await axios.post(
+      ctx.imageGenerateUrl || `http://localhost:${process.env.PORT || 3001}/api/llm/image`,
+      {
+        prompt,
+        images: referenceImages,
+        strength: data.strength ?? 0.65,
+        transparent: data.transparent === true,
+        size: data.size || '1024x1024',
+        provider: data.provider === 'kimi' ? 'kimi' : 'openai',
+        model: data.model || (data.provider === 'kimi' ? 'kimi-k3' : 'gpt-image-1'),
+        name: data.label || '图片AI',
+      },
+      { timeout: 200000 },
+    );
+    const body = response.data || {};
+    if (!body.ok || !body.output) throw new Error(body.error || '图片服务未返回有效结果');
+    return {
+      output: body.output,
+      status: 'success',
+      dataPatch: {
+        images: body.images || [],
+        output: body.output,
+        generatedAt: new Date().toISOString(),
+        error: '',
+      },
+    };
+  } catch (error) {
+    return {
+      output: '',
+      status: 'error',
+      error: error.response?.data?.error || error.message || '图片生成失败',
+    };
+  }
+}
+
 /** fileUpload：server 端不支持（文件在前端浏览器里），跳过 */
 export function runFileUploadStub() {
   return {
@@ -281,7 +411,7 @@ export async function runNode(node, upstreamList, ctx) {
 
   switch (type) {
     case 'textPrompt':
-      return runTextPrompt(node);
+      return runTextPrompt(node, upstreamList);
     case 'textTransform':
       return runTextTransform(node, upstream0);
     case 'condition':
@@ -294,8 +424,14 @@ export async function runNode(node, upstreamList, ctx) {
       return runWebLink(node, upstream0, ctx);
     case 'llm':
       return runLLM(node, upstreamList, ctx);
+    case 'agent':
+      return runAgent(node, upstreamList, ctx);
     case 'fileUpload':
       return runFileUploadStub();
+    case 'imageInput':
+      return runImageInput(node);
+    case 'imageAI':
+      return runImageAI(node, upstreamList, ctx);
     case 'crossOutput':
       return runCrossOutput(node, upstream0);
     case 'crossInput':
@@ -311,10 +447,11 @@ export async function runNode(node, upstreamList, ctx) {
       return runGenericChart(node, upstreamList, ctx);
     case 'dashboard':
       return runDashboard(node, upstreamList, ctx);
-    // group / swimlane / timeline 是布局容器，server 端不需要执行
+    case 'timeline':
+      return runTimeline(node, upstreamList, ctx);
+    // group / swimlane 是布局容器，server 端不需要执行
     case 'group':
     case 'swimlane':
-    case 'timeline':
       return { output: '', status: 'success' };
     default:
       return { output: '', status: 'error', error: `不支持的节点类型: ${type}` };

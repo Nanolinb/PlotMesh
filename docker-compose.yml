@@ -1,48 +1,45 @@
-# docker-compose.yml · PlotMesh 群晖/Linux 部署（v1.6.2）
-# ----------------------------------------------------------------
-# 一键启动 client + server 两个容器，带数据卷持久化。
+# PlotMesh v2.0 · 群晖 Container Manager / Docker Compose 生产部署
 #
-# 使用：
-#   docker compose up -d            # 后台启动
-#   docker compose logs -f          # 看日志
-#   docker compose down             # 停止
-#   docker compose pull && up -d    # 拉新版本（如果你 push 到了 registry）
+# NAS 目录建议：/volume1/docker/plotmesh
+# 1) 复制 .env.nas.example 为 .env，并填写 API Key（按需）
+# 2) docker compose up -d --build
+# 3) 局域网访问：http://10.118.118.10:18180
 #
-# 群晖 Container Manager 推荐做法：
-#   1. 把整个项目目录上传到 NAS（如 /volume1/docker/plotmesh）
-#   2. SSH 进 NAS：cd /volume1/docker/plotmesh && docker compose up -d
-#   3. 浏览器访问 http://<NAS-IP>:8080/
-#   4. 第一次进入 → 打开 sidebar API 配置 → 外部 AI 接入 → token 自动生成
-#
-# v1.6.3 起前端走相对路径，nginx 反代 /api/* /health /uploads/* 到 server，
-# 团队成员可以直接通过 NAS URL 用 web 客户端。
+# 安全边界：只公开 client:80；server:3001 仅在 Docker 内部网络可见。
 
-version: "3.9"
+name: plotmesh
 
 services:
   server:
     build:
       context: .
       dockerfile: Dockerfile.server
-    image: plotmesh-server:1.6.3
+    image: plotmesh-server:2.0.0
     container_name: plotmesh-server
     restart: unless-stopped
+    init: true
+    env_file:
+      - ./.env
     environment:
-      # 数据目录（持久化卷）
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      PORT: "3001"
       PLOTMESH_DATA_DIR: /data
-      # docker 部署默认强制远端访问（监听 0.0.0.0 + 强制 token）
+      PLOTMESH_UPLOADS_DIR: /app/uploads
+      # 必须为 true，保证 client 容器可以访问后端；后端端口不映射到 NAS。
       PLOTMESH_REMOTE_ACCESS: "true"
-      # 大模型 keys（如果要在容器里跑 LLM 节点，填这里或挂 .env）
-      # HUNYUAN_API_KEY: ""
-      # DEEPSEEK_API_KEY: ""
-      # GLM_API_KEY: ""
-      # OPENAI_API_KEY: ""
-      # ANTHROPIC_API_KEY: ""
+      # 群晖 LAN 部署默认要求账号登录，且首位管理员创建后禁止自助注册。
+      PLOTMESH_AUTH_REQUIRED: "true"
+      PLOTMESH_AUTH_ALLOW_SELF_REGISTER: "false"
     volumes:
-      - ./data:/data                  # 画布 store / token / config
-      - ./uploads:/app/uploads        # 文件上传（fileUpload 节点）
-    ports:
-      - "3001:3001"                   # 远端访问开启时，外部直连也走这个
+      # 账号、项目、画布、JWT secret、server 配置、外部 AI token
+      - ./data:/data
+      # 上传文件与图片 AI 生成的图片
+      - ./uploads:/app/uploads
+    expose:
+      - "3001"
+    security_opt:
+      - no-new-privileges:true
     networks:
       - plotmesh
 
@@ -50,13 +47,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.client
-    image: plotmesh-client:1.6.3
+    image: plotmesh-client:2.0.0
     container_name: plotmesh-client
     restart: unless-stopped
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     ports:
-      - "8080:80"                     # 团队访问 http://<NAS-IP>:8080/
+      - "${PLOTMESH_HTTP_PORT:-18180}:80"
+    security_opt:
+      - no-new-privileges:true
     networks:
       - plotmesh
 

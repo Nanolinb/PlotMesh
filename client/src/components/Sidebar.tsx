@@ -9,10 +9,12 @@
  * 所有数据都持久化在 localStorage（key 见 store/nodes.ts）。
  * 拖拽用 dataTransfer.setData('application/reactflow', type) 触发 Canvas 的 onDrop。
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { NodePackage, PackageGroup } from '../types/nodes';
 import { useNodeStore, deleteRecentCanvas, type RecentCanvas } from '../store/nodes';
 import ServerStatusIndicator from './ServerStatusIndicator';
+import { authFetch } from '../auth/api';
+import { useAuth } from '../auth/authContext';
 
 interface SidebarProps {
   packages: NodePackage[];
@@ -20,6 +22,8 @@ interface SidebarProps {
   onLoadPackage: (id: string) => void;
   onDeletePackage: (id: string) => void;
   onSavePackage: () => void;
+  /** 从公共/Team 模板库导入一个完整常用功能到当前画布。 */
+  onImportLibraryPackage?: (pkg: NodePackage) => void;
   /** 最近画布列表的版本号，每变化一次促使本组件重新读取 localStorage */
   recentCanvasesVersion?: number;
   onLoadRecentCanvas?: (item: RecentCanvas) => void;
@@ -41,7 +45,8 @@ const NODE_CATEGORIES: Array<{
     key: 'data',
     label: '📥 数据',
     items: [
-      { type: 'fileUpload', label: '📁 文件上传', description: '上传并解析文件' },
+      { type: 'fileUpload', label: '📁 文件上传', description: '上传并解析文档' },
+      { type: 'imageInput', label: '🖼️ 图片输入', description: '上传图片并预览' },
       { type: 'webLink', label: '🔗 Web 链接', description: 'wiki / 在线文档 / 新闻' },
       { type: 'extract', label: '📊 数据提取', description: 'LLM 把自由文本/图片规整为 JSON' },
       { type: 'crossOutput', label: '🌐 跨画布输出', description: '把内容投递到另一个画布的 crossInput' },
@@ -53,7 +58,6 @@ const NODE_CATEGORIES: Array<{
     label: '📝 文本',
     items: [
       { type: 'textPrompt', label: '✏️ 文本提示词', description: '输入提示词内容' },
-      { type: 'llm', label: '🤖 大模型', description: '调用 LLM 处理' },
       { type: 'textTransform', label: '🔤 文本处理', description: '大小写/替换/提取' },
       { type: 'condition', label: '🔀 条件分支', description: '按关键词分流' },
       { type: 'splitter', label: '🔀 分叉', description: '一段切成 N 路输出' },
@@ -62,29 +66,26 @@ const NODE_CATEGORIES: Array<{
     ],
   },
   {
-    key: 'chart',
-    label: '🎨 图形',
+    key: 'ai',
+    label: '🤖 AI',
     items: [
+      { type: 'llm', label: '🤖 文本AI', description: '调用文本模型处理' },
+      { type: 'imageAI', label: '🎨 图片AI', description: 'Prompt + 参考图生成图片' },
+      { type: 'aiBuilder', label: '🤖 AI 构建器', description: 'AI 读上下文生成节点结构，预览后一键应用' },
+      { type: 'agent', label: '🕵️ Agent', description: '自主多步推理 + 工具调用（ReAct）' },
+    ],
+  },
+  {
+    key: 'chart',
+    label: '🎨 主题与图形',
+    items: [
+      { type: 'themeNode', label: '🎨 主题', description: '定调/样式合并，沿连线广播给子节点' },
       { type: 'pieChart', label: '🥧 饼图', description: 'JSON 数据可视化（试验性）' },
       { type: 'barChart', label: '📊 柱状图', description: '柱条/条形图（本地 SVG，0 token）' },
       { type: 'genericChart', label: '🎨 自由图形', description: 'LLM 看参考图直接画 SVG（任意形态）' },
       { type: 'dashboard', label: '📊 仪表盘', description: '合并多个图形为一个 HTML 页面' },
       { type: 'timeline', label: '⏱ 时间轴', description: '横向时间轴/镜头切换' },
       { type: 'swimlane', label: '🏊 项目泳道', description: '横向泳道 / 项目时序' },
-    ],
-  },
-  {
-    key: 'theme',
-    label: '🎨 主题',
-    items: [
-      { type: 'themeNode', label: '🎨 主题', description: '定调/样式合并，沿连线广播给子节点' },
-    ],
-  },
-  {
-    key: 'ai',
-    label: '🤖 AI',
-    items: [
-      { type: 'aiBuilder', label: '🤖 AI 构建器', description: 'AI 读上下文生成节点结构，预览后一键应用' },
     ],
   },
 ];
@@ -99,7 +100,8 @@ const loadCatCollapsed = (): Record<string, boolean> => {
   }
 };
 
-export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {
+export default function Sidebar({ packages, packageGroups, onDeletePackage, onSavePackage, onImportLibraryPackage, recentCanvasesVersion, onLoadRecentCanvas }: SidebarProps) {
+  const { user, phase } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [showGroupMenu, setShowGroupMenu] = useState<string | null>(null); // 哪个 pkgId 正在弹"移动到分组"
   // v1.7 alpha：节点分类折叠状态，持久化到 localStorage
@@ -119,6 +121,116 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
   const renamePackage = useNodeStore((s) => s.renamePackage);
   // 订阅最近画布列表（D2 起从 store 读，store 变化即重渲染）
   const recentCanvases = useNodeStore((s) => s.recentCanvases);
+
+  // 服务器共享模板库：public 对所有登录用户可见；team 只显示当前用户可加入的项目。
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [libraryScope, setLibraryScope] = useState<'public' | 'team'>('public');
+  const [libraryQuery, setLibraryQuery] = useState('');
+  const [libraryPackages, setLibraryPackages] = useState<any[]>([]);
+  const [libraryProjects, setLibraryProjects] = useState<Array<{ id: string; name: string; color?: string; myRole?: string | null }>>([]);
+  const [teamProjectId, setTeamProjectId] = useState('');
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const [libraryError, setLibraryError] = useState('');
+  const [sharePackageId, setSharePackageId] = useState('');
+  const [shareScope, setShareScope] = useState<'public' | 'team'>('public');
+  const [shareTags, setShareTags] = useState('');
+
+  const loadLibrary = async () => {
+    if (phase !== 'ready') {
+      setLibraryError('请先登录后使用共享模板库');
+      return;
+    }
+    setLibraryBusy(true);
+    setLibraryError('');
+    try {
+      if (!libraryProjects.length) {
+        const r = await authFetch('/api/project/list');
+        const body = await r.json();
+        if (!r.ok) throw new Error(body?.error || '项目列表加载失败');
+        const nextProjects = (body.projects || []).filter((project: any) => project.id !== '__unassigned');
+        setLibraryProjects(nextProjects);
+        if (!teamProjectId && nextProjects[0]) setTeamProjectId(nextProjects[0].id);
+      }
+      const projectId = libraryScope === 'team' ? teamProjectId : '';
+      if (libraryScope === 'team' && !projectId) {
+        setLibraryPackages([]);
+        return;
+      }
+      const params = new URLSearchParams({ scope: libraryScope, q: libraryQuery.trim() });
+      if (projectId) params.set('projectId', projectId);
+      const r = await authFetch(`/api/package-library?${params.toString()}`);
+      const body = await r.json();
+      if (!r.ok) throw new Error(body?.error || '共享模板加载失败');
+      setLibraryPackages(body.packages || []);
+    } catch (error: any) {
+      setLibraryError(error?.message || '共享模板加载失败');
+      setLibraryPackages([]);
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showLibrary) void loadLibrary();
+    // libraryQuery 是用户显式点搜索才刷新，避免每次输入都请求。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLibrary, libraryScope, teamProjectId]);
+
+  const importLibraryPackage = async (id: string) => {
+    try {
+      const r = await authFetch(`/api/package-library/${id}`);
+      const body = await r.json();
+      if (!r.ok) throw new Error(body?.error || '模板导入失败');
+      onImportLibraryPackage?.(body.package as NodePackage);
+      setShowLibrary(false);
+    } catch (error: any) {
+      setLibraryError(error?.message || '模板导入失败');
+    }
+  };
+
+  const publishPackage = async () => {
+    const pkg = packages.find((item) => item.id === sharePackageId);
+    if (!pkg) { setLibraryError('请选择要分享的常用功能'); return; }
+    if (shareScope === 'team' && !teamProjectId) { setLibraryError('请选择 Team 分享的目标项目'); return; }
+    setLibraryBusy(true);
+    setLibraryError('');
+    try {
+      const r = await authFetch('/api/package-library', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: shareScope,
+          projectId: shareScope === 'team' ? teamProjectId : undefined,
+          sourcePackageId: pkg.id,
+          name: pkg.name,
+          description: pkg.description || '',
+          tags: shareTags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+          nodes: pkg.nodes,
+          edges: pkg.edges,
+        }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body?.error || '分享失败');
+      setShareTags('');
+      setSharePackageId('');
+      setLibraryScope(shareScope);
+      await loadLibrary();
+    } catch (error: any) {
+      setLibraryError(error?.message || '分享失败');
+    } finally {
+      setLibraryBusy(false);
+    }
+  };
+
+  const deleteLibraryPackage = async (id: string) => {
+    if (!confirm('确定删除这个共享模板吗？')) return;
+    try {
+      const r = await authFetch(`/api/package-library/${id}`, { method: 'DELETE' });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body?.error || '删除失败');
+      await loadLibrary();
+    } catch (error: any) { setLibraryError(error?.message || '删除失败'); }
+  };
 
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
@@ -348,6 +460,12 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
         <div className="packages-header">
           <h3>📦 常用功能</h3>
           <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              className="save-pkg-btn"
+              onClick={() => { setShowLibrary(true); setLibraryError(''); }}
+              title="打开公共模板与 Team 分享库"
+              style={{ fontWeight: 800 }}
+            >R</button>
             <button className="save-pkg-btn" onClick={handleNewGroup} title="新建分组">
               📁
             </button>
@@ -486,6 +604,85 @@ export default function Sidebar({ packages, packageGroups, onDeletePackage, onSa
 
       {/* v1.6.2：原 sidebar 底部的"外部 AI 接入"面板已搬到 toolbar → API 配置弹窗，
           这里保留 marginTop: auto 让最近画布沉底（如果有） */}
+
+      {showLibrary && (
+        <div
+          className="nodrag"
+          onClick={() => setShowLibrary(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.48)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{ width: 'min(880px, 94vw)', maxHeight: '82vh', overflow: 'auto', borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-color)', color: 'var(--text-primary)', boxShadow: '0 20px 55px rgba(0,0,0,.35)', padding: 18 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 17, fontWeight: 700 }}>R · 共享常用功能库</div>
+                <div style={{ marginTop: 3, fontSize: 11, color: 'var(--text-muted)' }}>公共模板对服务器所有登录用户可见；Team 分享仅对项目成员可见。</div>
+              </div>
+              <button className="save-pkg-btn" onClick={() => setShowLibrary(false)} title="关闭">✕</button>
+            </div>
+
+            <div style={{ display: 'flex', gap: 6, borderBottom: '1px solid var(--border-color)', marginBottom: 12 }}>
+              {(['public', 'team'] as const).map((scope) => (
+                <button
+                  key={scope}
+                  onClick={() => setLibraryScope(scope)}
+                  style={{ border: 'none', borderBottom: libraryScope === scope ? '2px solid var(--accent)' : '2px solid transparent', background: 'transparent', color: libraryScope === scope ? 'var(--accent)' : 'var(--text-secondary)', padding: '8px 10px', cursor: 'pointer', fontWeight: 700 }}
+                >{scope === 'public' ? '公共模板' : 'Team 分享'}</button>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+              {libraryScope === 'team' && (
+                <select value={teamProjectId} onChange={(event) => setTeamProjectId(event.target.value)} style={{ minWidth: 150, padding: '7px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)' }}>
+                  <option value="">选择项目…</option>
+                  {libraryProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                </select>
+              )}
+              <input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadLibrary(); }} placeholder="按名称、说明或标签搜索" style={{ flex: 1, minWidth: 200, padding: '7px 9px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)' }} />
+              <button className="save-pkg-btn" onClick={() => void loadLibrary()} disabled={libraryBusy}>搜索</button>
+            </div>
+
+            {libraryError && <div style={{ marginBottom: 10, color: '#ef4444', fontSize: 12 }}>⚠ {libraryError}</div>}
+            <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
+              {libraryBusy && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>加载中…</div>}
+              {!libraryBusy && libraryPackages.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 12 }}>暂无可见模板。你可以先在下方分享自己的常用功能。</div>}
+              {libraryPackages.map((pkg) => {
+                const canDelete = libraryScope === 'public' ? user?.role === 'admin' : pkg.ownerId === user?.id || ['owner', 'admin'].includes(libraryProjects.find((project) => project.id === pkg.projectId)?.myRole || '');
+                return (
+                  <div key={pkg.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, border: '1px solid var(--border-color)', borderRadius: 8, background: 'var(--bg-card-body)' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{pkg.name}</div>
+                      {pkg.description && <div style={{ marginTop: 3, color: 'var(--text-secondary)', fontSize: 11 }}>{pkg.description}</div>}
+                      <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>{(pkg.tags || []).filter((tag: string) => !tag.startsWith('project:')).map((tag: string) => <span key={tag} style={{ padding: '1px 5px', borderRadius: 8, background: 'var(--accent-bg)', color: 'var(--accent)', fontSize: 10 }}>#{tag}</span>)}</div>
+                    </div>
+                    <button className="save-pkg-btn" onClick={() => void importLibraryPackage(pkg.id)} title="导入到当前画布">导入</button>
+                    {canDelete && <button className="package-delete-btn" onClick={() => void deleteLibraryPackage(pkg.id)} title="删除共享模板">✕</button>}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>分享我的常用功能</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <select value={sharePackageId} onChange={(event) => setSharePackageId(event.target.value)} style={{ flex: 1, minWidth: 180, padding: '7px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)' }}>
+                  <option value="">选择我的常用功能…</option>
+                  {packages.map((pkg) => <option key={pkg.id} value={pkg.id}>{pkg.name}</option>)}
+                </select>
+                <select value={shareScope} onChange={(event) => setShareScope(event.target.value as 'public' | 'team')} style={{ padding: '7px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)' }}>
+                  <option value="public">公共模板</option><option value="team">Team 分享</option>
+                </select>
+                {shareScope === 'team' && <select value={teamProjectId} onChange={(event) => setTeamProjectId(event.target.value)} style={{ minWidth: 130, padding: '7px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)' }}><option value="">选择项目…</option>{libraryProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
+                <input value={shareTags} onChange={(event) => setShareTags(event.target.value)} placeholder="标签，逗号分隔" style={{ minWidth: 145, padding: '7px 8px', borderRadius: 6, border: '1px solid var(--border-color)', background: 'var(--bg-input)', color: 'var(--text-primary)' }} />
+                <button className="save-pkg-btn" onClick={() => void publishPackage()} disabled={libraryBusy || phase !== 'ready'}>分享</button>
+              </div>
+              {shareScope === 'team' && <div style={{ marginTop: 6, color: 'var(--text-muted)', fontSize: 10 }}>Team 分享会自动附加隐藏项目标签，且无法进入公共模板。</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

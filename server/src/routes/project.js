@@ -46,7 +46,8 @@ function getRoleInProject(project, userId) {
 }
 
 /** 权限检查：owner/admin 可管理 */
-function canManage(project, userId) {
+function canManage(project, userId, systemRole = 'member') {
+  if (systemRole === 'admin') return true;
   const role = getRoleInProject(project, userId);
   return role === 'owner' || role === 'admin';
 }
@@ -64,6 +65,46 @@ function ensureFlexPool(project) {
 /** 生成项目 ID */
 function genProjectId() {
   return `proj-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function assignmentLoad(assignments, userId) {
+  return {
+    activeAssignments: assignments.filter((assignment) =>
+      assignment.targetUserId === userId
+      && assignment.decisionStatus === 'accepted'
+      && assignment.workStatus === 'active'
+    ).length,
+    pendingAssignments: assignments.filter((assignment) =>
+      assignment.targetUserId === userId && assignment.decisionStatus === 'pending'
+    ).length,
+    expertiseScore: null,
+  };
+}
+
+function visibleCanvasIdsForMember(canvases, assignments, userId) {
+  const visible = new Set(
+    canvases
+      .filter((canvas) => canvas.ownerId === userId || (canvas.sharedWith || []).includes(userId))
+      .map((canvas) => canvas.id),
+  );
+  for (const assignment of assignments) {
+    if (assignment.targetUserId === userId && assignment.effectiveTargetCanvasId) {
+      visible.add(assignment.effectiveTargetCanvasId);
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const assignment of assignments) {
+      if (assignment.decisionStatus !== 'accepted' || !assignment.effectiveTargetCanvasId) continue;
+      if (visible.has(assignment.sourceCanvasId) && !visible.has(assignment.effectiveTargetCanvasId)) {
+        visible.add(assignment.effectiveTargetCanvasId);
+        changed = true;
+      }
+    }
+  }
+  return visible;
 }
 
 // ─── 项目 CRUD ──────────────────────────────────────────────
@@ -102,6 +143,7 @@ router.post('/', async (req, res) => {
 // GET /api/project/list → 项目列表
 router.get('/list', async (req, res) => {
   const userId = req.user?.id;
+  const systemAdmin = req.user?.role === 'admin';
   const p = readPayload();
   const projects = (p.projects || []).filter((proj) => !proj.deleted);
   const allUsers = await listAllUsersWithRoles();
@@ -110,8 +152,8 @@ router.get('/list', async (req, res) => {
 
   const result = projects.map((proj) => {
     const role = getRoleInProject(proj, userId);
-    // owner/admin/editor/viewer 可见；不在 pool 也返回（可能后续被邀请）
     const projectCanvases = canvases.filter((c) => c.projectId === proj.id);
+    const ownsProjectCanvas = projectCanvases.some((canvas) => canvas.ownerId === userId);
     const memberCount = (proj.flexPool || []).length;
 
     return {
@@ -121,16 +163,19 @@ router.get('/list', async (req, res) => {
       color: proj.color,
       ownerId: proj.ownerId,
       ownerName: userMap[proj.ownerId]?.name || proj.ownerId,
-      myRole: role,
+      myRole: role || (systemAdmin ? 'system-admin' : ownsProjectCanvas ? 'canvas-owner' : null),
       canvasCount: projectCanvases.length,
       memberCount,
       createdAt: proj.createdAt,
       updatedAt: proj.updatedAt,
     };
-  }).filter((r) => r.myRole); // 只返回自己有权限的
+  }).filter((r) => systemAdmin || r.myRole); // 系统管理员可查看全部；其他用户只看有项目角色的
 
   // 也返回"未分类"虚拟项目（没有 projectId 的画布）
-  const unassigned = canvases.filter((c) => !c.projectId);
+  const unassigned = canvases.filter((c) =>
+    !c.projectId
+    && (systemAdmin || c.ownerId === userId || (c.sharedWith || []).includes(userId))
+  );
   if (unassigned.length > 0) {
     result.push({
       id: '__unassigned',
@@ -150,14 +195,107 @@ router.get('/list', async (req, res) => {
   res.json({ projects: result });
 });
 
+// GET /api/project/flex-pool/people?projectId=<id>&q=<keyword>
+// 系统管理中的人员中心：以人作为第一层实体，项目只是筛选和 membership 上下文。
+router.get('/flex-pool/people', async (req, res) => {
+  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'admin_only' });
+
+  const payload = readPayload();
+  const allProjects = (payload.projects || []).filter(
+    (project) => !project.deleted && !!project.ownerId && Array.isArray(project.flexPool),
+  );
+  const requestedProjectId = String(req.query.projectId || '').trim();
+  const keyword = String(req.query.q || '').trim().toLowerCase();
+  const selectedProjects = requestedProjectId
+    ? allProjects.filter((project) => project.id === requestedProjectId)
+    : allProjects;
+  if (requestedProjectId && selectedProjects.length === 0) {
+    return res.status(404).json({ error: 'project_not_found' });
+  }
+
+  const assignments = payload.assignments || [];
+  const users = await listAllUsersWithRoles();
+  const userMap = new Map(users.map((user) => [user.id, user]));
+  const peopleById = new Map();
+
+  for (const project of selectedProjects) {
+    const projectAssignments = assignments.filter((assignment) => assignment.projectId === project.id);
+    for (const membership of (project.flexPool || [])) {
+      const user = userMap.get(membership.userId);
+      const load = assignmentLoad(projectAssignments, membership.userId);
+      if (!peopleById.has(membership.userId)) {
+        peopleById.set(membership.userId, {
+          userId: membership.userId,
+          name: user?.name || membership.userId,
+          email: user?.email || '',
+          color: user?.color || '#6366f1',
+          systemRole: user?.role || 'member',
+          provider: user?.provider || 'builtin',
+          source: 'system',
+          memberships: [],
+          activeAssignments: 0,
+          pendingAssignments: 0,
+          expertiseScore: null,
+        });
+      }
+      const person = peopleById.get(membership.userId);
+      person.memberships.push({
+        projectId: project.id,
+        projectName: project.name,
+        projectColor: project.color || '#6366f1',
+        role: membership.role,
+        joinedAt: membership.joinedAt || null,
+        activeAssignments: load.activeAssignments,
+        pendingAssignments: load.pendingAssignments,
+      });
+      person.activeAssignments += load.activeAssignments;
+      person.pendingAssignments += load.pendingAssignments;
+    }
+  }
+
+  const people = [...peopleById.values()]
+    .filter((person) => !keyword || [person.name, person.email]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword)))
+    .sort((left, right) =>
+      left.activeAssignments - right.activeAssignments
+      || left.pendingAssignments - right.pendingAssignments
+      || left.name.localeCompare(right.name, 'zh-CN')
+    );
+
+  res.json({
+    ok: true,
+    people,
+    projects: allProjects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      color: project.color || '#6366f1',
+      memberCount: (project.flexPool || []).length,
+    })),
+    selectedProjectId: requestedProjectId || null,
+    query: keyword,
+    totals: {
+      people: people.length,
+      memberships: people.reduce((sum, person) => sum + person.memberships.length, 0),
+      activeAssignments: people.reduce((sum, person) => sum + person.activeAssignments, 0),
+      pendingAssignments: people.reduce((sum, person) => sum + person.pendingAssignments, 0),
+    },
+  });
+});
+
 // GET /api/project/:id → 项目详情
 router.get('/:id', async (req, res) => {
   const userId = req.user?.id;
+  const systemAdmin = req.user?.role === 'admin';
   const p = readPayload();
 
-  // 未分类虚拟项目
+  // 未分类虚拟项目只展示当前用户可访问的画布；系统管理员可查看全部。
   if (req.params.id === '__unassigned') {
-    const canvases = (p.canvases || []).filter((c) => !c.deleted && !c.projectId);
+    const canvases = (p.canvases || []).filter((c) =>
+      !c.deleted
+      && !c.projectId
+      && (systemAdmin || c.ownerId === userId || (c.sharedWith || []).includes(userId))
+    );
     return res.json({
       id: '__unassigned',
       name: '未分类',
@@ -179,23 +317,52 @@ router.get('/:id', async (req, res) => {
   if (!project) return res.status(404).json({ error: 'project_not_found' });
 
   const role = getRoleInProject(project, userId);
-  if (!role) return res.status(403).json({ error: 'no_access' });
+  const ownsProjectCanvas = (p.canvases || []).some(
+    (canvas) => !canvas.deleted && canvas.projectId === project.id && canvas.ownerId === userId,
+  );
+  if (!role && !systemAdmin && !ownsProjectCanvas) return res.status(403).json({ error: 'no_access' });
 
   const allUsers = await listAllUsersWithRoles();
   const userMap = Object.fromEntries(allUsers.map((u) => [u.id, u]));
   const connections = p.connections || [];
-  const projectCanvases = (p.canvases || []).filter((c) => !c.deleted && c.projectId === project.id);
+  const allProjectCanvases = (p.canvases || []).filter((c) => !c.deleted && c.projectId === project.id);
+  const allProjectAssignments = (p.assignments || []).filter((assignment) => assignment.projectId === project.id);
+  const manager = systemAdmin || role === 'owner' || role === 'admin';
+  const visibleCanvasIds = manager
+    ? new Set(allProjectCanvases.map((canvas) => canvas.id))
+    : visibleCanvasIdsForMember(allProjectCanvases, allProjectAssignments, userId);
+  const projectCanvases = allProjectCanvases.filter((canvas) => visibleCanvasIds.has(canvas.id));
+  const canvasMap = new Map(allProjectCanvases.map((canvas) => [canvas.id, canvas]));
 
-  // 丰富成员信息
+  // Flex Pool 只表示人员候选池；负载来自 server-authoritative assignments。
   ensureFlexPool(project);
   const pool = (project.flexPool || []).map((e) => ({
     ...e,
     name: userMap[e.userId]?.name || e.userId,
     email: userMap[e.userId]?.email || '',
     color: userMap[e.userId]?.color || '#6366f1',
+    ...assignmentLoad(allProjectAssignments, e.userId),
   }));
 
-  // 画布概览（含运行状态）
+  const visibleAssignments = allProjectAssignments
+    .filter((assignment) => manager
+      || assignment.requestedByUserId === userId
+      || assignment.targetUserId === userId
+      || visibleCanvasIds.has(assignment.sourceCanvasId)
+      || visibleCanvasIds.has(assignment.effectiveTargetCanvasId))
+    .map((assignment) => ({
+      ...assignment,
+      requesterName: userMap[assignment.requestedByUserId]?.name || assignment.requestedByUserId,
+      targetUserName: userMap[assignment.targetUserId]?.name || assignment.targetUserId,
+      sourceCanvasName: canvasMap.get(assignment.sourceCanvasId)?.name || assignment.sourceCanvasId,
+      targetCanvasName: canvasMap.get(assignment.effectiveTargetCanvasId || assignment.targetCanvasId)?.name
+        || assignment.proposedCanvasName
+        || assignment.effectiveTargetCanvasId
+        || assignment.targetCanvasId
+        || '',
+    }));
+
+  // 画布概览（含运行状态与 assignment 层级元数据）
   const canvasStats = projectCanvases.map((c) => {
     const runs = listRuns(c.id, 3);
     const stuckNodes = (c.nodes || []).filter((n) => {
@@ -208,6 +375,10 @@ router.get('/:id', async (req, res) => {
     return {
       id: c.id,
       name: c.name,
+      ownerId: c.ownerId || null,
+      ownerName: userMap[c.ownerId]?.name || c.ownerId || '',
+      parentCanvasId: c.parentCanvasId || null,
+      sourceAssignmentId: c.sourceAssignmentId || null,
       nodeCount: (c.nodes || []).length,
       folderId: (project.canvasFolderMap || {})[c.id] || null,
       lastRunStatus: runs[0]?.status || null,
@@ -218,17 +389,21 @@ router.get('/:id', async (req, res) => {
     };
   });
 
-  // 跨画布依赖
+  // 数据依赖连接只在两端画布都可见时返回，不参与 assignment 层级推导。
   const projectConnections = connections
-    .filter((conn) => projectCanvases.some((c) => c.id === conn.srcCanvasId || c.id === conn.dstCanvasId))
+    .filter((conn) => visibleCanvasIds.has(conn.srcCanvasId) && visibleCanvasIds.has(conn.dstCanvasId))
     .map((conn) => ({
       id: conn.id,
       srcCanvasId: conn.srcCanvasId,
-      srcCanvasName: (projectCanvases.find((c) => c.id === conn.srcCanvasId) || {}).name || conn.srcCanvasId,
+      srcCanvasName: canvasMap.get(conn.srcCanvasId)?.name || conn.srcCanvasId,
       dstCanvasId: conn.dstCanvasId,
-      dstCanvasName: (projectCanvases.find((c) => c.id === conn.dstCanvasId) || {}).name || conn.dstCanvasId,
+      dstCanvasName: canvasMap.get(conn.dstCanvasId)?.name || conn.dstCanvasId,
       status: conn.status || 'active',
+      assignmentId: conn.assignmentId || null,
     }));
+  const visibleFolderMap = Object.fromEntries(
+    Object.entries(project.canvasFolderMap || {}).filter(([canvasId]) => visibleCanvasIds.has(canvasId)),
+  );
 
   res.json({
     id: project.id,
@@ -237,12 +412,13 @@ router.get('/:id', async (req, res) => {
     color: project.color,
     ownerId: project.ownerId,
     ownerName: userMap[project.ownerId]?.name || project.ownerId,
-    myRole: role,
+    myRole: role || (systemAdmin ? 'system-admin' : ownsProjectCanvas ? 'canvas-owner' : null),
     flexPool: pool,
     folders: project.folders || [],
-    canvasFolderMap: project.canvasFolderMap || {},
+    canvasFolderMap: visibleFolderMap,
     canvases: canvasStats,
     connections: projectConnections,
+    assignments: visibleAssignments,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   });
@@ -258,7 +434,7 @@ router.patch('/:id', (req, res) => {
     mutateStore((payload) => {
       const project = (payload.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
       if (!project) throw new Error('project_not_found');
-      if (!canManage(project, userId)) throw new Error('no_permission');
+      if (!canManage(project, userId, req.user?.role)) throw new Error('no_permission');
 
       if (name !== undefined) project.name = name.trim();
       if (description !== undefined) project.description = description.trim();
@@ -304,6 +480,45 @@ router.delete('/:id', (req, res) => {
 
 // ─── 项目级 Flex Pool ───────────────────────────────────────
 
+// GET /api/project/:id/member-candidates?q=keyword
+// 返回系统内已注册、尚未加入该项目的人员。未来 HR/花名册 Provider 可复用同一结果协议。
+router.get('/:id/member-candidates', async (req, res) => {
+  const userId = req.user?.id;
+  const p = readPayload();
+  const project = (p.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
+  if (!project) return res.status(404).json({ error: 'project_not_found' });
+  if (!canManage(project, userId, req.user?.role)) {
+    return res.status(403).json({ error: 'no_permission' });
+  }
+
+  const keyword = String(req.query.q || '').trim().toLowerCase();
+  const existingIds = new Set((project.flexPool || []).map((entry) => entry.userId));
+  const users = await listAllUsersWithRoles();
+  const candidates = users
+    .filter((candidate) => !existingIds.has(candidate.id))
+    .filter((candidate) => !keyword || [candidate.name, candidate.email]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword)))
+    .slice(0, 50)
+    .map((candidate) => ({
+      userId: candidate.id,
+      name: candidate.name || candidate.email || candidate.id,
+      email: candidate.email || '',
+      color: candidate.color || '#6366f1',
+      systemRole: candidate.role || 'member',
+      provider: candidate.provider || 'builtin',
+      source: 'system',
+    }));
+
+  res.json({
+    ok: true,
+    projectId: project.id,
+    query: keyword,
+    candidates,
+    providers: [{ id: 'system', name: '系统已注册用户', searchable: true }],
+  });
+});
+
 // GET /api/project/:id/flex-pool → 读取项目成员池
 router.get('/:id/flex-pool', async (req, res) => {
   const userId = req.user?.id;
@@ -313,20 +528,23 @@ router.get('/:id/flex-pool', async (req, res) => {
   if (!project) return res.status(404).json({ error: 'project_not_found' });
 
   const role = getRoleInProject(project, userId);
-  if (!role) return res.status(403).json({ error: 'no_access' });
+  const systemAdmin = req.user?.role === 'admin';
+  if (!role && !systemAdmin) return res.status(403).json({ error: 'no_access' });
 
   ensureFlexPool(project);
   const allUsers = await listAllUsersWithRoles();
   const userMap = Object.fromEntries(allUsers.map((u) => [u.id, u]));
 
+  const projectAssignments = (p.assignments || []).filter((assignment) => assignment.projectId === project.id);
   const pool = (project.flexPool || []).map((e) => ({
     ...e,
     name: userMap[e.userId]?.name || e.userId,
     email: userMap[e.userId]?.email || '',
     color: userMap[e.userId]?.color || '#6366f1',
+    ...assignmentLoad(projectAssignments, e.userId),
   }));
 
-  res.json({ ok: true, pool, myRole: role });
+  res.json({ ok: true, pool, myRole: role || (systemAdmin ? 'system-admin' : null) });
 });
 
 // PATCH /api/project/:id/flex-pool → 加人/改角色
@@ -337,7 +555,10 @@ router.patch('/:id/flex-pool', async (req, res) => {
   try {
     // 预解析用户
     let resolvedUserId = targetUserId || null;
-    if (!resolvedUserId && email) {
+    if (resolvedUserId) {
+      const found = await getUserById(resolvedUserId);
+      if (!found) return res.status(404).json({ error: 'user_not_found' });
+    } else if (email) {
       const found = await getUserByEmail(email);
       if (!found) return res.status(404).json({ error: 'user_not_found' });
       resolvedUserId = found.id;
@@ -347,15 +568,17 @@ router.patch('/:id/flex-pool', async (req, res) => {
     mutateStore((payload) => {
       const project = (payload.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
       if (!project) throw new Error('project_not_found');
-      if (!canManage(project, userId)) throw new Error('no_permission');
+      if (!canManage(project, userId, req.user?.role)) throw new Error('no_permission');
 
       ensureFlexPool(project);
       const pool = project.flexPool;
+      const canGrantOwner = req.user?.role === 'admin' || getRoleInProject(project, userId) === 'owner';
 
       if (action === 'add') {
         if (!resolvedUserId) throw new Error('missing_userId_or_email');
         const targetRole = role || 'editor';
         if (!FLEX_ROLES.includes(targetRole)) throw new Error('invalid_role');
+        if (targetRole === 'owner' && !canGrantOwner) throw new Error('only_owner_can_grant_owner');
         const existing = pool.find((e) => e.userId === resolvedUserId);
         if (existing) {
           existing.role = targetRole;
@@ -365,6 +588,7 @@ router.patch('/:id/flex-pool', async (req, res) => {
       } else if (action === 'setRole') {
         if (!targetUserId) throw new Error('missing_userId');
         if (!FLEX_ROLES.includes(role)) throw new Error('invalid_role');
+        if (role === 'owner' && !canGrantOwner) throw new Error('only_owner_can_grant_owner');
         const entry = pool.find((e) => e.userId === targetUserId);
         if (!entry) throw new Error('not_in_pool');
         if (entry.role === 'owner' && role !== 'owner') {
@@ -396,7 +620,7 @@ router.delete('/:id/flex-pool/:targetUserId', (req, res) => {
     mutateStore((payload) => {
       const project = (payload.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
       if (!project) throw new Error('project_not_found');
-      if (!canManage(project, userId)) throw new Error('no_permission');
+      if (!canManage(project, userId, req.user?.role)) throw new Error('no_permission');
 
       ensureFlexPool(project);
       const pool = project.flexPool;
@@ -428,7 +652,7 @@ router.patch('/:id/folders', (req, res) => {
     mutateStore((payload) => {
       const project = (payload.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
       if (!project) throw new Error('project_not_found');
-      if (!canManage(project, userId)) throw new Error('no_permission');
+      if (!canManage(project, userId, req.user?.role)) throw new Error('no_permission');
 
       if (!project.folders) project.folders = [];
       if (!project.canvasFolderMap) project.canvasFolderMap = {};
@@ -528,7 +752,7 @@ router.patch('/:id/assign-folder', (req, res) => {
     mutateStore((payload) => {
       const project = (payload.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
       if (!project) throw new Error('project_not_found');
-      if (!canManage(project, userId)) throw new Error('no_permission');
+      if (!canManage(project, userId, req.user?.role)) throw new Error('no_permission');
 
       // 校验画布属于此项目
       const canvas = (payload.canvases || []).find((c) => c.id === canvasId && !c.deleted);
@@ -570,16 +794,27 @@ router.post('/:id/assign-canvas', (req, res) => {
     mutateStore((payload) => {
       const project = (payload.projects || []).find((pr) => pr.id === req.params.id && !pr.deleted);
       if (!project) throw new Error('project_not_found');
-      if (!canManage(project, userId)) throw new Error('no_permission');
+      if (!canManage(project, userId, req.user?.role)) throw new Error('no_permission');
 
       const canvas = (payload.canvases || []).find((c) => c.id === canvasId && !c.deleted);
       if (!canvas) throw new Error('canvas_not_found');
 
       if (unassign) {
-        // 取消归属：画布变为未分类
+        if (canvas.projectId !== project.id) throw new Error('canvas_not_in_project');
         canvas.projectId = null;
       } else {
-        // 归属到项目
+        const sourceProjectId = canvas.projectId && canvas.projectId !== 'project-default'
+          ? canvas.projectId
+          : null;
+        if (sourceProjectId && sourceProjectId !== project.id) {
+          const sourceProject = (payload.projects || []).find((item) => item.id === sourceProjectId && !item.deleted);
+          if (!sourceProject) throw new Error('source_project_not_found_or_deleted');
+          if (!canManage(sourceProject, userId, req.user?.role)) {
+            throw new Error('no_permission_source_project');
+          }
+        } else if (!sourceProjectId && req.user?.role !== 'admin') {
+          if (!canvas.ownerId || canvas.ownerId !== userId) throw new Error('no_permission_canvas');
+        }
         canvas.projectId = project.id;
       }
       canvas.updatedAt = Date.now();
@@ -588,7 +823,7 @@ router.post('/:id/assign-canvas', (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     const status = e.message === 'project_not_found' ? 404
-      : e.message === 'no_permission' ? 403 : 400;
+      : ['no_permission', 'no_permission_source_project', 'no_permission_canvas'].includes(e.message) ? 403 : 400;
     res.status(status).json({ error: e.message });
   }
 });

@@ -5,12 +5,10 @@
 #   2. nginx：alpine + nginx 当静态服务器
 #
 # 关键点：
-#   - 客户端代码里硬编码 http://localhost:3001/...，部署到 NAS 时
-#     需要在容器外用反向代理把 /api 转发到 server 容器（见 nginx.conf）
-#   - 也可以在 build 时用 VITE_API_BASE 改地址（v1.6.2 起前端尚未参数化，
-#     这里先以 nginx 反代为主）
+#   - 客户端通过同源相对路径访问 /api/*，由 nginx 转发到 server 容器。
+#   - API 代理禁用 SSE 缓冲，保证通知与运行进度在局域网内实时推送。
 #
-# 端口：80（默认），用 docker-compose 映射到宿主机 5173 / 8080 等
+# 端口：80（默认），由 docker-compose 映射到 NAS 局域网入口端口。
 
 FROM node:22-alpine AS build
 
@@ -44,9 +42,15 @@ server {
   # 反代 API 到 server 容器（docker-compose 里的服务名）
   location /api/ {
     proxy_pass http://server:3001;
+    proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+    # 事件中心与运行进度依赖 SSE；关闭缓冲，避免群晖反代链路延迟推送。
+    proxy_buffering off;
+    proxy_cache off;
     proxy_read_timeout 600s;
   }
 

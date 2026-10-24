@@ -841,6 +841,86 @@ body {
   height: 0;
 }
 
+.canvas-tab-group {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 3px 0 2px;
+  border: 1px solid color-mix(in srgb, var(--tab-group-color) 45%, var(--border-color));
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, var(--tab-group-color) 8%, var(--bg-card-body));
+}
+.canvas-tab-group.contains-active {
+  background: color-mix(in srgb, var(--tab-group-color) 13%, var(--bg-card-body));
+  border-color: color-mix(in srgb, var(--tab-group-color) 65%, var(--border-color));
+}
+.canvas-tab-group.entry-drag-over,
+.canvas-tab.entry-drag-over {
+  box-shadow: inset 3px 0 0 var(--tab-group-color, var(--accent));
+}
+.canvas-tab-group.collapsed {
+  padding-right: 6px;
+}
+.canvas-tab-group-label {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 150px;
+  height: 28px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: grab;
+  font-size: 11px;
+}
+.canvas-tab-group-label:active {
+  cursor: grabbing;
+}
+.canvas-tab-group-label:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+.canvas-tab-group-chevron {
+  width: 9px;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+.canvas-tab-group-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--tab-group-color);
+}
+.canvas-tab-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-tab-group-count {
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--tab-group-color) 20%, transparent);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+}
+.canvas-tab-group .canvas-tab {
+  min-width: 86px;
+  max-width: 180px;
+}
+
 .canvas-tab {
   flex-shrink: 0;
   display: inline-flex;

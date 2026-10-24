@@ -31,6 +31,7 @@ function TextPromptNode({ id, data, selected }: Props) {
   const [localTitle, setLocalTitle] = useState(data.label || '提示词');
   const [localText, setLocalText] = useState(data.text || '');
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
+  const receivedText = String(data.receivedText || '').trim();
 
   // 预览态 / 编辑态 共用的"输入框尺寸记忆"。
   // 进入编辑态时，textarea 不再回到默认 80px：
@@ -40,6 +41,8 @@ function TextPromptNode({ id, data, selected }: Props) {
   const previewRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [editorHeight, setEditorHeight] = useState<number>((data as any).editorHeight || 80);
+  // 上游接收文本默认折叠，用户可在节点内展开完整查看。
+  const [receivedExpanded, setReceivedExpanded] = useState(false);
 
   // 外部 data 变化（如撤销/重做、加载预设）时同步本地副本
   useEffect(() => { setLocalText(data.text || ''); }, [data.text]);
@@ -48,6 +51,8 @@ function TextPromptNode({ id, data, selected }: Props) {
     const h = (data as any).editorHeight;
     if (typeof h === 'number' && h > 0) setEditorHeight(h);
   }, [(data as any).editorHeight]);
+  // 新一轮上游结果到达时回到折叠预览，避免长文本突然撑开画布。
+  useEffect(() => { setReceivedExpanded(false); }, [data.receivedText]);
 
   /** 输入时实时回写（store 内有 selector，不会重渲染整个画布） */
   const handleChange = useCallback((value: string) => {
@@ -98,8 +103,8 @@ function TextPromptNode({ id, data, selected }: Props) {
 
   return (
     <div className={`node-card text-prompt-node ${selected ? 'selected' : ''}`} data-status={data.status || 'idle'}>
-      <Handle type="target" position={Position.Left} />
-      <Handle type="source" position={Position.Right} />
+      <Handle type="target" position={Position.Left} title="接收上游文本（例如文本AI输出）" />
+      <Handle type="source" position={Position.Right} title="输出合并后的提示词" />
 
       <div className="node-header" style={{ background: 'linear-gradient(135deg, #10b981, #34d399)' }}>
         <span className="node-icon">✏️</span>
@@ -186,6 +191,61 @@ function TextPromptNode({ id, data, selected }: Props) {
       </div>
 
       <div className="node-body">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: receivedText ? 5 : 7, color: 'var(--text-muted)', fontSize: 10 }}>
+          <span style={{ color: '#3b82f6' }}>●</span>
+          <span>左侧可接收上游文本</span>
+          {receivedText && <span style={{ marginLeft: 'auto', color: '#10b981' }}>已接收</span>}
+        </div>
+        {receivedText && (
+          <div
+            className="nodrag"
+            title="本轮运行从上游节点接收的文本；再次运行会自动更新"
+            style={{
+              marginBottom: 8,
+              padding: '6px 7px',
+              borderRadius: 6,
+              border: '1px solid rgba(16,185,129,.32)',
+              background: 'rgba(16,185,129,.08)',
+              color: 'var(--text-primary)',
+              fontSize: 11,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
+              <span style={{ color: '#059669', fontSize: 10, fontWeight: 600 }}>↳ 上游接收文本</span>
+              <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 9 }}>{receivedText.length} 字</span>
+            </div>
+            <div
+              style={{
+                maxHeight: receivedExpanded ? 'none' : 104,
+                overflow: receivedExpanded ? 'visible' : 'hidden',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {receivedText}
+            </div>
+            <button
+              type="button"
+              className="nodrag"
+              onClick={(event) => { event.stopPropagation(); setReceivedExpanded((value) => !value); }}
+              style={{
+                marginTop: 6,
+                width: '100%',
+                padding: '3px 6px',
+                border: '1px solid rgba(5,150,105,.38)',
+                borderRadius: 4,
+                background: 'rgba(16,185,129,.08)',
+                color: '#059669',
+                fontSize: 10,
+                cursor: 'pointer',
+              }}
+              title={receivedExpanded ? '收起上游完整文本预览' : '展开查看上游完整文本'}
+            >
+              {receivedExpanded ? '⌃ 收起上游文本' : '⌄ 展开完整文本'}
+            </button>
+          </div>
+        )}
+        <div style={{ marginBottom: 4, color: 'var(--text-secondary)', fontSize: 10 }}>手工补充（会接在上游文本后）</div>
         {isEditing ? (
           <textarea
             ref={textareaRef}

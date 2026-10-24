@@ -133,7 +133,7 @@ const minimalChatPackage: NodePackage = {
       position: { x: 220, y: 60 },
       data: {
         type: 'llm',
-        label: '大模型',
+        label: '文本AI',
         model: 'deepseek',
         systemPrompt: '',
         temperature: 0.7,

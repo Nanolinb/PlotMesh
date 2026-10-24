@@ -17,13 +17,16 @@
  *   - 直接 listCanvases() 从 IDB 读全部，过滤掉 'recent-' 快照前缀。
  *   - 在 activeCanvasId / activeCanvasName 变化时主动刷新一次。
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useNodeStore } from '../store/nodes';
 import { listCanvases } from '../store/storage';
 import type { Canvas as CanvasRecord } from '../types/db';
 import { loadHiddenSet } from '../utils/canvasVisibility';
+import { listFolders, loadFolderMap, type Folder } from '../utils/canvasFolders';
 
 const CLOSED_TABS_KEY = 'plotmesh-closed-tabs';
+const COLLAPSED_GROUPS_KEY = 'plotmesh-tab-group-collapsed';
+const TAB_ENTRY_ORDER_KEY = 'plotmesh-tab-entry-order';
 
 function loadClosedSet(): Set<string> {
   try {
@@ -38,6 +41,38 @@ function loadClosedSet(): Set<string> {
 function saveClosedSet(s: Set<string>) {
   try {
     localStorage.setItem(CLOSED_TABS_KEY, JSON.stringify(Array.from(s)));
+  } catch {/* ignore */}
+}
+
+function loadCollapsedGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedGroups(groups: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Array.from(groups)));
+  } catch {/* ignore */}
+}
+
+function loadEntryOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(TAB_ENTRY_ORDER_KEY);
+    const value = raw ? JSON.parse(raw) : [];
+    return Array.isArray(value) ? value.filter((entry) => typeof entry === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveEntryOrder(order: string[]) {
+  try {
+    localStorage.setItem(TAB_ENTRY_ORDER_KEY, JSON.stringify(order));
   } catch {/* ignore */}
 }
 
@@ -58,6 +93,10 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   const deleteCanvasById = useNodeStore((s) => s.deleteCanvasById);
 
   const [items, setItems] = useState<CanvasRecord[]>([]);
+  // 文件夹仍由 CanvasManager 维护；顶部只把同一份本地文件夹关系呈现为 Chrome 风格页签组。
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folderMap, setFolderMap] = useState<Record<string, string>>({});
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => loadCollapsedGroups());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [showOverflow, setShowOverflow] = useState(false);
@@ -75,6 +114,11 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   // v1.7：拖拽排序
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  // 顶层 entry（未归类 tab / 文件夹 group）顺序独立持久化；不改变 group 内页签排序或文件夹归属。
+  const [draggingEntryKey, setDraggingEntryKey] = useState<string | null>(null);
+  const [dragOverEntryKey, setDragOverEntryKey] = useState<string | null>(null);
+  const suppressGroupLabelClickRef = useRef(false);
+  const [entryOrder, setEntryOrder] = useState<string[]>(() => loadEntryOrder());
   // v1.7：自定义 tab 顺序（持久化到 LS）
   const [tabOrder, setTabOrder] = useState<string[]>(() => {
     try {
@@ -88,10 +132,19 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
       const all = await listCanvases({ workspaceId: 'workspace-default' });
       const filtered = all
         .filter((c) => !c.id.startsWith('recent-'))
+        // 模板不占普通工作页签；只有正在编辑的模板作为临时 active tab 显示。
+        .filter((c) => c.kind !== 'template' || c.id === activeCanvasId)
         .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0)); // 按创建顺序，稳定不跳
       setItems(filtered);
+      // 文件夹和归属与 CanvasManager 共用同一份 META 数据。
+      const [nextFolders, nextFolderMap, hs] = await Promise.all([
+        listFolders(),
+        loadFolderMap(),
+        loadHiddenSet(),
+      ]);
+      setFolders(nextFolders);
+      setFolderMap(nextFolderMap);
       // 同步 hiddenSet（抽屉里改过会触发 'plotmesh-hidden-changed' 事件）
-      const hs = await loadHiddenSet();
       setHiddenSet(hs);
     } catch (e) {
       console.warn('[plotmesh] CanvasTabs 读列表失败：', e);
@@ -103,13 +156,23 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCanvasId, activeCanvasName, recentCanvasesSig]);
 
-  // 抽屉改了 hidden 之后通知 tabs 刷新（CanvasManager dispatch 这个事件）
+  // 抽屉改了 hidden / folder 之后通知 tabs 刷新（同窗口 store 之间用 event 替代轮询）。
   useEffect(() => {
     const onHiddenChanged = () => {
       loadHiddenSet().then(setHiddenSet);
     };
+    const onFoldersChanged = () => {
+      Promise.all([listFolders(), loadFolderMap()]).then(([nextFolders, nextFolderMap]) => {
+        setFolders(nextFolders);
+        setFolderMap(nextFolderMap);
+      });
+    };
     window.addEventListener('plotmesh-hidden-changed', onHiddenChanged);
-    return () => window.removeEventListener('plotmesh-hidden-changed', onHiddenChanged);
+    window.addEventListener('plotmesh-folders-changed', onFoldersChanged);
+    return () => {
+      window.removeEventListener('plotmesh-hidden-changed', onHiddenChanged);
+      window.removeEventListener('plotmesh-folders-changed', onFoldersChanged);
+    };
   }, []);
 
   // 切到一个 active 画布时，自动从 closed 集合移除（你打开了它，就不应该被隐藏）
@@ -136,8 +199,24 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   }, [showOverflow, ctxMenu]);
 
   const handleSwitch = async (id: string) => {
+    const folderId = folderMap[id];
+    // 从组内或溢出菜单切换时自动展开所在组，确保 active 页签可见。
+    if (folderId && collapsedGroupIds.has(folderId)) {
+      const next = new Set(collapsedGroupIds);
+      next.delete(folderId);
+      setCollapsedGroupIds(next);
+      saveCollapsedGroups(next);
+    }
     if (id === activeCanvasId) return;
     await switchActiveCanvas(id);
+  };
+
+  const toggleGroup = (folderId: string) => {
+    const next = new Set(collapsedGroupIds);
+    if (next.has(folderId)) next.delete(folderId);
+    else next.add(folderId);
+    setCollapsedGroupIds(next);
+    saveCollapsedGroups(next);
   };
 
   const handleCreate = async () => {
@@ -248,6 +327,48 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
   });
   const hiddenCount = sortedItems.length - visibleItems.length;
 
+  type TabGroup = { folder: Folder; items: CanvasRecord[] };
+  type TabEntry = { kind: 'tab'; rec: CanvasRecord } | { kind: 'group'; group: TabGroup };
+  // 文件夹组按组内最早出现的页签位置排序；同组页签仍遵循原有 tabOrder。
+  const tabEntries: TabEntry[] = (() => {
+    const folderById = new Map(folders.map((folder) => [folder.id, folder]));
+    const groupByFolderId = new Map<string, TabGroup>();
+    const entries: TabEntry[] = [];
+    for (const rec of visibleItems) {
+      const folder = folderById.get(folderMap[rec.id]);
+      if (!folder) {
+        entries.push({ kind: 'tab', rec });
+        continue;
+      }
+      let group = groupByFolderId.get(folder.id);
+      if (!group) {
+        group = { folder, items: [] };
+        groupByFolderId.set(folder.id, group);
+        entries.push({ kind: 'group', group });
+      }
+      group.items.push(rec);
+    }
+    const orderIndex = new Map<string, number>();
+    entryOrder.forEach((key, index) => orderIndex.set(key, index));
+    const entryKey = (entry: TabEntry) => entry.kind === 'group'
+      ? `group:${entry.group.folder.id}`
+      : `tab:${entry.rec.id}`;
+    return entries
+      .map((entry, originalIndex) => ({ entry, originalIndex }))
+      .sort((left, right) => {
+        const leftOrder = orderIndex.get(entryKey(left.entry));
+        const rightOrder = orderIndex.get(entryKey(right.entry));
+        const leftValue = leftOrder == null ? Number.MAX_SAFE_INTEGER : leftOrder;
+        const rightValue = rightOrder == null ? Number.MAX_SAFE_INTEGER : rightOrder;
+        return (leftValue - rightValue) || (left.originalIndex - right.originalIndex);
+      })
+      .map(({ entry }) => entry);
+  })();
+
+  const entryKeyFor = (entry: TabEntry) => entry.kind === 'group'
+    ? `group:${entry.group.folder.id}`
+    : `tab:${entry.rec.id}`;
+
   // v1.7：滚动可达性检测（左右按钮启用/禁用）
   const [isOverflowing, setIsOverflowing] = useState(false);
   const updateScrollable = () => {
@@ -302,7 +423,7 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
       el.removeEventListener('wheel', onWheel as any);
       ro.disconnect();
     };
-  }, [visibleItems.length]);
+  }, [visibleItems.length, tabEntries.length, collapsedGroupIds, entryOrder]);
 
   const scrollByDir = (dir: 1 | -1) => {
     const el = scrollRef.current;
@@ -351,6 +472,114 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
     setDragOverId(null);
   };
 
+  // 顶层 Group 与未归类 tab 的水平顺序。Group 被当成一个整体 entry，内部页签和文件夹归属均不变。
+  const handleEntryDragStart = (entryKey: string, event: React.DragEvent) => {
+    suppressGroupLabelClickRef.current = true;
+    setDraggingEntryKey(entryKey);
+    event.dataTransfer.effectAllowed = 'move';
+    try { event.dataTransfer.setData('application/x-plotmesh-tab-entry', entryKey); } catch {/* ignore */}
+  };
+  const handleEntryDragOver = (targetKey: string, event: React.DragEvent) => {
+    if (!draggingEntryKey || draggingEntryKey === targetKey) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDragOverEntryKey(targetKey);
+  };
+  const handleEntryDrop = (targetKey: string, event: React.DragEvent) => {
+    event.preventDefault();
+    if (!draggingEntryKey || draggingEntryKey === targetKey) {
+      setDraggingEntryKey(null);
+      setDragOverEntryKey(null);
+      return;
+    }
+    const keys = tabEntries.map(entryKeyFor);
+    const fromIndex = keys.indexOf(draggingEntryKey);
+    const toIndex = keys.indexOf(targetKey);
+    if (fromIndex >= 0 && toIndex >= 0) {
+      const next = [...keys];
+      next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, draggingEntryKey);
+      setEntryOrder(next);
+      saveEntryOrder(next);
+    }
+    setDraggingEntryKey(null);
+    setDragOverEntryKey(null);
+  };
+  const handleEntryDragEnd = () => {
+    setDraggingEntryKey(null);
+    setDragOverEntryKey(null);
+    window.setTimeout(() => { suppressGroupLabelClickRef.current = false; }, 0);
+  };
+
+  const renderCanvasTab = (rec: CanvasRecord, topLevelEntryKey?: string) => {
+    const isActive = rec.id === activeCanvasId;
+    const isRenaming = renamingId === rec.id;
+    const isDragOver = dragOverId === rec.id && draggingId !== rec.id;
+    const isDragging = draggingId === rec.id;
+    // active tab 的显示名优先用 store（避免 IDB 异步写盘期间的短暂滞后）
+    const displayName = (isActive ? activeCanvasName : rec.name) || '未命名画布';
+    return (
+      <div
+        key={rec.id}
+        className={`canvas-tab${isActive ? ' active' : ''}${topLevelEntryKey && dragOverEntryKey === topLevelEntryKey ? ' entry-drag-over' : ''}`}
+        draggable={!isRenaming}
+        onDragStart={(e) => handleDragStart(rec.id, e)}
+        onDragOver={(e) => {
+          if (draggingEntryKey && topLevelEntryKey) handleEntryDragOver(topLevelEntryKey, e);
+          else handleDragOver(rec.id, e);
+        }}
+        onDrop={(e) => {
+          if (draggingEntryKey && topLevelEntryKey) handleEntryDrop(topLevelEntryKey, e);
+          else handleDrop(rec.id, e);
+        }}
+        onDragEnd={handleDragEnd}
+        onClick={() => !isRenaming && handleSwitch(rec.id)}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          beginRename(rec);
+        }}
+        onContextMenu={(e) => handleContextMenu(rec, e)}
+        title={isRenaming ? '' : `${displayName}（双击重命名 / 拖拽排序 / 右键删除）`}
+        data-canvas-id={rec.id}
+        style={{
+          opacity: isDragging ? 0.4 : 1,
+          ...(isDragOver ? { boxShadow: 'inset 3px 0 0 0 var(--accent, #6366f1)' } : null),
+        }}
+      >
+        {isRenaming ? (
+          <input
+            autoFocus
+            className="canvas-tab-input"
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={() => commitRename(rec.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              else if (e.key === 'Escape') setRenamingId(null);
+            }}
+          />
+        ) : (
+          <span className="canvas-tab-label" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            {displayName}
+            {rec.kind === 'template' && (
+              <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 6, color: 'var(--accent)', background: 'var(--accent-bg)' }}>模板</span>
+            )}
+          </span>
+        )}
+        {!isRenaming && (
+          <button
+            className="canvas-tab-close"
+            onClick={(e) => handleClose(rec, e)}
+            title="关闭页签（画布数据保留，可从 ▾ 重新打开）"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="canvas-tabs-bar">
       {/* ≡ 高级管理入口 */}
@@ -381,63 +610,42 @@ export default function CanvasTabs({ onOpenManager }: CanvasTabsProps) {
 
       {/* 横向滚动区 */}
       <div className="canvas-tabs-scroll" ref={scrollRef}>
-        {visibleItems.map((rec) => {
-          const isActive = rec.id === activeCanvasId;
-          const isRenaming = renamingId === rec.id;
-          const isDragOver = dragOverId === rec.id && draggingId !== rec.id;
-          const isDragging = draggingId === rec.id;
-          // active tab 的显示名优先用 store（避免 IDB 异步写盘期间的短暂滞后）
-          const displayName =
-            (isActive ? activeCanvasName : rec.name) || '未命名画布';
+        {tabEntries.map((entry) => {
+          if (entry.kind === 'tab') return renderCanvasTab(entry.rec, entryKeyFor(entry));
+          const { folder, items: groupItems } = entry.group;
+          const entryKey = entryKeyFor(entry);
+          const collapsed = collapsedGroupIds.has(folder.id);
+          const containsActive = groupItems.some((rec) => rec.id === activeCanvasId);
+          const isEntryDragOver = dragOverEntryKey === entryKey && draggingEntryKey !== entryKey;
           return (
             <div
-              key={rec.id}
-              className={`canvas-tab${isActive ? ' active' : ''}`}
-              draggable={!isRenaming}
-              onDragStart={(e) => handleDragStart(rec.id, e)}
-              onDragOver={(e) => handleDragOver(rec.id, e)}
-              onDrop={(e) => handleDrop(rec.id, e)}
-              onDragEnd={handleDragEnd}
-              onClick={() => !isRenaming && handleSwitch(rec.id)}
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                beginRename(rec);
-              }}
-              onContextMenu={(e) => handleContextMenu(rec, e)}
-              title={isRenaming ? '' : `${displayName}（双击重命名 / 拖拽排序 / 右键删除）`}
-              data-canvas-id={rec.id}
-              style={{
-                opacity: isDragging ? 0.4 : 1,
-                ...(isDragOver
-                  ? { boxShadow: 'inset 3px 0 0 0 var(--accent, #6366f1)' }
-                  : null),
-              }}
+              key={`group-${folder.id}`}
+              className={`canvas-tab-group${collapsed ? ' collapsed' : ''}${containsActive ? ' contains-active' : ''}${isEntryDragOver ? ' entry-drag-over' : ''}`}
+              style={{ '--tab-group-color': folder.color || 'var(--accent)' } as CSSProperties}
+              onDragOver={(event) => handleEntryDragOver(entryKey, event)}
+              onDrop={(event) => handleEntryDrop(entryKey, event)}
             >
-              {isRenaming ? (
-                <input
-                  autoFocus
-                  className="canvas-tab-input"
-                  value={renameDraft}
-                  onChange={(e) => setRenameDraft(e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                  onBlur={() => commitRename(rec.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                    else if (e.key === 'Escape') setRenamingId(null);
-                  }}
-                />
-              ) : (
-                <span className="canvas-tab-label">{displayName}</span>
-              )}
-              {!isRenaming && (
-                <button
-                  className="canvas-tab-close"
-                  onClick={(e) => handleClose(rec, e)}
-                  title="关闭页签（画布数据保留，可从 ▾ 重新打开）"
-                >
-                  ✕
-                </button>
-              )}
+              <button
+                className="canvas-tab-group-label"
+                draggable
+                onDragStart={(event) => handleEntryDragStart(entryKey, event)}
+                onDragEnd={handleEntryDragEnd}
+                onClick={(event) => {
+                  if (suppressGroupLabelClickRef.current) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                  }
+                  toggleGroup(folder.id);
+                }}
+                title={`${collapsed ? '展开' : '收折'}文件夹「${folder.name}」（拖动可调整组的位置）`}
+              >
+                <span className="canvas-tab-group-chevron">{collapsed ? '▶' : '▼'}</span>
+                <span className="canvas-tab-group-dot" />
+                <span className="canvas-tab-group-name">{folder.name || '未命名文件夹'}</span>
+                <span className="canvas-tab-group-count">{groupItems.length}</span>
+              </button>
+              {!collapsed && groupItems.map((rec) => renderCanvasTab(rec))}
             </div>
           );
         })}

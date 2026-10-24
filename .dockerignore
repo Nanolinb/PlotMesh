@@ -1,0 +1,21 @@
+# 依赖与本地构建产物
+**/node_modules
+**/dist
+
+# 运行时持久化数据及敏感配置
+/data
+/uploads
+/server/.env
+.env
+
+# Git 与本地工作流产物
+.git
+.workbuddy
+/*.png
+/*.yml
+/*.yaml
+
+# 编辑器与系统文件
+.DS_Store
+.vscode
+.idea

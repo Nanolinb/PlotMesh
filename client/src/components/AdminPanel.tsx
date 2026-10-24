@@ -1,7 +1,7 @@
 /**
  * AdminPanel · 管理员后台面板（v2.0-β，v2.0 增强）
  * ---------------------------------------------------------------
- * 仅 admin 可见（由父组件 ApiKeyConfigModal 按 useAuth().user.role 控制是否渲染 tab）。
+ * 仅 admin 可见（主入口为 SystemAdminDrawer；API 配置弹窗保留兼容入口）。
  * 三个子区：
  *   👤 成员管理：列出所有用户 / 删除 / 重置密码 / 改角色（admin↔member）
  *   ⚙️ server 设置：联网模式(required) / 自助注册(allowSelfRegister) / 远端访问(remoteAccess) 开关
@@ -16,6 +16,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { authFetch } from '../auth/api';
 import { useAuth } from '../auth/authContext';
+import AdminFlexPoolSection from './AdminFlexPoolSection';
 
 interface AdminUser {
   id: string;
@@ -49,12 +50,12 @@ export default function AdminPanel() {
   const [sub, setSub] = useState<Sub>('users');
 
   return (
-    <div>
+    <div style={{ minWidth: 0, overflowX: 'hidden' }}>
       {/* 子区切换 */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
         {([
           { key: 'users', label: '👤 成员' },
-          { key: 'projects', label: '📊 Flex Pool' },
+          { key: 'projects', label: '👥 人员 Flex Pool' },
           { key: 'server', label: '⚙️ server 设置' },
           { key: 'audit', label: '📜 引用审计' },
         ] as Array<{ key: Sub; label: string }>).map((t) => (
@@ -75,7 +76,7 @@ export default function AdminPanel() {
       </div>
 
       {sub === 'users' && <UsersSection me={me} />}
-      {sub === 'projects' && <FlexPoolSection />}
+      {sub === 'projects' && <AdminFlexPoolSection />}
       {sub === 'server' && <ServerSection />}
       {sub === 'audit' && <AuditSection />}
     </div>
@@ -194,7 +195,7 @@ function UsersSection({ me }: { me: { id: string } | null }) {
               <div
                 key={u.id}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
+                  display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10,
                   padding: '8px 10px', borderRadius: 8,
                   border: '1px solid var(--border-color)',
                   background: 'var(--bg-card-body)',
@@ -219,7 +220,7 @@ function UsersSection({ me }: { me: { id: string } | null }) {
                     {u.email}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   <button style={btn('var(--accent)')} disabled={busyId === u.id}
                     onClick={() => { setResetFor(u); setNewPwd(''); }}>重置密码</button>
                   <button style={btn('var(--text-secondary)')} disabled={busyId === u.id || isMe}
@@ -491,7 +492,7 @@ function AuditSection() {
   );
 }
 
-// ════════════════════════ Flex Pool 项目管理 ════════════════════════
+// ════════════════════════ 已弃用：旧版画布 ACL 管理（当前 UI 不引用） ════════════════════════
 
 interface PoolEntry {
   userId: string;
@@ -510,7 +511,7 @@ interface ProjectBrief {
   members: PoolEntry[];
 }
 
-function FlexPoolSection() {
+function DeprecatedCanvasAclFlexPoolSection() {
   const [projects, setProjects] = useState<ProjectBrief[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');

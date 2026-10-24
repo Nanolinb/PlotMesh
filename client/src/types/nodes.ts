@@ -9,6 +9,8 @@
 // 节点类型枚举
 export enum NodeType {
   FILE_UPLOAD = 'fileUpload',
+  IMAGE_INPUT = 'imageInput',
+  IMAGE_AI = 'imageAI',
   TEXT_PROMPT = 'textPrompt',
   LLM = 'llm',
   OUTPUT = 'output',
@@ -115,10 +117,75 @@ export interface FileUploadNodeData {
   error?: string;
 }
 
+export interface ImageInputNodeData {
+  type: NodeType.IMAGE_INPUT;
+  label: string;
+  /** 多个图片输入节点汇入同一图片AI时的先后顺序。 */
+  promptNumber: number;
+  /** 该节点内图片对生成结果的相对影响，0~1，步进 0.1。 */
+  weight: number;
+  images: Array<{
+    id: string;
+    name: string;
+    filename: string;
+    path: string;
+    size: number;
+    type: string;
+    ext: string;
+    uploading?: boolean;
+    error?: string;
+  }>;
+  status: NodeStatus;
+  error?: string;
+}
+
+export type ImageAIProvider = 'openai' | 'kimi';
+
+export const IMAGE_AI_MODEL_OPTIONS: Record<ImageAIProvider, Array<{ value: string; label: string }>> = {
+  openai: [
+    { value: 'gpt-image-1', label: 'gpt-image-1' },
+  ],
+  kimi: [
+    { value: 'kimi-k3', label: 'kimi-k3（图片输出）' },
+  ],
+};
+
+export interface ImageAINodeData {
+  type: NodeType.IMAGE_AI;
+  label: string;
+  /** 节点内的基础 Prompt，会和上游文字合并。 */
+  prompt: string;
+  /** 参考图影响程度 0~1。 */
+  strength: number;
+  /** PNG 是否请求透明背景。 */
+  transparent: boolean;
+  /** 生成构图；节点内预览仍限制在 512×512 以内。 */
+  size: '1024x1024' | '1024x1536' | '1536x1024';
+  /** 图片生成提供商；历史节点缺失时按 openai 处理。 */
+  provider?: ImageAIProvider;
+  model?: string;
+  images: Array<{
+    filename?: string;
+    name?: string;
+    mime?: string;
+    url?: string;
+    width?: number;
+    height?: number;
+  }>;
+  status: NodeStatus;
+  output: string;
+  error?: string;
+  generatedAt?: string;
+}
+
 export interface TextPromptNodeData {
   type: NodeType.TEXT_PROMPT;
   label: string;
+  /** 手动补充的提示词；会排在接收文本之后输出。 */
   text: string;
+  /** 本轮运行从上游接收的文本，供节点内预览和下一步人工编辑参考。 */
+  receivedText?: string;
+  receivedAt?: string;
   promptNumber: number; // 自动编号
   status: NodeStatus;
   error?: string;
@@ -140,6 +207,8 @@ export interface LLMNodeData {
   temperature: number;
   status: NodeStatus;
   output: string;
+  /** 最近一次将缓存结果手动下发至下游的时间。 */
+  cachedOutputEmittedAt?: string;
   error?: string;
   streamOutput: string; // 流式输出中间结果
 }
@@ -179,8 +248,27 @@ export interface WebLinkNodeData {
   fetchedAt?: string;     // ISO 时间
   /** 抓取来源：http | mcp:get_content | mcp:smartcanvas.read（v1.5.3 起） */
   fetchedSource?: string;
-  /** 抓取后的纯文本（最大 32KB；运行时填，下游 LLM 消费它） */
+  /** 采集范围：正文优先会剔除导航/页头/页尾；全文保留页面可见文本。 */
+  extractionMode?: 'article' | 'full';
+  /** 使用缓存，或每次运行画布都重新抓取。 */
+  refreshPolicy?: 'cache' | 'always';
+  /** Web 节点允许进入画布的最大字符数（1000~131072）。 */
+  captureLimit?: number;
+  /** LLM 本次分析范围：全文预算，或按关键词选取上下文片段。 */
+  analysisMode?: 'full' | 'keyword';
+  analysisQuery?: string;
+  /** 真正送入下游 LLM 的最大字符数（1000~64000）。 */
+  analysisLimit?: number;
+  /** 抓取后的内容快照。 */
   fetchedText?: string;
+  fetchedOriginalChars?: number;
+  fetchedCapturedChars?: number;
+  fetchedTruncated?: boolean;
+  fetchedContentHash?: string;
+  /** 最近一次执行时实际送入下游的统计。 */
+  analyzedChars?: number;
+  analysisTruncated?: boolean;
+  analysisMatchedChunks?: number;
   status: NodeStatus;
   error?: string;
 }
@@ -213,6 +301,8 @@ export interface AggregateNodeData {
 
 export type CustomNodeData =
   | FileUploadNodeData
+  | ImageInputNodeData
+  | ImageAINodeData
   | TextPromptNodeData
   | LLMNodeData
   | OutputNodeData

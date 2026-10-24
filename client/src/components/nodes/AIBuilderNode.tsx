@@ -100,11 +100,14 @@ function AIBuilderNode({ id, data, selected }: Props) {
     const newNodes = plan.nodes.map((n, i) => {
       const realId = `${n.type}-${now}-${i}-${Math.random().toString(36).slice(2, 5)}`;
       idMap[n.tmpId] = realId;
+      const typeDefaults = n.type === 'imageAI'
+        ? { prompt: '', strength: 0.65, transparent: false, size: '1024x1024', provider: 'openai', model: 'gpt-image-1', images: [], output: '' }
+        : {};
       return {
         id: realId,
         type: n.type,
         position: positions[n.tmpId] || { x: anchor.x + 260, y: anchor.y + i * 160 },
-        data: { type: n.type, label: n.label || n.type, status: 'idle', ...(n.data || {}), __emittedBy: id, __commitId: plan.commitId },
+        data: { type: n.type, label: n.label || n.type, status: 'idle', ...typeDefaults, ...(n.data || {}), __emittedBy: id, __commitId: plan.commitId },
       };
     });
 
@@ -123,7 +126,7 @@ function AIBuilderNode({ id, data, selected }: Props) {
     const autoOutputEdges: any[] = [];
     if (autoOutput) {
       const CONTENT_TYPES = new Set([
-        'llm', 'textTransform', 'extract', 'splitter',
+        'llm', 'imageAI', 'textTransform', 'extract', 'splitter',
         'pieChart', 'barChart', 'themeNode', 'condition', 'webLink',
       ]);
       // 统计本批每个 tmpId 作为 source 的出边数
@@ -147,7 +150,7 @@ function AIBuilderNode({ id, data, selected }: Props) {
           position: { x: srcPos.x + 280, y: srcPos.y },
           data: {
             type: 'output', label: `📤 ${n.label || '输出'}`, status: 'idle',
-            format: 'markdown', __emittedBy: id, __commitId: plan.commitId,
+            format: n.type === 'imageAI' ? 'image' : 'markdown', __emittedBy: id, __commitId: plan.commitId,
           },
         });
         autoOutputEdges.push({

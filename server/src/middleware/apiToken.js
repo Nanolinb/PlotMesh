@@ -162,13 +162,19 @@ export function printApiTokenBanner() {
 
 /**
  * Express 中间件：校验 Authorization: Bearer <token>
- * - 默认：localhost 自动豁免，外网请求需要 Bearer token
- * - 当 server-config.json 的 remoteAccess=true 时：所有请求（含 localhost）都强制 token
- *   此时 server 通常已绑定 0.0.0.0，对 LAN 暴露
- * - 兼容老 env：PLOTMESH_API_REQUIRE_TOKEN_LOCALHOST=true 也强制
+ * - 已登录的 Web 用户带 JWT 时直接放行：保留 req.user，供各路由执行画布权限校验
+ * - 外部 AI / MCP 继续使用 server-level API token
+ * - 默认：localhost 自动豁免；remoteAccess=true 或显式环境变量时强制凭证
  * - 错误时返回 401
  */
 export function requireApiToken(req, res, next) {
+  // index.js 的 optionalAuth 已验证 JWT。NAS 同源反代下，浏览器不能安全保存全局 API token，
+  // 因此已登录用户走 JWT；外部自动化仍走下方的 API token 分支。
+  if (req.user) {
+    req.apiUser = req.user;
+    return next();
+  }
+
   const token = getApiToken();
   const cfg = getServerConfig();
   const requireLocalhost =
@@ -233,17 +239,28 @@ export function resolveApiTokenUser(_token) {
   return null;
 }
 
-/** 仅本机豁免：用于"前端 UI 查询/重置 token"等敏感操作 */
-export function requireLocalhost(req, res, next) {
+function isLocalhostRequest(req) {
   const ip = req.ip || req.connection?.remoteAddress || '';
-  const isLocalhost =
-    ip === '127.0.0.1' ||
-    ip === '::1' ||
-    ip === '::ffff:127.0.0.1' ||
-    ip === '' ||
-    ip.startsWith('::ffff:127.');
-  if (!isLocalhost) {
+  return ip === '127.0.0.1'
+    || ip === '::1'
+    || ip === '::ffff:127.0.0.1'
+    || ip === ''
+    || ip.startsWith('::ffff:127.');
+}
+
+/** 仅本机豁免：用于兼容本地开发脚本的敏感管理端点。 */
+export function requireLocalhost(req, res, next) {
+  if (!isLocalhostRequest(req)) {
     return res.status(403).json({ error: 'localhost_only', message: 'This endpoint is only available on localhost' });
   }
   return next();
+}
+
+/**
+ * NAS / 反向代理场景下，管理员可通过已验证 JWT 管理 server-level API token；
+ * 保留 localhost 通路，兼容单机开发与既有脚本。
+ */
+export function requireLocalhostOrAdmin(req, res, next) {
+  if (isLocalhostRequest(req) || req.user?.role === 'admin') return next();
+  return res.status(403).json({ error: 'admin_only', message: '仅管理员可管理 server API token' });
 }

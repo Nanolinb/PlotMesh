@@ -5,6 +5,37 @@
 
 ---
 
+## [2.1.0] — 2026-10-24
+
+> 🕵️ **v2.1**：新增 Agent 节点 —— 画布首次具备「自主多步推理 + 工具调用」能力。
+> ReAct 循环下沉到节点内部（画布是 DAG 单遍拓扑，无法表达真循环）。
+
+### Added · 新增
+
+- **Agent 节点（🕵️ Agent）**
+  - 单节点内部封装 ReAct 循环：LLM 决策 → 执行工具 → 观察回填 → 收敛输出
+  - 内置工具：`web_fetch`（抓取网页正文，复用 /api/web-fetch，截断 6000 字符）、`finish`（输出最终答案并终止循环）
+  - 可配：模型 / 版本号 / 任务 / 系统提示词 / 最大步数（1~12，默认 6）/ 温度（默认 0.3）
+  - 推理过程 trace 可展开回看（每步的思考 / 工具 / 观察），默认折叠以保护画布布局
+  - 侧边栏归入「🤖 AI」分组，与文本AI / 图片AI / AI 构建器并列
+- `client/src/components/nodes/AgentNode.tsx`（新增组件）
+- `server/src/runner/agentNode.js`（新增 runAgent + 工具注册表）
+
+### Changed · 变更
+
+- `/api/llm/chat` 新增 `tools` / `tool_choice` 参数透传，首次为画布提供 function calling 底层能力
+- `nodeRunners.js` 注册 `case 'agent'`；`canvas.js` NODE_TYPES_SCHEMA 注册 agent 类型
+- `Canvas.tsx` executeFlow 新增 agent 分支（与服务端 runAgent 1:1 对齐）
+
+### 已知限制
+
+- 不支持 Claude（Anthropic 协议与 OpenAI function calling 不兼容），选中前置报错引导切换
+- 外部工具仅 web_fetch，暂无搜索能力（搜索需引入外部搜索 API，与 LAN-only 部署偏好冲突）
+- 厂商不支持 function calling 时自动降级为单轮问答，节点仍出结果而非报错
+- 工具观察结果截断 6000 字符，超长网页可能丢失尾部信息
+
+---
+
 ## [2.0.0] — 2026-06-12
 
 > 🎉 **v2.0 正式版**：从「单机离线工具」正式升级为「人 AI 协同 + 多人协作 + AI 原生画布」。

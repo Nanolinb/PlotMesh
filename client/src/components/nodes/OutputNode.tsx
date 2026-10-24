@@ -15,6 +15,7 @@ import { Handle, Position } from '@xyflow/react';
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeStore } from '../../store/nodes';
 import { OUTPUT_FORMAT_OPTIONS, type OutputFormat, type OutputNodeData } from '../../types/nodes';
+import { extractImagesFromPayload, resolveImageUrl } from '../../utils/imagePayload';
 
 type Props = {
   id: string;
@@ -28,6 +29,8 @@ function OutputNode({ id, data, selected }: Props) {
   const [localTitle, setLocalTitle] = useState(data.label || '输出');
   const [localFormat, setLocalFormat] = useState<OutputFormat>(data.format || 'text');
   const updateNodeData = useNodeStore((s) => s.updateNodeData);
+  const outputImages = extractImagesFromPayload(data.output);
+  const outputImageUrl = resolveImageUrl(outputImages[0]);
 
   useEffect(() => { setLocalFormat(data.format || 'text'); }, [data.format]);
   useEffect(() => { setLocalTitle(data.label || '输出'); }, [data.label]);
@@ -229,10 +232,28 @@ function OutputNode({ id, data, selected }: Props) {
 
         {data.output ? (
           <>
-            <div style={{ background: '#faf5ff', borderRadius: '6px', padding: '8px', fontSize: '12px', maxHeight: '120px', overflow: 'auto', color: '#374151', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {data.output.substring(0, 300)}
-              {data.output.length > 300 ? '...' : ''}
-            </div>
+            {localFormat === 'image' && outputImageUrl ? (
+              <div
+                style={{
+                  width: '100%',
+                  height: 180,
+                  borderRadius: 6,
+                  border: '1px solid var(--border-color)',
+                  overflow: 'hidden',
+                  background: 'var(--bg-card-body)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <img src={outputImageUrl} alt={outputImages[0]?.name || '图片输出'} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+              </div>
+            ) : (
+              <div style={{ background: '#faf5ff', borderRadius: '6px', padding: '8px', fontSize: '12px', maxHeight: '120px', overflow: 'auto', color: '#374151', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {data.output.substring(0, 300)}
+                {data.output.length > 300 ? '...' : ''}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
               <button
                 className="nodrag"
