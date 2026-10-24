@@ -49,3 +49,11 @@ scripts/deploy.env
 
 # 测试用临时数据目录（联网模式 demo / 验证 server，含测试账号密码哈希，绝不入库）
 .plotmesh-*/
+
+# v2.1 敏感文件：含明文账号密码，绝不入库
+*账号密码*
+
+# v2.1 Playwright 录制产物（根目录临时录制，用完即弃，不入库）
+# 说明：以 / 开头只匹配根目录，不影响 client/ docs/ 等子目录；已跟踪的 docker-compose.yml 不受影响
+/*.yml
+/*.png
